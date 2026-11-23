@@ -16,10 +16,7 @@ class CompileNotice(event.Listener):
     the first run (or after a numba/Optiland upgrade) and not on later runs.
     """
 
-    MESSAGE = (
-        "Compiling the ray-tracing code (numba). This happens on the first run only and can\n"
-        "take a while with no further output. It is not stuck, so please wait."
-    )
+    MESSAGE = "Compiling the ray-tracing code (numba). Please wait..."
 
     def __init__(self) -> None:
         self.has_printed = False
