@@ -1,0 +1,108 @@
+# RayCrafter: instructions for coding agents (and humans)
+
+RayCrafter is a lens-level optical design tool: users place off-the-shelf lenses on an optical
+axis and see spots, MTF, aberrations and so on update live. Optiland does the optics. The code
+is written mainly by coding agents, but it must be readable and maintainable by people who use
+little or no AI. If something would confuse a careful human reader, it is wrong.
+
+
+# Architecture rules
+
+- **`raycrafter.core` never imports Qt.** It holds the optical model and the analyses. The GUI,
+  the HTML report, scripts and (later) an MCP server for AI agents all use the same core API.
+- **Model/view.** The GUI (`raycrafter.gui`) displays the core model and turns user actions into
+  calls on it. It holds no optical state of its own beyond what it needs to draw.
+- **Object-oriented, modular.** One clear responsibility per module. Subpackages must be usable
+  on their own, e.g. `from raycrafter.lenscatalog import thorlabs` must not pull in Qt or the GUI.
+- **File size.** Aim for files under about 1000 lines. This is a soft limit: if a file has to be
+  bigger, say why in `log.md`.
+- **Optiland.** It is pinned to a tested minor version in `pyproject.toml`. Any workaround for an
+  Optiland bug goes in one clearly marked place, with a comment that links to the upstream issue.
+  Delete the workaround once the fix is released. When new versions of Optiland are released:
+  test them and upgrade as soon as possible.
+
+Package layout:
+
+```
+raycrafter/
+  core/          Qt-free model, building the Optiland system, analyses
+  lenscatalog/   lens catalogues (JSON data plus loaders)
+  report/        HTML report (matplotlib figures)
+  gui/           PyQt6 + pyqtgraph application
+  palette.py     colours shared by the GUI and the report
+```
+
+
+# Code style
+
+- Use descriptive variable names; avoid abbreviations that a newcomer would have to guess.
+- Use white space well, including blank lines between functions and between logical blocks.
+- Aim for lines of at most 100 chars. Up to 120 is allowed where it helps readability.
+  `ruff format` wraps at 100 and the linter complains only above 120.
+- Every public module, class and function gets a docstring in the NumPy style. Keep it short
+  for simple functions.
+- Add type hints to public functions and methods.
+- Where the intent of a piece of code is not obvious (physics, Qt quirks, Optiland workarounds),
+  explain it in a comment.
+- Physical units go in names or comments (`_mm`, `_um`, degrees, dioptres).
+- Once a feature is complete, remove any dead code.
+
+
+# Tests
+
+- Run them with `uv run pytest`. Tests live in `tests/test_unit` (fast, no display) and
+  `tests/test_integration` (GUI, packaging, slower). GUI tests run headless.
+- Every change to the optics must keep the physics checks passing (e.g. the ACT508-200-A back
+  focal length). A new analysis needs at least one check against a known value.
+- A bug fix comes with a test that would have caught the bug.
+
+
+# Workflow
+
+- For now, work directly on `main`. Use a branch only when there is a real need (e.g. a risky
+  experiment that may be abandoned). Once the project has users we will probably move to
+  feature branches and pull requests; that will be decided then and recorded in log.md.
+- Use GitHub issues for substantial bugs, features and design questions, so there is a public
+  record of what was done and why. Reference the issue in commits and PRs.
+- Before committing, run `uv run pre-commit run --all-files` and `uv run pytest`.
+- Agents may create or comment on issues, and push branches and open pull requests when a
+  branch is used. Pushing to `main`, merging, tagging and releasing need explicit approval
+  from Rob.
+- Versions come from git tags via setuptools-scm, using semantic versioning. Pushing a
+  `vX.Y.Z` tag publishes to PyPI.
+- Stop and ask at natural check-points rather than finishing large pieces of work in one go.
+- Expect that people may have changed files you recently worked on or are working on now.
+  Re-read a file before modifying it; otherwise you risk reverting a human developer's saved
+  changes.
+
+
+# Environment
+
+- Use `uv`. The virtual environment lives **outside Dropbox**, because a venv cannot be shared
+  between machines or operating systems. On the Mac, run:
+  `export UV_PROJECT_ENVIRONMENT=~/uv_venvs/raycrafter_mac` and then `uv sync --extra dev`.
+- `uv.lock` is committed so that every developer gets the same environment.
+- `rm` and `mv` are aliased to interactive versions on Rob's machines, so use `rm -f` / `mv -f`.
+
+
+# Decision log (`log.md`)
+
+`log.md` records significant decisions and why they were made, so the history of the project
+can be traced later (e.g. for a paper). Keep it short so it stays cheap to search.
+
+- **Before starting work**, search the log for the topic, e.g.
+  `grep -n -i -A6 "catalog" log.md`. Read the matching entries only, not the whole file.
+- **Add an entry** for a decision someone might later ask "why?" about: architecture,
+  dependencies, tooling, physics approximations, Optiland workarounds, or something tried and
+  abandoned. Do not log routine changes or bug fixes; git and the issues record those.
+- **Append only.** Add new entries at the end and never rewrite old ones. If a decision is
+  reversed, add a new entry that says which entry it supersedes.
+- **Format.** Each entry is at most about 8 lines:
+
+  ```
+  ## YYYY-MM-DD: Short title
+  **Decision:** what was decided.
+  **Why:** the reason, including alternatives rejected.
+  **Supersedes:** (optional) the date and title of the earlier entry.
+  ```
+- Ask Rob before logging a decision that he has not made or agreed to.

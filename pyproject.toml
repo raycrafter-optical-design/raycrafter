@@ -1,0 +1,144 @@
+[project]
+name = "raycrafter"
+authors = [{name = "Rob Campbell", email= "git@raacampbell.com"}]
+description = "Raytracing GUI for simple optical systems using off-the-shelf lenses and Optiland"
+readme = "README.md"
+requires-python = ">=3.11.0"
+dynamic = ["version"]
+
+# Optiland is pinned to the minor version we have tested against: its API is still changing
+# and we may carry local workarounds for it (see log.md).
+dependencies = [
+  "optiland>=0.6.3,<0.7",
+  "numpy",
+  "scipy",
+  "matplotlib",
+  "PyQt6",
+  "pyqtgraph>=0.14",
+]
+
+license = "MIT"
+
+license-files = ["LICENSE"]
+
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+[project.urls]
+"Source Code" = "https://github.com/raycrafter-optical-design/raycrafter"
+"Bug Tracker" = "https://github.com/raycrafter-optical-design/raycrafter/issues"
+
+[project.scripts]
+raycrafter = "raycrafter.gui.app:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-cov",
+  "coverage",
+  "tox",
+  "mypy",
+  "pre-commit",
+  "ruff",
+  "setuptools-scm",
+]
+
+[build-system]
+requires = [
+    "setuptools>=77",
+    "wheel",
+    "setuptools-scm[toml]>=8",
+]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["raycrafter*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+# The lens catalogue JSON files ship inside the package.
+"raycrafter.lenscatalog" = ["data/*.json"]
+# The HTML report's style sheet and script.
+"raycrafter.report" = ["assets/*.css", "assets/*.js"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=raycrafter"
+filterwarnings = [
+    "error",
+    # Optiland 0.6.x still uses parts of its own deprecated API internally.
+    "ignore::DeprecationWarning:optiland.*",
+]
+
+[tool.setuptools_scm]
+
+[tool.ruff]
+# The formatter aims for 100 characters; the linter only complains above 120.
+line-length = 100
+exclude = ["__init__.py", "build", ".eggs"]
+lint.select = [
+  "E",   # pycodestyle errors
+  "F",   # Pyflakes
+  "I",   # isort
+  # You can see what all the rules do here: https://docs.astral.sh/ruff/rules/
+]
+fix = true
+
+[tool.ruff.lint.pycodestyle]
+max-line-length = 120
+
+[tool.ruff.format]
+docstring-code-format = true # Also format code in docstrings (e.g. examples)
+
+[tool.mypy]
+# Lenient on purpose: Optiland and pyqtgraph have little or no type information, and we do not
+# want "type: ignore" comments scattered through the code. Annotated functions are checked;
+# unannotated ones are not required to be annotated.
+files = ["raycrafter"]
+ignore_missing_imports = true
+check_untyped_defs = false
+
+[tool.tox]
+legacy_tox_ini = """
+[tox]
+requires =
+    tox>=4
+    tox-gh-actions
+envlist = py{311,312,313}
+isolated_build = True
+
+[gh-actions]
+python =
+    3.11: py311
+    3.12: py312
+    3.13: py313
+
+[testenv]
+passenv =
+    CI
+    GITHUB_ACTIONS
+    DISPLAY
+    XAUTHORITY
+    QT_QPA_PLATFORM
+extras =
+    dev
+commands =
+    pytest -v --color=yes --cov=raycrafter --cov-report=xml
+"""
+
+
+[tool.codespell]
+skip = '.git,*.json'
+check-hidden = true
+# ACN is a Thorlabs part-number prefix (negative achromats), not a typo.
+ignore-words-list = 'acn'
