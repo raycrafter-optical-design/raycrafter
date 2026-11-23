@@ -1,5 +1,5 @@
 [project]
-name = "raycrafter"
+name = "RayCrafter"
 authors = [{name = "Rob Campbell", email= "git@raacampbell.com"}]
 description = "Raytracing GUI for simple optical systems using off-the-shelf lenses and Optiland"
 readme = "README.md"
