@@ -79,3 +79,10 @@ file exceeds about 500 lines, and the GUI and report can no longer draw things d
 **Decision:** Commit directly to `main`; use branches only when there is a real need.
 **Why:** There are no users yet, so feature branches and PRs add overhead with no benefit. To
 be revisited when the project has users or more contributors.
+
+## 2026-11-23: Qt in CI without XVFB
+**Decision:** CI runs the GUI tests with Qt's off-screen platform and installs Qt's system
+libraries (libEGL etc.) with apt, instead of running under XVFB.
+**Supersedes:** the XVFB part of "Tooling for the first package".
+**Why:** The first CI run failed because the runner lacks libEGL. The tests never needed a
+display, so XVFB only added a dependency (and a deprecated action).

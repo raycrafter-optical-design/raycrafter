@@ -24,20 +24,26 @@ jobs:
         # Python versions, macOS and Windows) comes back before the first non-preview release.
         python-version: ["3.12"]
         os: [ubuntu-latest]
-        # The GUI tests need a display; the NIU test action reads this flag from the matrix.
-        use-xvfb: [true]
         # include:
         # - os: macos-latest
         #   python-version: "3.13"
         # - os: windows-latest
         #   python-version: "3.13"
 
+    # The GUI tests run Qt off screen, so no display (XVFB) is needed, but Qt still needs
+    # these system libraries, which the Ubuntu runner does not have.
+    env:
+      QT_QPA_PLATFORM: offscreen
+
     steps:
+      - name: Install Qt system libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+
       # Run tests
       - uses: neuroinformatics-unit/actions/test@v2
         with:
           python-version: ${{ matrix.python-version }}
-          use-xvfb: ${{ matrix.use-xvfb }}
 
   build_sdist_wheels:
     name: Build source distribution
