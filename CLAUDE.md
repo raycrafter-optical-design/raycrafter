@@ -66,8 +66,10 @@ raycrafter/
   record of what was done and why. Reference the issue in commits and PRs.
 - Before committing, run `uv run pre-commit run --all-files` and `uv run pytest`.
 - Agents may create or comment on issues, and push branches and open pull requests when a
-  branch is used. Pushing to `main`, merging, tagging and releasing need explicit approval
-  from Rob.
+  branch is used.
+- Work done on `main` may be committed and pushed without asking. Merging a feature branch
+  into `main` (i.e. bigger or possibly problematic work), tagging and releasing need explicit
+  approval from Rob.
 - Versions come from git tags via setuptools-scm, using semantic versioning. Pushing a
   `vX.Y.Z` tag publishes to PyPI.
 - Stop and ask at natural check-points rather than finishing large pieces of work in one go.
