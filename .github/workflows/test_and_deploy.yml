@@ -54,6 +54,8 @@ jobs:
       - uses: neuroinformatics-unit/actions/test@v2
         with:
           python-version: ${{ matrix.python-version }}
+          # Needed to upload the coverage report to codecov.io (see the README badge).
+          secret-codecov-token: ${{ secrets.CODECOV_TOKEN }}
 
   build_sdist_wheels:
     name: Build source distribution
