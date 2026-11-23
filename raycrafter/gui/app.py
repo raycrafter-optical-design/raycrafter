@@ -9,15 +9,22 @@ def main() -> None:
     """Create the Qt application, show the main window and run until it is closed.
 
     Start-up can be slow, so progress is printed to the terminal. The heavy imports are done
-    inside this function, after the first message, so the user sees output straight away
+    inside this function, each after a message, so the user sees what is being waited for
     instead of a silent pause.
     """
-    print("Starting RayCrafter: loading libraries...", flush=True)
+    print("Starting RayCrafter: loading the GUI toolkit (Qt)...", flush=True)
     from PyQt6.QtWidgets import QApplication
 
     from raycrafter.gui.compile_notice import announce_numba_compilation
-    from raycrafter.gui.main_window import MainWindow
     from raycrafter.gui.style import make_app_icon
+
+    # Importing Optiland (via the core model) is by far the slowest import, typically several
+    # seconds and much longer on a cold disk cache, so it gets its own message.
+    print("Loading the optics library (Optiland)...", flush=True)
+    import raycrafter.core.model  # noqa: F401
+
+    print("Loading the rest of the interface...", flush=True)
+    from raycrafter.gui.main_window import MainWindow
 
     app = QApplication(sys.argv)
     app.setApplicationName("RayCrafter")
