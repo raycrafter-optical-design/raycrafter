@@ -1,12 +1,22 @@
 name: tests
 
+# Run on pushes to main (including merges into it), on every pull request (before it is
+# merged), on tags (which also publish to PyPI), and by hand from the Actions tab. Pushes to
+# other branches, such as dev, are not tested here; run the tests locally or open a PR.
 on:
   push:
     branches:
-      - '*'
+      - main
     tags:
       - '*'
   pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch or PR cancels the run still going for the older one.
+# Release (tag) runs are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   linting:

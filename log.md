@@ -86,3 +86,12 @@ libraries (libEGL etc.) with apt, instead of running under XVFB.
 **Supersedes:** the XVFB part of "Tooling for the first package".
 **Why:** The first CI run failed because the runner lacks libEGL. The tests never needed a
 display, so XVFB only added a dependency (and a deprecated action).
+
+## 2026-11-23: dev branch and fewer CI runs
+**Decision:** Small changes go straight onto `main`; longer jobs are done on a long-lived `dev`
+branch and merged into `main` when complete. Feature branches (risky work only) and all pull
+requests go into `dev`. CI runs only on pushes to `main`, on pull requests, on tags and by
+hand; a newer push cancels an older run on the same branch.
+**Supersedes:** "Work on main for now".
+**Why:** Testing every push to every branch was excessive. Pre-commit and local pytest check
+each commit; CI checks on a clean machine before anything is merged or released.

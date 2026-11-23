@@ -59,17 +59,22 @@ raycrafter/
 
 # Workflow
 
-- For now, work directly on `main`. Use a branch only when there is a real need (e.g. a risky
-  experiment that may be abandoned). Once the project has users we will probably move to
-  feature branches and pull requests; that will be decided then and recorded in log.md.
+- **Branches.** Small, self-contained changes go straight onto `main`. A longer job that
+  will take a series of commits is done on the long-lived `dev` branch; once it is complete
+  and the local tests pass, `dev` is merged into `main`. Before starting on `dev`, merge
+  `main` into it so it has any small fixes made there. A feature branch is used only for
+  risky or experimental work: it branches from `dev`, merges back into `dev`, and is then
+  deleted. Pull requests (from forks or feature branches) target `dev`, never `main`.
+- **CI** runs on pushes to `main`, on every pull request, on tags, and by hand from the
+  Actions tab. Pushes to `dev` or feature branches are not tested by CI, so the local checks
+  below are what stand between them and `main`.
 - Use GitHub issues for substantial bugs, features and design questions, so there is a public
   record of what was done and why. Reference the issue in commits and PRs.
 - Before committing, run `uv run pre-commit run --all-files` and `uv run pytest`.
-- Agents may create or comment on issues, and push branches and open pull requests when a
-  branch is used.
-- Work done on `main` may be committed and pushed without asking. Merging a feature branch
-  into `main` (i.e. bigger or possibly problematic work), tagging and releasing need explicit
-  approval from Rob.
+- Agents may create or comment on issues, push `dev` and feature branches, and open pull
+  requests into `dev`.
+- Small changes on `main` may be committed and pushed without asking. Merging `dev` into
+  `main`, tagging and releasing need explicit approval from Rob.
 - Versions come from git tags via setuptools-scm, using semantic versioning. Pushing a
   `vX.Y.Z` tag publishes to PyPI.
 - Stop and ask at natural check-points rather than finishing large pieces of work in one go.
