@@ -95,3 +95,9 @@ hand; a newer push cancels an older run on the same branch.
 **Supersedes:** "Work on main for now".
 **Why:** Testing every push to every branch was excessive. Pre-commit and local pytest check
 each commit; CI checks on a clean machine before anything is merged or released.
+
+## 2026-11-23: Require Python 3.12 or newer
+**Decision:** `requires-python` is `>=3.12`; Python 3.11 is dropped from the classifiers and tox.
+**Why:** On 3.11 numba emits `NumbaIRAssumptionWarning` while compiling Optiland's conic code,
+which our warnings-as-errors tests turn into a failure. CI only ever ran 3.12, so 3.11 support
+was never real. Rob chose to drop it rather than filter the warning or report it upstream.

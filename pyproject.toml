@@ -3,7 +3,7 @@ name = "RayCrafter"
 authors = [{name = "Rob Campbell", email= "git@raacampbell.com"}]
 description = "Raytracing GUI for simple optical systems using off-the-shelf lenses and Optiland"
 readme = "README.md"
-requires-python = ">=3.11.0"
+requires-python = ">=3.12.0"
 dynamic = ["version"]
 
 # Optiland is pinned to the minor version we have tested against: its API is still changing
@@ -25,7 +25,6 @@ classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
@@ -114,12 +113,11 @@ legacy_tox_ini = """
 requires =
     tox>=4
     tox-gh-actions
-envlist = py{311,312,313}
+envlist = py{312,313}
 isolated_build = True
 
 [gh-actions]
 python =
-    3.11: py311
     3.12: py312
     3.13: py313
 
