@@ -101,3 +101,12 @@ each commit; CI checks on a clean machine before anything is merged or released.
 **Why:** On 3.11 numba emits `NumbaIRAssumptionWarning` while compiling Optiland's conic code,
 which our warnings-as-errors tests turn into a failure. CI only ever ran 3.12, so 3.11 support
 was never real. Rob chose to drop it rather than filter the warning or report it upstream.
+
+## 2026-11-24: Ship the whole Thorlabs catalogue, gzipped
+**Decision:** The package ships every Thorlabs lens except the cylindrical ones (1564) as
+`thorlabs.json.gz` (about 110 KB), made by `scripts/make_thorlabs_catalog.py`. All parts are
+listed in the new lens picker (#1); near-duplicate focal lengths are no longer dropped.
+Aspheres are in the file but not offered until `LensSurface` can represent them (#2).
+**Why:** The picker's categories and filters need the full range. Coating variants share
+prescriptions, so the 3 MB of JSON compresses about 27-fold.
+**Supersedes:** 2026-11-23 "Ship only the lenses the GUI offers".

@@ -1,7 +1,7 @@
 """The RayCrafter main window: side view on top, controls and analysis plots below.
 
-- Lenses are chosen in the drop-down and added with "Add lens"; each goes to the right of
-  the existing lenses.
+- "Add lens" opens the lens picker (``raycrafter.gui.lens_picker``). After Insert, a ghost
+  of the chosen lens follows the pointer along the axis; a click places it, Escape cancels.
 - Hover a lens and it turns a darker shade; that is the lens the actions apply to. Drag a
   lens to slide it along the axis; drag it past a neighbour's centre to swap them. Drag the
   green line to move the image plane (not while "Lock focus" is on).
@@ -23,13 +23,11 @@ from PyQt6.QtCore import QPoint, Qt, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QListView,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -51,6 +49,7 @@ from raycrafter.gui.analysis_panels import (
     ThroughFocusPanel,
     make_tabs,
 )
+from raycrafter.gui.lens_picker import LensPickerDialog
 from raycrafter.gui.side_view import IMAGE_MAX_Z, MIN_IMAGE_GAP_MM, SideView
 from raycrafter.gui.style import style_sheet
 from raycrafter.report import write_and_open_report
@@ -81,6 +80,7 @@ class MainWindow(QMainWindow):
         pg.setConfigOptions(background="w", foreground=palette.TEXT, antialias=True)
 
         self.model = model if model is not None else OpticalModel()
+        self.lens_picker: LensPickerDialog | None = None  # made on first use, then kept
         self._build_widgets()
         self._connect_signals()
 
@@ -95,7 +95,6 @@ class MainWindow(QMainWindow):
         self.slow_timer.timeout.connect(self.update_slow_plots)
 
         self.model.autofocus()
-        self.populate_catalog_combo()
         self.side_view.rebuild_lens_graphics()
         self.recompute_and_redraw()
 
@@ -137,12 +136,8 @@ class MainWindow(QMainWindow):
         self.statusBar().addWidget(self.status_label)
 
     def _build_control_panel(self) -> QFrame:
-        """The framed panel of buttons, sliders and the lens drop-down."""
+        """The framed panel of buttons and sliders."""
         state = self.model.state
-        self.catalog_combo = QComboBox()
-        # A plain QListView popup: the default one is drawn by the native macOS style, which
-        # ignores the style sheet's hover and selection colours (white on white).
-        self.catalog_combo.setView(QListView())
         self.add_button = QPushButton("Add lens")
         self.autofocus_button = QPushButton("Autofocus")
         self.reset_beam_button = QPushButton("Reset beam")
@@ -183,21 +178,20 @@ class MainWindow(QMainWindow):
 
         controls = QGridLayout()
         controls.setSpacing(8)
-        controls.addWidget(self.catalog_combo, 0, 0, 1, 2)
-        controls.addWidget(self.add_button, 1, 0)
-        controls.addWidget(self.autofocus_button, 1, 1)
-        controls.addWidget(self.diameter_label, 2, 0, 1, 2)
-        controls.addWidget(self.diameter_slider, 3, 0, 1, 2)
-        controls.addWidget(self.angle_label, 4, 0, 1, 2)
-        controls.addWidget(self.angle_slider, 5, 0, 1, 2)
-        controls.addWidget(self.vergence_label, 6, 0, 1, 2)
-        controls.addWidget(self.vergence_slider, 7, 0, 1, 2)
-        controls.addWidget(self.reset_beam_button, 8, 0)
-        controls.addWidget(self.save_zmx_button, 8, 1)
-        controls.addWidget(self.report_button, 9, 0, 1, 2)
-        controls.addWidget(self.lock_focus_checkbox, 10, 0, 1, 2)
-        controls.setRowStretch(11, 1)  # spare space goes above the hint, which sits at the foot
-        controls.addWidget(hint_label, 12, 0, 1, 2, Qt.AlignmentFlag.AlignBottom)
+        controls.addWidget(self.add_button, 0, 0)
+        controls.addWidget(self.autofocus_button, 0, 1)
+        controls.addWidget(self.diameter_label, 1, 0, 1, 2)
+        controls.addWidget(self.diameter_slider, 2, 0, 1, 2)
+        controls.addWidget(self.angle_label, 3, 0, 1, 2)
+        controls.addWidget(self.angle_slider, 4, 0, 1, 2)
+        controls.addWidget(self.vergence_label, 5, 0, 1, 2)
+        controls.addWidget(self.vergence_slider, 6, 0, 1, 2)
+        controls.addWidget(self.reset_beam_button, 7, 0)
+        controls.addWidget(self.save_zmx_button, 7, 1)
+        controls.addWidget(self.report_button, 8, 0, 1, 2)
+        controls.addWidget(self.lock_focus_checkbox, 9, 0, 1, 2)
+        controls.setRowStretch(10, 1)  # spare space goes above the hint, which sits at the foot
+        controls.addWidget(hint_label, 11, 0, 1, 2, Qt.AlignmentFlag.AlignBottom)
         controls.setContentsMargins(14, 14, 14, 14)
 
         # A framed card (QFrame#controls in the style sheet), so the controls read as one panel.
@@ -219,7 +213,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         """Wire the buttons, sliders, side view and keyboard shortcuts to their handlers."""
-        self.add_button.clicked.connect(self.add_selected_catalog_lens)
+        self.add_button.clicked.connect(self.open_lens_picker)
         self.autofocus_button.clicked.connect(self.run_autofocus)
         self.diameter_slider.valueChanged.connect(self.set_beam_diameter)
         self.angle_slider.valueChanged.connect(self.set_field_angle)
@@ -231,6 +225,7 @@ class MainWindow(QMainWindow):
 
         self.side_view.changed.connect(self.request_update)
         self.side_view.lens_menu_requested.connect(self.show_lens_menu)
+        self.side_view.placement_finished.connect(self.on_placement_finished)
 
         # F and Delete/Backspace act on the lens under the pointer.
         QShortcut(
@@ -242,6 +237,7 @@ class MainWindow(QMainWindow):
                 self,
                 activated=lambda: self.act_on_hovered_lens(self.delete_lens),
             )
+        QShortcut(QKeySequence("Escape"), self, activated=self.side_view.cancel_placement)
 
         # Only the visible tab of each pair is computed, so switching tab must trigger a redraw.
         self.mtf_tabs.currentChanged.connect(lambda _index: self.update_mtf_tab())
@@ -253,20 +249,25 @@ class MainWindow(QMainWindow):
         if not self.update_timer.isActive():
             self.update_timer.start(0)
 
-    def populate_catalog_combo(self) -> None:
-        """Fill the drop-down from the model's catalogue (the part number is the item data)."""
-        self.catalog_combo.clear()
-        for entry in self.model.catalog.values():
-            self.catalog_combo.addItem(entry.label, entry.part_number)
-
-    def add_selected_catalog_lens(self) -> None:
-        """Place the lens chosen in the drop-down to the right of the existing lenses."""
-        part_number = self.catalog_combo.currentData()
+    def open_lens_picker(self) -> None:
+        """Show the lens picker; after Insert, let the user place the chosen lens on the axis."""
+        if self.lens_picker is None:
+            self.lens_picker = LensPickerDialog(self.model.catalog, parent=self)
+        if self.lens_picker.exec() != LensPickerDialog.DialogCode.Accepted:
+            return
+        part_number = self.lens_picker.selected_part_number()
         if part_number is None:
             return
-        self.model.add_lens(part_number)
-        self.side_view.rebuild_lens_graphics()
-        self.request_update()
+        self.side_view.start_placement(self.model.make_lens(part_number))
+        self.statusBar().showMessage(
+            f"Click on the axis to place {part_number}. Esc or right-click to cancel."
+        )
+
+    def on_placement_finished(self, placed: bool) -> None:
+        """Clear the placement instructions; the side view has already updated the model."""
+        self.statusBar().clearMessage()
+        if not placed:
+            self.statusBar().showMessage("Lens not added", 3000)
 
     def act_on_hovered_lens(self, action: Callable[[int], None]) -> None:
         """Keyboard shortcuts: run ``action(index)`` for the lens under the pointer, if any."""

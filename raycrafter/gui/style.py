@@ -41,6 +41,13 @@ QComboBox QAbstractItemView::item { padding: 4px 8px; }
 QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected {
     background: #3b7dd8; color: white;
 }
+QLineEdit { background: white; border: 1px solid #ced4da; border-radius: 4px; padding: 4px 6px; }
+QLineEdit:focus { border: 1px solid #3b7dd8; }
+QTreeView { background: white; border: 1px solid #ced4da; border-radius: 4px; outline: 0; }
+QTreeView::item { padding: 2px 0px; }
+QTreeView::item:selected { background: #3b7dd8; color: white; }
+QHeaderView::section { background: #f8f9fa; color: #495057; border: none;
+                       border-bottom: 1px solid #dee2e6; padding: 4px 6px; }
 QLabel#sliderLabel { color: #495057; }
 QLabel#hintLabel { color: #868e96; font-size: 11px; }
 QTabWidget::pane { border: none; }

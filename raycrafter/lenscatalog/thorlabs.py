@@ -1,85 +1,117 @@
 """Thorlabs lenses.
 
-For now RayCrafter offers a short list of Thorlabs achromats: the A-coated (visible) 2"
-positive achromats, plus the A-coated negative achromats, which Thorlabs makes only in 1/2"
-and 1" sizes. Near-duplicate focal lengths are dropped. The packaged file
-``data/thorlabs_achromats.json`` holds just these lenses. It is cut from the full decoded
-Thorlabs catalogue by ``scripts/make_thorlabs_subset.py``, which calls ``select_offered``
-below, so the selection rule lives in one place.
+The packaged file ``data/thorlabs.json.gz`` holds every lens in Thorlabs' Zemax catalogue
+except the cylindrical ones. It is made from the full decoded catalogue by
+``scripts/make_thorlabs_catalog.py``. This module turns its records into ``CatalogEntry``
+objects: it maps Thorlabs product families onto RayCrafter's categories and coating codes
+onto readable names.
 
 Example
 -------
 >>> from raycrafter.lenscatalog import thorlabs
->>> achromats = thorlabs.load_achromats()
->>> achromats["ACT508-200-A"].focal_length
+>>> lenses = thorlabs.load_lenses()
+>>> lenses["ACT508-200-A"].focal_length
 200.0
 """
 
 from __future__ import annotations
 
-import re
-
 from raycrafter.lenscatalog.catalog import (
+    ACHROMATIC_TRIPLETS,
+    ACHROMATS,
+    AIR_SPACED_DOUBLETS,
+    ASPHERES,
+    MATCHED_ACHROMATIC_PAIRS,
+    SPHERICAL_LENSES,
+    UNCOATED,
     CatalogEntry,
-    drop_near_duplicates,
-    entry_from_lens_record,
     read_packaged_catalog,
 )
 
-CATALOG_FILE_NAME = "thorlabs_achromats.json"
+CATALOG_FILE_NAME = "thorlabs.json.gz"
 
-# Positive 2" achromats have 508 in the part number (AC508-100-A, ACT508-200-A, ...); the
-# negative ones are ACN127-... and ACN254-.... The "-A" suffix is the visible coating.
-OFFERED_PART_PATTERN = re.compile(r"^((AC|ACT)508|ACN(127|254))-.*-A$")
-EXCLUDED_TAGS = {"cylindrical", "pair"}  # not single rotationally symmetric lenses
+# Thorlabs family -> RayCrafter category. Families not listed take the category named by
+# their Thorlabs category in VENDOR_CATEGORY_TO_CATEGORY.
+FAMILY_TO_CATEGORY = {
+    "Air-spaced doublets (high power)": AIR_SPACED_DOUBLETS,
+    "Hastings achromatic triplets": ACHROMATIC_TRIPLETS,
+    "Steinheil achromatic triplets": ACHROMATIC_TRIPLETS,
+    "Matched achromatic pairs": MATCHED_ACHROMATIC_PAIRS,
+}
+VENDOR_CATEGORY_TO_CATEGORY = {
+    "Spherical singlets": SPHERICAL_LENSES,
+    "Achromats": ACHROMATS,
+    "Aspheres": ASPHERES,
+}
+
+# Thorlabs coating suffixes. The four broadband anti-reflection coatings get their design
+# wavelength range; the rarer codes are shown as they are.
+COATING_NAMES = {
+    "": UNCOATED,
+    "A": "A: 350-700 nm",
+    "AB": "AB: 400-1100 nm",
+    "B": "B: 650-1050 nm",
+    "C": "C: 1050-1700 nm",
+}
+
+# ---------------------------------------------------------------------------------------
+# Aspheres are not offered yet: LensSurface stores only a radius, so they would be traced
+# as spheres. Remove this exclusion once aspheres are supported; see
+# https://github.com/raycrafter-optical-design/raycrafter/issues/2
+UNSUPPORTED_CATEGORIES = {ASPHERES}
+# ---------------------------------------------------------------------------------------
 
 
-def is_offered_type(part_number: str, lens_record: dict) -> bool:
-    """True if a lens is of a type RayCrafter offers (before near-duplicates are dropped)."""
-    return (
-        lens_record["category"] == "Achromats"
-        and lens_record["coating"] == "A"
-        and OFFERED_PART_PATTERN.match(part_number) is not None
-        and not EXCLUDED_TAGS & set(lens_record["tags"])
+def coating_name(coating_code: str) -> str:
+    """Readable name of a Thorlabs coating code, e.g. "B" -> "B: 650-1050 nm"."""
+    return COATING_NAMES.get(coating_code, f"{coating_code} coating")
+
+
+def category_of(lens_record: dict) -> str:
+    """The RayCrafter category of one Thorlabs lens record."""
+    family_category = FAMILY_TO_CATEGORY.get(lens_record["family"])
+    if family_category is not None:
+        return family_category
+    return VENDOR_CATEGORY_TO_CATEGORY[lens_record["category"]]
+
+
+def entry_from_lens_record(part_number: str, lens_record: dict) -> CatalogEntry:
+    """Make a CatalogEntry from one lens record of the Thorlabs catalogue."""
+    return CatalogEntry(
+        part_number=part_number,
+        zmx_text=lens_record["zmx"],
+        semi_aperture=lens_record["max_clear_diameter_mm"] / 2.0,
+        focal_length=lens_record["efl_mm"],
+        category=category_of(lens_record),
+        family=lens_record["family"],
+        coating=coating_name(lens_record["coating"]),
     )
 
 
-def select_offered(lens_records: dict) -> dict[str, CatalogEntry]:
-    """Pick the offered lenses from catalogue records, in the order the GUI lists them.
-
-    Positive lenses come first, then negative ones; each group is ordered by increasing
-    |focal length|. Near-duplicate focal lengths within one lens size are removed so the
-    list stays short.
+def entries_from_records(lens_records: dict) -> dict[str, CatalogEntry]:
+    """Turn catalogue records into entries, leaving out the categories not yet supported.
 
     Parameters
     ----------
     lens_records : dict
-        Part number -> lens record, as in the ``lenses`` block of a catalogue JSON file.
+        Part number -> lens record, as in the ``lenses`` block of the catalogue file.
 
     Returns
     -------
     dict
-        Part number -> CatalogEntry.
+        Part number -> CatalogEntry, in the catalogue's order.
     """
-    entries = [
+    entries = (
         entry_from_lens_record(part_number, lens_record)
         for part_number, lens_record in lens_records.items()
-        if is_offered_type(part_number, lens_record)
-    ]
-
-    def list_order(entry: CatalogEntry) -> tuple:
-        """Sort key: positive lenses before negative ones, then by |focal length|."""
-        return (entry.focal_length < 0, abs(entry.focal_length))
-
-    entries.sort(key=list_order)
-    sizes = sorted({entry.semi_aperture for entry in entries})
-    kept = []
-    for size in sizes:
-        kept += drop_near_duplicates([entry for entry in entries if entry.semi_aperture == size])
-    kept.sort(key=list_order)
-    return {entry.part_number: entry for entry in kept}
+    )
+    return {
+        entry.part_number: entry
+        for entry in entries
+        if entry.category not in UNSUPPORTED_CATEGORIES
+    }
 
 
-def load_achromats() -> dict[str, CatalogEntry]:
-    """Load the packaged Thorlabs achromats (see ``select_offered`` for the order)."""
-    return select_offered(read_packaged_catalog(CATALOG_FILE_NAME)["lenses"])
+def load_lenses() -> dict[str, CatalogEntry]:
+    """Load the packaged Thorlabs lenses (all those RayCrafter can model)."""
+    return entries_from_records(read_packaged_catalog(CATALOG_FILE_NAME)["lenses"])

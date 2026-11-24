@@ -13,7 +13,7 @@ from raycrafter.lenscatalog import thorlabs
 
 def act508_200_surfaces():
     """The ACT508-200-A prescription from the packaged catalogue."""
-    entry = thorlabs.load_achromats()["ACT508-200-A"]
+    entry = thorlabs.load_lenses()["ACT508-200-A"]
     return prescription_from_zmx_text(entry.zmx_text)
 
 

@@ -8,6 +8,7 @@ LENS_HOVER = "#1c4f9c"  # darker blue for the lens under the pointer
 PLOSSL = "#7048e8"  # purple: a lens in a Plossl pair
 PLOSSL_HOVER = "#4c2fb0"
 PLOSSL_PREVIEW = "#e03131"  # dashed red outline of a proposed Plossl pair
+GHOST_BLOCKED = "#e03131"  # red: a lens being placed where there is no room for it
 RAY = "#e8a317"  # amber
 IMAGE = "#2f9e44"  # green: the image plane and "current image plane" markers
 TANGENTIAL = "#3b7dd8"  # also the spot at the current beam angle

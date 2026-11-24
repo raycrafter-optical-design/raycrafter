@@ -66,8 +66,8 @@ include = ["raycrafter*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
-# The lens catalogue JSON files ship inside the package.
-"raycrafter.lenscatalog" = ["data/*.json"]
+# The lens catalogues (gzipped JSON) ship inside the package.
+"raycrafter.lenscatalog" = ["data/*.json.gz"]
 # The HTML report's style sheet and script.
 "raycrafter.report" = ["assets/*.css", "assets/*.js"]
 

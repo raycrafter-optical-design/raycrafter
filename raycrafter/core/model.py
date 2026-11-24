@@ -1,8 +1,8 @@
 """The lens bench model: the one object that front ends (GUI, report, scripts) talk to.
 
 ``OpticalModel`` owns the bench state (``raycrafter.core.state``) and the list of lenses
-that can be placed. It provides the editing operations: add, delete, move and swap lenses,
-and make or split Plossl pairs. It also gives access to the analyses
+that can be placed. It provides the editing operations: add, insert, delete, move and swap
+lenses, and make or split Plossl pairs. It also gives access to the analyses
 (``raycrafter.core.analysis``) and to Zemax export, applied to its current state. It has
 no Qt code.
 
@@ -40,7 +40,7 @@ class OpticalModel:
     ----------
     catalog : dict, optional
         Part number -> CatalogEntry for the lenses that can be placed. Defaults to the
-        packaged Thorlabs achromats.
+        packaged Thorlabs catalogue.
     add_default_lens : bool
         If True (the default), start with one DEFAULT_LENS_PART on the axis.
 
@@ -57,11 +57,26 @@ class OpticalModel:
         self, catalog: dict[str, CatalogEntry] | None = None, add_default_lens: bool = True
     ) -> None:
         self.state = OpticalState()
-        self.catalog = catalog if catalog is not None else thorlabs.load_achromats()
+        self.catalog = catalog if catalog is not None else thorlabs.load_lenses()
         if add_default_lens and DEFAULT_LENS_PART in self.catalog:
             self.add_lens(DEFAULT_LENS_PART)
 
     # --------------------------------------------------------------- adding and removing
+
+    def make_lens(self, part_number: str, front_z: float = INITIAL_LENS_Z) -> PlacedLens:
+        """A catalogue lens at the given front-vertex z, not yet on the bench.
+
+        Front ends use this to preview a lens (e.g. the ghost that follows the pointer)
+        before ``insert_lens`` puts it on the bench.
+        """
+        entry = self.catalog[part_number]
+        return PlacedLens(
+            part_number=part_number,
+            surfaces=prescription_from_zmx_text(entry.zmx_text),
+            semi_aperture=entry.semi_aperture,
+            z=front_z,
+            is_negative=entry.is_negative,
+        )
 
     def add_lens(self, part_number: str) -> PlacedLens:
         """Place a catalogue lens just to the right of the rightmost lens.
@@ -74,20 +89,83 @@ class OpticalModel:
         PlacedLens
             The new lens.
         """
-        entry = self.catalog[part_number]
         lenses = self.state.lenses
         front_z = lenses[-1].back_z + LENS_GAP_MM if lenses else INITIAL_LENS_Z
-
-        new_lens = PlacedLens(
-            part_number=part_number,
-            surfaces=prescription_from_zmx_text(entry.zmx_text),
-            semi_aperture=entry.semi_aperture,
-            z=front_z,
-            is_negative=entry.focal_length < 0,
-        )
+        new_lens = self.make_lens(part_number, front_z)
         lenses.append(new_lens)
         self.state.image_z = max(self.state.image_z, new_lens.back_z + IMAGE_CLEARANCE_MM)
         return new_lens
+
+    def free_front_z(
+        self, thickness_mm: float, requested_front_z: float, max_back_z: float = np.inf
+    ) -> float | None:
+        """The front-vertex z nearest the request at which a new lens fits without overlap.
+
+        The free stretches of axis are the gaps between the lenses on the bench, plus the
+        stretch before the first lens (from FIRST_LENS_MIN_Z) and after the last one (up to
+        ``max_back_z``). The gap inside a Plossl pair is not free: a pair is never split.
+        A new lens may touch its neighbours, as a dragged lens may.
+
+        Parameters
+        ----------
+        thickness_mm : float
+            Front-to-back vertex thickness of the new lens.
+        requested_front_z : float
+            Where the front vertex is wanted (e.g. under the pointer).
+        max_back_z : float
+            The new lens's back vertex must not go beyond this z.
+
+        Returns
+        -------
+        float or None
+            The nearest allowed front-vertex z, or None if the lens fits nowhere.
+        """
+        lenses = self.state.lenses
+
+        # Occupied stretches of axis, one per block (a single lens or a Plossl pair).
+        occupied = []
+        lens_index = 0
+        while lens_index < len(lenses):
+            members = self.group_indices(lens_index)
+            occupied.append((lenses[members[0]].z, lenses[members[-1]].back_z))
+            lens_index = members[-1] + 1
+
+        gap_starts = [FIRST_LENS_MIN_Z] + [block_back for _front, block_back in occupied]
+        gap_ends = [block_front for block_front, _back in occupied] + [max_back_z]
+
+        # In each gap the lens is wide enough for, the closest position to the request;
+        # then the closest of those.
+        candidates = []
+        for gap_start, gap_end in zip(gap_starts, gap_ends):
+            latest_front_z = gap_end - thickness_mm
+            if latest_front_z >= gap_start:
+                candidates.append(float(np.clip(requested_front_z, gap_start, latest_front_z)))
+        if not candidates:
+            return None
+        return min(candidates, key=lambda front_z: abs(front_z - requested_front_z))
+
+    def insert_lens(self, new_lens: PlacedLens, max_image_z: float = np.inf) -> int:
+        """Put a lens (from ``make_lens``) on the bench at its own z, in axis order.
+
+        The caller is responsible for choosing a free position (see ``free_front_z``). If
+        the lens lands behind the image plane, the image plane is pushed back to
+        IMAGE_CLEARANCE_MM behind it, but not beyond ``max_image_z`` (unless even that is
+        too close to the lens, in which case it goes just behind the lens).
+
+        Returns
+        -------
+        int
+            The index of the new lens.
+        """
+        lenses = self.state.lenses
+        new_index = sum(1 for lens in lenses if lens.z < new_lens.z)
+        lenses.insert(new_index, new_lens)
+
+        minimum_image_z = self.state.last_back_z() + 1.0
+        if self.state.image_z < minimum_image_z:
+            pushed_image_z = min(new_lens.back_z + IMAGE_CLEARANCE_MM, max_image_z)
+            self.state.image_z = max(pushed_image_z, minimum_image_z)
+        return new_index
 
     def delete_lens(self, lens_index: int) -> None:
         """Remove one lens. Its Plossl partner, if any, becomes a normal lens."""

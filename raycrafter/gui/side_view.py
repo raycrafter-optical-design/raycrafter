@@ -4,9 +4,15 @@ Lenses and the image plane can be dragged along the axis. Hovering a lens darken
 shows its part number; that lens is the target of the right-click menu and the keyboard
 shortcuts (handled by the main window). The view edits the model directly when something
 is dragged, then emits ``changed`` so the main window recomputes and redraws.
+
+To insert a lens, the main window calls ``start_placement``: a dashed ghost of the lens then
+follows the pointer along the axis, snapped to the nearest gap it fits in (red where it fits
+nowhere). A left click puts it on the bench; Escape or a right click cancels.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 import pyqtgraph as pg
@@ -43,6 +49,9 @@ LENS_NAME_TRIM_PX = 2  # the name tag's box is this much tighter than its text i
 LENS_NAME_CORNER_PX = 4  # corner radius of the name tag
 PLOSSL_PREVIEW_PAD_MM = 1.5  # margin of the dashed rectangle round a proposed Plossl pair
 IMAGE_HOVER_TOLERANCE_PX = 6  # a pointer this close to the image line counts as over it
+LENS_FILL_ALPHA = 70  # fill opacity (0-255) of a lens on the bench
+GHOST_FILL_ALPHA = 35  # fill opacity of a lens being placed
+GHOST_Z_VALUE = 80  # the ghost is drawn above the lenses on the bench
 
 
 class LensNameTag(pg.TextItem):
@@ -66,39 +75,49 @@ class LensNameTag(pg.TextItem):
         painter.drawRoundedRect(box, LENS_NAME_CORNER_PX, LENS_NAME_CORNER_PX)
 
 
-class LensGraphics:
-    """The pyqtgraph items that draw one lens: a draggable region, a filled body and an outline."""
+class LensShape:
+    """The pyqtgraph items that draw a lens: a filled body and its outline.
+
+    On its own this is the ghost of a lens being placed; ``LensGraphics`` adds dragging for
+    the lenses on the bench.
+    """
 
     def __init__(self, plot_item: pg.PlotItem) -> None:
         self.plot_item = plot_item
-
-        # The region is invisible; it only provides whole-lens dragging along z. pyqtgraph
-        # derives a hover brush from the normal one, and with a transparent brush that came
-        # out solid black, so the hover brush is set explicitly (also transparent; the
-        # hovered lens itself turns darker instead).
-        transparent = pg.mkBrush(0, 0, 0, 0)
-        self.region = pg.LinearRegionItem(values=(0, 1), movable=True, brush=transparent)
-        self.region.setHoverBrush(transparent)
-        for edge_line in self.region.lines:
-            edge_line.setPen(pg.mkPen(None))
-            edge_line.setMovable(False)
 
         # The front and back outlines drive the fill; the outline curve draws the full shape.
         self.front_curve = pg.PlotCurveItem()
         self.back_curve = pg.PlotCurveItem()
         self.fill = pg.FillBetweenItem(self.front_curve, self.back_curve)
         self.outline = pg.PlotCurveItem(connect="finite")
-
-        for item in (self.fill, self.outline, self.region):
+        self.items: list = [self.fill, self.outline]
+        for item in self.items:
             plot_item.addItem(item)
 
     def remove(self) -> None:
         """Take all of this lens's items off the plot."""
-        for item in (self.fill, self.outline, self.region):
+        for item in self.items:
             self.plot_item.removeItem(item)
 
-    def update(self, lens: PlacedLens, colour: str) -> None:
-        """Redraw the lens body and outline at its current position and orientation."""
+    def set_visible(self, visible: bool) -> None:
+        """Show or hide the lens."""
+        for item in self.items:
+            item.setVisible(visible)
+
+    def is_visible(self) -> bool:
+        """True if the lens is drawn."""
+        return self.outline.isVisible()
+
+    def set_z_value(self, z_value: float) -> None:
+        """Stacking order: items with a higher value are drawn on top."""
+        for item in self.items:
+            item.setZValue(z_value)
+
+    def draw(self, lens: PlacedLens, colour: str, dashed: bool = False) -> None:
+        """Draw the lens body and outline at its current position and orientation.
+
+        A dashed outline and fainter fill mark the ghost of a lens that is being placed.
+        """
         edge_y, surface_arcs_z = lens_surface_arcs(lens)
 
         # The glass body runs from the first surface to the last; internal cemented surfaces
@@ -114,12 +133,61 @@ class LensGraphics:
         )
         self.outline.setData(outline_z, outline_y)
 
-        self.outline.setPen(pg.mkPen(colour, width=1.8))
-        self.fill.setBrush(pg.mkBrush(colour_with_alpha(colour, 70)))
+        line_style = Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine
+        self.outline.setPen(pg.mkPen(colour, width=1.8, style=line_style))
+        fill_alpha = GHOST_FILL_ALPHA if dashed else LENS_FILL_ALPHA
+        self.fill.setBrush(pg.mkBrush(colour_with_alpha(colour, fill_alpha)))
 
+
+class LensGraphics(LensShape):
+    """A lens on the bench: its shape plus an invisible region that lets it be dragged."""
+
+    def __init__(self, plot_item: pg.PlotItem) -> None:
+        super().__init__(plot_item)
+
+        # The region is invisible; it only provides whole-lens dragging along z. pyqtgraph
+        # derives a hover brush from the normal one, and with a transparent brush that came
+        # out solid black, so the hover brush is set explicitly (also transparent; the
+        # hovered lens itself turns darker instead).
+        transparent = pg.mkBrush(0, 0, 0, 0)
+        self.region = pg.LinearRegionItem(values=(0, 1), movable=True, brush=transparent)
+        self.region.setHoverBrush(transparent)
+        for edge_line in self.region.lines:
+            edge_line.setPen(pg.mkPen(None))
+            edge_line.setMovable(False)
+        self.items.append(self.region)
+        plot_item.addItem(self.region)
+
+    def update(self, lens: PlacedLens, colour: str) -> None:
+        """Redraw the lens and move its drag region to match."""
+        self.draw(lens, colour)
         self.region.blockSignals(True)
         self.region.setRegion((lens.z, lens.back_z))
         self.region.blockSignals(False)
+
+
+@dataclass
+class Placement:
+    """A new lens that is following the pointer, waiting for a click to be put on the bench.
+
+    Attributes
+    ----------
+    lens : PlacedLens
+        The new lens (not yet in the model); its z is kept at the ghost's position.
+    ghost : LensShape
+        Its dashed outline on the plot.
+    fits : bool
+        True if the lens fits at the ghost's current position.
+    """
+
+    lens: PlacedLens
+    ghost: LensShape
+    fits: bool = False
+
+
+def ghost_colour(placement: Placement) -> str:
+    """Lens blue where the new lens fits; red where it does not."""
+    return palette.LENS if placement.fits else palette.GHOST_BLOCKED
 
 
 class SideView(pg.PlotWidget):
@@ -131,10 +199,13 @@ class SideView(pg.PlotWidget):
         A lens or the image plane was dragged; the model has already been updated.
     lens_menu_requested(int, QPoint)
         The user right-clicked lens ``index`` at the given global screen position.
+    placement_finished(bool)
+        Placing a lens ended: True if it was put on the bench, False if cancelled.
     """
 
     changed = pyqtSignal()
     lens_menu_requested = pyqtSignal(int, QPoint)
+    placement_finished = pyqtSignal(bool)
 
     def __init__(self, model: OpticalModel) -> None:
         super().__init__()
@@ -145,6 +216,8 @@ class SideView(pg.PlotWidget):
         self.lens_drag_active = (
             False  # True from the first drag movement until the mouse is released
         )
+
+        self.placement: Placement | None = None  # set while a new lens follows the pointer
 
         style_plot(self, x_label="z (mm)", y_label="y (mm)")
         side = self.getPlotItem()
@@ -165,6 +238,7 @@ class SideView(pg.PlotWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.on_right_click)
         self.scene().sigMouseMoved.connect(self.on_hover)
+        self.scene().sigMouseClicked.connect(self.on_scene_clicked)
         self.viewport().installEventFilter(self)
 
     def _add_items(self, side: pg.PlotItem) -> None:
@@ -376,6 +450,14 @@ class SideView(pg.PlotWidget):
         The tag's box is a shade darker than the lens outline. It is hidden when no lens is
         hovered.
         """
+        # While a lens is being placed, the tag names the ghost instead.
+        if self.placement is not None:
+            if self.placement.ghost.is_visible():
+                self._show_name_tag(self.placement.lens, ghost_colour(self.placement))
+            else:
+                self.name_tag.hide()
+            return
+
         # The tag is not drawn while a lens is being dragged: it would flicker as the hover
         # state changes under the moving lens. It reappears when the drag ends.
         if self.hovered_index is None or self.lens_drag_active:
@@ -383,6 +465,10 @@ class SideView(pg.PlotWidget):
             return
 
         lens = self.model.state.lenses[self.hovered_index]
+        self._show_name_tag(lens, self.lens_colour(self.hovered_index))
+
+    def _show_name_tag(self, lens: PlacedLens, lens_colour: str) -> None:
+        """Put the name tag above ``lens``, in a box a shade darker than ``lens_colour``."""
         plot_item = self.getPlotItem()
         lens_top_centre = plot_item.mapFromScene(
             plot_item.vb.mapViewToScene(QPointF(0.5 * (lens.z + lens.back_z), lens.semi_aperture))
@@ -397,7 +483,7 @@ class SideView(pg.PlotWidget):
         )
 
         self.name_tag.setText(lens.part_number)
-        self.name_tag.box_colour = QColor(self.lens_colour(self.hovered_index)).darker(125)
+        self.name_tag.box_colour = QColor(lens_colour).darker(125)
         self.name_tag.setPos(lens_top_centre.x(), tag_bottom)
         self.name_tag.show()
 
@@ -415,7 +501,14 @@ class SideView(pg.PlotWidget):
         self.image_label.setPos(self.image_line.value(), AXIS_Y_RANGE[1] - 0.01 * y_span)
 
     def on_hover(self, scene_position: QPointF) -> None:
-        """Track the lens under the pointer; show a left/right arrow over anything draggable."""
+        """Track the lens under the pointer; show a left/right arrow over anything draggable.
+
+        While a lens is being placed, move its ghost to the pointer instead.
+        """
+        if self.placement is not None:
+            self.move_ghost(self.placement, scene_position)
+            return
+
         view_point = self.getPlotItem().vb.mapSceneToView(scene_position)
         hovered_index = self.lens_index_at(view_point)
         self.set_hovered_lens(hovered_index)
@@ -430,8 +523,90 @@ class SideView(pg.PlotWidget):
         """Clear the hover when the pointer leaves the view (no mouse-move event is sent then)."""
         if watched is self.viewport() and event.type() == QEvent.Type.Leave:
             self.set_hovered_lens(None)
-            self.viewport().unsetCursor()
+            if self.placement is not None:
+                self.placement.ghost.set_visible(False)
+                self.place_name_tag()
+            else:
+                self.viewport().unsetCursor()
         return super().eventFilter(watched, event)
+
+    # ------------------------------------------------------------ placing a new lens
+
+    def start_placement(self, new_lens: PlacedLens) -> None:
+        """Let the user put ``new_lens`` on the axis: its ghost follows the pointer.
+
+        The lens is not in the model until the user clicks. Lenses on the bench cannot be
+        dragged meanwhile, so a click near one places the new lens rather than moving it.
+        """
+        self.cancel_placement()  # in case a previous placement is still going on
+        ghost = LensShape(self.getPlotItem())
+        ghost.set_z_value(GHOST_Z_VALUE)
+        ghost.set_visible(False)  # shown once the pointer is over the plot
+        self.placement = Placement(lens=new_lens, ghost=ghost)
+
+        for graphics in self.lens_graphics:
+            graphics.region.setMovable(False)
+        self.set_hovered_lens(None)
+        self.viewport().setCursor(Qt.CursorShape.CrossCursor)
+
+        # If the pointer is already over the plot, show the ghost there straight away.
+        pointer_in_view = self.viewport().mapFromGlobal(QCursor.pos())
+        if self.viewport().rect().contains(pointer_in_view):
+            self.move_ghost(self.placement, self.mapToScene(pointer_in_view))
+
+    def move_ghost(self, placement: Placement, scene_position: QPointF) -> None:
+        """Centre the ghost on the pointer's z, snapped into the nearest gap it fits in.
+
+        The ghost is hidden while the pointer is outside the plotting area (e.g. over an
+        axis). Where the lens fits nowhere, the ghost is drawn red under the pointer.
+        """
+        view_box = self.getPlotItem().vb
+        if not view_box.sceneBoundingRect().contains(scene_position):
+            placement.ghost.set_visible(False)
+            self.place_name_tag()
+            return
+
+        lens = placement.lens
+        pointer_z = view_box.mapSceneToView(scene_position).x()
+        requested_front_z = pointer_z - lens.thickness / 2.0
+        free_front_z = self.model.free_front_z(
+            lens.thickness, requested_front_z, max_back_z=IMAGE_MAX_Z - MIN_IMAGE_GAP_MM
+        )
+        placement.fits = free_front_z is not None
+        lens.z = requested_front_z if free_front_z is None else free_front_z
+
+        placement.ghost.draw(lens, ghost_colour(placement), dashed=True)
+        placement.ghost.set_visible(True)
+        self.place_name_tag()
+
+    def on_scene_clicked(self, event) -> None:
+        """While placing: a left click puts the lens where its ghost is, if it fits there."""
+        placement = self.placement
+        if placement is None or event.button() != Qt.MouseButton.LeftButton:
+            return
+        self.move_ghost(placement, event.scenePos())  # the ghost may lag a fast click
+        if not (placement.fits and placement.ghost.is_visible()):
+            return
+        self._end_placement(placement)
+        self.model.insert_lens(placement.lens, max_image_z=IMAGE_MAX_Z)
+        self.rebuild_lens_graphics()
+        self.changed.emit()
+        self.placement_finished.emit(True)
+
+    def cancel_placement(self) -> None:
+        """Stop placing a lens without adding it (Escape or right click)."""
+        if self.placement is not None:
+            self._end_placement(self.placement)
+            self.placement_finished.emit(False)
+
+    def _end_placement(self, placement: Placement) -> None:
+        """Remove the ghost and make the lenses on the bench draggable again."""
+        placement.ghost.remove()
+        self.placement = None
+        for graphics in self.lens_graphics:
+            graphics.region.setMovable(True)
+        self.viewport().unsetCursor()
+        self.name_tag.hide()
 
     # ------------------------------------------------------------ user interaction
 
@@ -448,7 +623,10 @@ class SideView(pg.PlotWidget):
             self.viewport().unsetCursor()
 
     def on_right_click(self, _widget_position) -> None:
-        """Ask for the lens menu if the pointer is over a lens (nothing happens otherwise)."""
+        """Ask for the lens menu if the pointer is over a lens; cancel placing a lens."""
+        if self.placement is not None:
+            self.cancel_placement()
+            return
         global_position = QCursor.pos()
         scene_position = self.mapToScene(self.viewport().mapFromGlobal(global_position))
         lens_index = self.lens_index_at(self.getPlotItem().vb.mapSceneToView(scene_position))
