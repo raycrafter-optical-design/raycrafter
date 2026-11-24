@@ -16,7 +16,7 @@ def main() -> None:
     from PyQt6.QtWidgets import QApplication
 
     from raycrafter.gui.compile_notice import announce_numba_compilation
-    from raycrafter.gui.style import make_app_icon
+    from raycrafter.gui.style import force_light_colour_scheme, make_app_icon
 
     # Importing Optiland (via the core model) is by far the slowest import, typically several
     # seconds and much longer on a cold disk cache, so it gets its own message.
@@ -28,6 +28,7 @@ def main() -> None:
 
     app = QApplication(sys.argv)
     app.setApplicationName("RayCrafter")
+    force_light_colour_scheme(app)
     app.setWindowIcon(make_app_icon())
 
     # The first ray trace can make numba compile the optics code, which takes minutes. It does so

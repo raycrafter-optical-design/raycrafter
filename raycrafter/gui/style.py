@@ -12,6 +12,7 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PyQt6.QtWidgets import QApplication
 
 from raycrafter import palette
 
@@ -138,6 +139,16 @@ def write_combo_arrow_image() -> str:
     arrow_path = Path(tempfile.gettempdir()) / "raycrafter_combo_arrow.png"
     pixmap.save(str(arrow_path))
     return arrow_path.as_posix()
+
+
+def force_light_colour_scheme(app: QApplication) -> None:
+    """Make Qt use its light palette whatever the operating system's light/dark setting is.
+
+    The style sheet paints light backgrounds but leaves most text colours to the palette. With
+    Windows 11 in dark mode the palette gives white text, so buttons became white on white.
+    The whole design is light, so we pin the scheme instead of following the system.
+    """
+    app.styleHints().setColorScheme(Qt.ColorScheme.Light)
 
 
 def style_sheet() -> str:
