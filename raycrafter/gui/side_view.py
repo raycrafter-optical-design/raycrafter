@@ -28,8 +28,10 @@ from raycrafter import palette
 from raycrafter.core.analysis import RayPaths
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import (
-    AXIS_Y_RANGE,
-    AXIS_Z_RANGE,
+    DEFAULT_AXIS_Y_RANGE,
+    DEFAULT_AXIS_Z_RANGE,
+    IMAGE_EDGE_GAP_MM,
+    axis_ranges,
     lens_surface_arcs,
     ray_polylines,
 )
@@ -43,7 +45,6 @@ from raycrafter.gui.style import (
 )
 
 MIN_IMAGE_GAP_MM = 1.0  # the image plane stays at least this far behind the last lens
-IMAGE_MAX_Z = AXIS_Z_RANGE[1] - 5.0  # the image plane cannot be dragged closer to the edge
 SIDE_PLOT_MIN_HEIGHT_PX = 240  # the side view is never squeezed below this height
 SIDE_PLOT_TOP_GAP_PX = 8  # space between the top edge and the top of the y axis
 SIDE_GRID_CELL_PX = 40  # grid cells are this many screen pixels on each side
@@ -249,6 +250,10 @@ def ghost_colour(placement: Placement) -> str:
 class SideView(pg.PlotWidget):
     """The optical axis, drawn to scale, with draggable lenses and image plane.
 
+    The view shows the whole design: ``fit_to_design`` widens it for a design too long or
+    tall for the default range (see ``plot_geometry.axis_ranges``). It is called by the main
+    window after each change, but not during a drag, so the axes stay still under the mouse.
+
     Signals
     -------
     changed
@@ -278,14 +283,18 @@ class SideView(pg.PlotWidget):
 
         self.placement: Placement | None = None  # set while a new lens follows the pointer
 
+        # The (min, max) of each axis, in mm; changed only by fit_to_design.
+        self.z_range: tuple[float, float] = DEFAULT_AXIS_Z_RANGE
+        self.y_range: tuple[float, float] = DEFAULT_AXIS_Y_RANGE
+
         style_plot(self, x_label="z (mm)", y_label="y (mm)")
         side = self.getPlotItem()
         # With no title the y axis would run right up to the top border; a few pixels of top
         # margin keep the plot visibly inside the frame.
         side.layout.setContentsMargins(0, SIDE_PLOT_TOP_GAP_PX, 0, PLOT_BOTTOM_GAP_PX)
         side.showGrid(x=False, y=False)  # turn off the default grid; a square one is drawn below
-        side.setXRange(*AXIS_Z_RANGE, padding=0)
-        side.setYRange(*AXIS_Y_RANGE, padding=0)
+        side.setXRange(*self.z_range, padding=0)
+        side.setYRange(*self.y_range, padding=0)
         side.addLine(y=0, pen=pg.mkPen(palette.AXIS_LINE, width=1, style=Qt.PenStyle.DashLine))
         self.setMinimumHeight(SIDE_PLOT_MIN_HEIGHT_PX)
 
@@ -332,9 +341,7 @@ class SideView(pg.PlotWidget):
         # Trace and draw timings: small grey text in the top-right corner. Its font size is
         # set in showEvent, once the style sheet has fixed the size of the axis numbers.
         self.timing_label = pg.TextItem(color=palette.TIMING, anchor=(1, 0))
-        z_span = AXIS_Z_RANGE[1] - AXIS_Z_RANGE[0]
-        y_span = AXIS_Y_RANGE[1] - AXIS_Y_RANGE[0]
-        self.timing_label.setPos(AXIS_Z_RANGE[1] - 0.01 * z_span, AXIS_Y_RANGE[1] - 0.04 * y_span)
+        self.place_timing_label()
         self.timing_label.setZValue(50)
         side.addItem(self.timing_label, ignoreBounds=True)
 
@@ -362,6 +369,26 @@ class SideView(pg.PlotWidget):
         return pg.mkPen(palette.IMAGE, width=3, style=Qt.PenStyle.DashLine)
 
     # ------------------------------------------------------------------ drawing
+
+    def fit_to_design(self) -> None:
+        """Set the axis ranges to show the whole design, and move the grid and labels to match.
+
+        Nothing is redrawn if the ranges are unchanged, which is the usual case.
+        """
+        z_range, y_range = axis_ranges(self.model.state)
+        if (z_range, y_range) == (self.z_range, self.y_range):
+            return
+        self.z_range, self.y_range = z_range, y_range
+        side = self.getPlotItem()
+        side.setXRange(*z_range, padding=0)
+        side.setYRange(*y_range, padding=0)
+        self.update_grid()
+        self.place_timing_label()
+        self.place_image_label()
+
+    def image_max_z(self) -> float:
+        """The furthest z (mm) the image plane can be dragged to: just inside the right edge."""
+        return self.z_range[1] - IMAGE_EDGE_GAP_MM
 
     def rebuild_lens_graphics(self) -> None:
         """Recreate one set of graphics items per lens (after the lens list changes)."""
@@ -441,8 +468,8 @@ class SideView(pg.PlotWidget):
         if width_px <= 0 or height_px <= 0:
             return
 
-        z_min, z_max = AXIS_Z_RANGE
-        y_min, y_max = AXIS_Y_RANGE
+        z_min, z_max = self.z_range
+        y_min, y_max = self.y_range
         cell_z_mm = SIDE_GRID_CELL_PX * (z_max - z_min) / width_px
         cell_y_mm = SIDE_GRID_CELL_PX * (y_max - y_min) / height_px
 
@@ -582,8 +609,14 @@ class SideView(pg.PlotWidget):
 
     def place_image_label(self, *_args) -> None:
         """Put the "image" caption just inside the top of the plot, centred on the image line."""
-        y_span = AXIS_Y_RANGE[1] - AXIS_Y_RANGE[0]
-        self.image_label.setPos(self.image_line.value(), AXIS_Y_RANGE[1] - 0.01 * y_span)
+        y_span = self.y_range[1] - self.y_range[0]
+        self.image_label.setPos(self.image_line.value(), self.y_range[1] - 0.01 * y_span)
+
+    def place_timing_label(self) -> None:
+        """Put the trace and draw timings just inside the top-right corner of the plot."""
+        z_span = self.z_range[1] - self.z_range[0]
+        y_span = self.y_range[1] - self.y_range[0]
+        self.timing_label.setPos(self.z_range[1] - 0.01 * z_span, self.y_range[1] - 0.04 * y_span)
 
     def on_hover(self, scene_position: QPointF) -> None:
         """Track the lens under the pointer; show a left/right arrow over anything draggable.
@@ -655,7 +688,7 @@ class SideView(pg.PlotWidget):
         pointer_z = view_box.mapSceneToView(scene_position).x()
         requested_front_z = pointer_z - lens.thickness / 2.0
         free_front_z = self.model.free_front_z(
-            lens.thickness, requested_front_z, max_back_z=IMAGE_MAX_Z - MIN_IMAGE_GAP_MM
+            lens.thickness, requested_front_z, max_back_z=self.image_max_z() - MIN_IMAGE_GAP_MM
         )
         placement.fits = free_front_z is not None
         lens.z = requested_front_z if free_front_z is None else free_front_z
@@ -673,7 +706,7 @@ class SideView(pg.PlotWidget):
         if not (placement.fits and placement.ghost.is_visible()):
             return
         self._end_placement(placement)
-        self.model.insert_lens(placement.lens, max_image_z=IMAGE_MAX_Z)
+        self.model.insert_lens(placement.lens, max_image_z=self.image_max_z())
         self.rebuild_lens_graphics()
         self.changed.emit()
         self.placement_finished.emit(True)
@@ -747,6 +780,6 @@ class SideView(pg.PlotWidget):
     def on_image_dragged(self) -> None:
         """The image line was dragged: keep it behind the last lens and inside the view."""
         state = self.model.state
-        minimum_z = state.last_back_z() + MIN_IMAGE_GAP_MM if state.lenses else AXIS_Z_RANGE[0]
-        state.image_z = float(np.clip(self.image_line.value(), minimum_z, IMAGE_MAX_Z))
+        minimum_z = state.last_back_z() + MIN_IMAGE_GAP_MM if state.lenses else self.z_range[0]
+        state.image_z = float(np.clip(self.image_line.value(), minimum_z, self.image_max_z()))
         self.changed.emit()

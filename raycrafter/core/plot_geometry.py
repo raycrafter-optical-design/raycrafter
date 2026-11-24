@@ -11,11 +11,45 @@ import numpy as np
 
 from raycrafter.core.analysis import FNumberResult, RayPaths, SpotResult, airy_radius
 from raycrafter.core.prescription import surface_sag
-from raycrafter.core.state import PlacedLens
+from raycrafter.core.state import AXIS_START_Z, OpticalState, PlacedLens
 
-AXIS_Z_RANGE = (0.0, 450.0)  # mm of optical axis shown in the side view
-AXIS_Y_RANGE = (-32.0, 32.0)  # mm either side of the axis shown in the side view
+DEFAULT_AXIS_Z_RANGE = (AXIS_START_Z, 450.0)  # mm of optical axis shown for a design that fits
+DEFAULT_AXIS_Y_RANGE = (-32.0, 32.0)  # mm either side of the axis shown for a design that fits
+IMAGE_EDGE_GAP_MM = 5.0  # the image plane is kept at least this far inside the right edge
+AXIS_Z_ROOM_FRACTION = 0.1  # a design too long for the default is shown with 10% spare axis
+AXIS_Y_ROOM_FRACTION = 0.15  # space above the tallest lens, as a fraction of its semi-aperture
 MIN_SPOT_HALF_WIDTH_UM = 5.0  # the spot plot never zooms in beyond +/-5 um
+
+
+def axis_ranges(state: OpticalState) -> tuple[tuple[float, float], tuple[float, float]]:
+    """The z and y ranges (mm) of the side view that show the whole design.
+
+    A design that fits in the default ranges (0-450 mm of axis, +/-32 mm) is shown in
+    them, so the view of ordinary designs never changes. A longer design is shown up to 10%
+    beyond its image plane (or last lens), which leaves room to drag the image plane
+    further. A taller design is shown with some space above and below its tallest lens.
+    Rays are not considered: they can diverge without limit after the last lens.
+
+    Parameters
+    ----------
+    state : OpticalState
+        The bench to fit.
+
+    Returns
+    -------
+    z_range, y_range : tuple of (float, float)
+        The (min, max) of each axis, in mm.
+    """
+    content_end_z = max(state.image_z, state.last_back_z())
+    z_max = DEFAULT_AXIS_Z_RANGE[1]
+    if content_end_z > z_max - IMAGE_EDGE_GAP_MM:
+        z_max = content_end_z + AXIS_Z_ROOM_FRACTION * (content_end_z - AXIS_START_Z)
+
+    tallest_semi_aperture = max((lens.semi_aperture for lens in state.lenses), default=0.0)
+    y_half_height = max(
+        DEFAULT_AXIS_Y_RANGE[1], tallest_semi_aperture * (1.0 + AXIS_Y_ROOM_FRACTION)
+    )
+    return (DEFAULT_AXIS_Z_RANGE[0], z_max), (-y_half_height, y_half_height)
 
 
 def lens_surface_arcs(lens: PlacedLens, point_count: int = 60) -> tuple[np.ndarray, list]:
