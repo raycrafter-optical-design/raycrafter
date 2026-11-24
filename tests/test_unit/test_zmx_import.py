@@ -199,8 +199,10 @@ def test_apertures_in_the_file_are_read_reported_or_respected(tmp_path):
     assert "12 x 16 mm rectangular aperture" in notes
     assert "no clear aperture" not in notes
 
-    assert paraxial.semi_aperture > 1.0
-    assert "widened from the file's 2 mm" in notes
+    # Kept at its drawn size, which blocks rays Zemax would let through; the user is told.
+    assert paraxial.semi_aperture == pytest.approx(1.0)
+    assert "Paraxial f=+50 mm has no aperture in the file" in notes
+    assert "RayCrafter blocks rays outside the size the file draws it (2 mm across)" in notes
 
     assert 'Surface 4 ("baffle") has a 10 mm round aperture in air' in notes
     assert "it blocks some of the file's rays" in notes

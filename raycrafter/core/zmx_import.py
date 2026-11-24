@@ -21,14 +21,14 @@ stop, so it reaches the first lens off axis; otherwise the beams are centred on 
 lens, as RayCrafter's own fields are.
 
 Clear apertures: Zemax blocks rays only at surfaces with an aperture (CLAP, FLAP, SQAP);
-a semi-diameter (DIAM) only sets the drawn size. RayCrafter blocks rays at every lens rim,
-so a lens without an aperture in the file is made big enough that none of the file's own
-rays are blocked by it. Apertures on surfaces in air cannot be modelled and are reported.
+a semi-diameter (DIAM) only sets the drawn size. RayCrafter blocks rays at every lens rim.
+A lens with no aperture in the file keeps its catalogue or drawn size, which is usually the
+real one, and the user is told if that blocks rays Zemax lets through. Apertures on surfaces
+in air cannot be modelled and are reported.
 """
 
 from __future__ import annotations
 
-import math
 import re
 import warnings
 from dataclasses import dataclass, field
@@ -54,7 +54,6 @@ RADIUS_TOLERANCE = 1e-6  # relative; radii match the catalogue when this close
 THICKNESS_TOLERANCE_MM = 1e-3
 SEMI_APERTURE_TOLERANCE_MM = 0.01
 RAY_CHECK_RINGS = 6  # hexapolar rings per field and wavelength when checking apertures
-APERTURE_STEP_MM = 0.1  # a widened aperture is rounded up to a multiple of this
 
 
 class ZmxImportError(ValueError):
@@ -117,7 +116,7 @@ def load_zmx(file_path: str, catalog: dict[str, CatalogEntry]) -> ZmxImport:
         fields = _fields_from_optic(optic, first_lens_z, first_lens_surface, notes)
 
         ray_extent = _traced_ray_extent(optic)
-        _fit_lenses_without_apertures(grouping, ray_extent, notes)
+        _note_lenses_that_block_more_than_zemax(grouping, ray_extent, notes)
         _note_apertures_in_air(grouping.air_apertures, ray_extent, notes)
 
         state = OpticalState(lenses=grouping.lenses, image_z=grouping.image_z, fields=fields)
@@ -599,46 +598,38 @@ def _largest_arriving(values: np.ndarray, arrived: np.ndarray) -> np.ndarray:
     return np.nanmax(np.where(arrived, values, 0.0), axis=1)
 
 
-def _fit_lenses_without_apertures(
+def _note_lenses_that_block_more_than_zemax(
     grouping: SurfaceGrouping, ray_extent: RayExtent | None, notes: list[str]
 ) -> None:
-    """Make lenses that have no aperture in the file big enough not to block the file's rays.
+    """Tell the user where RayCrafter blocks rays that Zemax lets through.
 
-    Zemax does not block rays at such a lens, but RayCrafter blocks them at every lens rim.
-    An imported or paraxial lens is therefore widened to pass every ray of the file's
-    fields. A catalogue lens keeps its real size, and the user is told if it blocks rays.
+    Zemax blocks rays only at surfaces with an aperture; a lens with none in the file is
+    just drawn at its semi-diameter. RayCrafter blocks rays at every lens rim, and keeps the
+    lens's size as it is: its catalogue size, or the size the file draws it. That size is
+    often the real one (e.g. an objective's back aperture), so it is not enlarged to match
+    Zemax; the difference is reported instead.
     """
     for lens, numbers, file_has_aperture in zip(
         grouping.lenses, grouping.lens_surface_numbers, grouping.lens_has_file_aperture
     ):
         if file_has_aperture:
             continue  # Zemax blocks rays at the file's aperture too
-        is_catalogue_lens = not lens.part_number.startswith(("Imported", "Paraxial"))
-        if ray_extent is None:
-            if not is_catalogue_lens:
-                notes.append(
-                    f"{lens.part_number} has no aperture in the file; it was given a "
-                    f"{2 * lens.semi_aperture:g} mm diameter, which may block rays that "
-                    "Zemax would let through."
-                )
-            continue
-
-        widest_ray_mm = float(max(ray_extent.radius[number] for number in numbers))
-        if widest_ray_mm <= lens.semi_aperture:
-            continue
-        if is_catalogue_lens:
-            notes.append(
-                f"Some of the file's rays pass outside {lens.part_number} "
-                f"({2 * lens.semi_aperture:g} mm across); RayCrafter blocks them, Zemax does not."
+        if ray_extent is not None:
+            widest_ray_mm = float(max(ray_extent.radius[number] for number in numbers))
+            if widest_ray_mm <= lens.semi_aperture:
+                continue  # no difference from Zemax
+            effect = (
+                f"some of the file's rays reach {widest_ray_mm:.1f} mm from the axis there, "
+                "so RayCrafter blocks rays that Zemax lets through"
             )
-            continue
-        drawn_mm = lens.semi_aperture
-        steps = math.ceil(widest_ray_mm / APERTURE_STEP_MM)
-        lens.semi_aperture = round(steps * APERTURE_STEP_MM, 6)  # 11.6, not 11.600000000000001
+        else:
+            effect = "this may block rays that Zemax lets through"
+        is_catalogue_lens = not lens.part_number.startswith(("Imported", "Paraxial"))
+        size = "its catalogue size" if is_catalogue_lens else "the size the file draws it"
         notes.append(
-            f"{lens.part_number} has no aperture in the file, so Zemax blocks no rays there; "
-            f"it was widened from the file's {2 * drawn_mm:g} mm to "
-            f"{2 * lens.semi_aperture:g} mm so that it does not block any either."
+            f"{lens.part_number} has no aperture in the file, so Zemax blocks no rays there. "
+            f"RayCrafter blocks rays outside {size} ({2 * lens.semi_aperture:g} mm across); "
+            f"{effect}."
         )
 
 
