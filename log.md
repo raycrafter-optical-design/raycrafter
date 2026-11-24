@@ -201,3 +201,31 @@ come back; unmatched lenses keep their prescription as "Imported lens N". Paraxi
 become paraxial lenses. Aspheres, conics, mirrors and tilts are refused. Fields are rebuilt
 from the EPD, object distance, angles and wavelengths, with any simplification reported.
 **Why:** Matching keeps designs editable as catalogue parts. Lossy parts are parked (#11, #12).
+
+## 2026-11-24: The side view fits the design (#17)
+**Decision:** The side view and report keep 0-450 mm x ±32 mm for designs that fit, and
+otherwise reach 10% beyond the image plane (and above the tallest lens). The view is refitted
+after each update, but never during a drag, so the axes do not move under the mouse.
+**Why:** Fixed axes cut off long systems such as SMOD4.5 (760 mm). Fitting to rays was
+rejected: they diverge without limit after the last lens.
+
+## 2026-11-24: ZMX fields are aimed through the stop (#18)
+**Decision:** When a file's stop is in air in front of the first lens, each field's offset is
+(stop to lens distance) x tan(angle), so its chief ray crosses the axis at the stop; the
+EPD is scaled to the beam's width at the lens. Otherwise fields stay centred on the lens.
+**Why:** Scanning systems pivot at the scan mirror. RayCrafter then matches Optiland's trace
+of SMOD4.5 exactly. Field curvature and MTF still ignore the pivot (#24, #10).
+
+## 2026-11-24: Imported lens sizes are kept, and differences from Zemax reported (#20)
+**Decision:** A lens keeps its catalogue size, or the file's drawn size (DIAM) when it has no
+aperture, even though Zemax blocks rays only at apertures. A note says when RayCrafter
+therefore blocks rays that Zemax passes. SQAP, DIAM and COMM are read from the file text,
+because Optiland 0.6.3 skips them (see `pilot/load/optiland_zmx_reader_gaps.md`).
+**Why:** Rob's choice. Widening lenses to match Zemax was tried and rejected: the drawn size
+is often the real one (SMOD4.5's objective back aperture), and resizing would hide clipping.
+
+## 2026-11-24: Imported fields are coloured by angle (#21)
+**Decision:** A ZMX file with several field angles loads with one colour per angle, in
+Zemax's order (`palette.FIELD_COLOURS`). Extra wavelengths share the 0 degree field's colour.
+**Why:** Rob's choice. Wavelength colours could not tell the fields apart (same wavelength,
+or all infrared). Doing the same for fields made in RayCrafter is #25.
