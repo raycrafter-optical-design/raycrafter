@@ -10,8 +10,20 @@ while the window is open.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QIcon, QPixmap
+import math
+
+from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import (
+    QBrush,
+    QColor,
+    QConicalGradient,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QColorDialog,
@@ -31,6 +43,20 @@ from raycrafter.core.state import BeamField
 
 SWATCH_SIZE_PX = 12  # the colour square beside each field in the list
 LIST_WIDTH_PX = 110
+SPIN_BOX_WIDTH_PX = 100  # every value box has this width, so the form lines up
+STRIP_BUTTON_SIZE_PX = (18, 15)  # the small square "+" and "-" under the list
+
+# Square-cornered buttons, joined to the list like the add/remove strip under a macOS list.
+STRIP_BUTTON_STYLE = """
+QPushButton {
+    border: 1px solid palette(mid);
+    border-radius: 0px;
+    background: palette(button);
+    padding: 0px;
+}
+QPushButton:pressed { background: palette(mid); }
+QPushButton:disabled { color: palette(mid); }
+"""
 
 # The editable properties: (BeamField attribute, label, minimum, maximum, step, decimals).
 FIELD_PROPERTIES = [
@@ -40,6 +66,55 @@ FIELD_PROPERTIES = [
     ("offset_mm", "Offset (mm)", -30.0, 30.0, 0.5, 1),
     ("wavelength_nm", "Wavelength (nm)", 300.0, 2000.0, 5.0, 0),
 ]
+
+
+def reset_colour_icon(size_px: int = 64) -> QIcon:
+    """A colour wheel with a circular "reset" arrow drawn over it."""
+    pixmap = QPixmap(size_px, size_px)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    centre = QPointF(size_px / 2, size_px / 2)
+
+    # The wheel: a full hue circle.
+    wheel = QConicalGradient(centre, 0)
+    for step in range(7):
+        wheel.setColorAt(step / 6, QColor.fromHsv(int(step / 6 * 359) % 360, 255, 255))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QBrush(wheel))
+    margin = size_px * 0.06
+    painter.drawEllipse(QRectF(margin, margin, size_px - 2 * margin, size_px - 2 * margin))
+
+    # The arrow: an open arc (gap at the top right) with a head, drawn dark on a white halo
+    # so it shows against every hue.
+    radius = size_px * 0.3
+    arc_rect = QRectF(centre.x() - radius, centre.y() - radius, 2 * radius, 2 * radius)
+    start_deg, span_deg = 60, 280  # Qt angles: counter-clockwise from 3 o'clock
+    arc = QPainterPath()
+    arc.arcMoveTo(arc_rect, start_deg)
+    arc.arcTo(arc_rect, start_deg, span_deg)
+    end_angle = math.radians(start_deg + span_deg)
+    tip = QPointF(
+        centre.x() + radius * math.cos(end_angle), centre.y() - radius * math.sin(end_angle)
+    )
+    # Direction of travel at the end of a counter-clockwise arc.
+    direction = QPointF(-math.sin(end_angle), -math.cos(end_angle))
+    normal = QPointF(-direction.y(), direction.x())
+    head = size_px * 0.2
+    head_polygon = QPolygonF(
+        [
+            QPointF(tip.x() + direction.x() * head * 0.6, tip.y() + direction.y() * head * 0.6),
+            QPointF(tip.x() + normal.x() * head * 0.8, tip.y() + normal.y() * head * 0.8),
+            QPointF(tip.x() - normal.x() * head * 0.8, tip.y() - normal.y() * head * 0.8),
+        ]
+    )
+    for colour, width in ((QColor("white"), size_px * 0.17), (QColor("#222222"), size_px * 0.08)):
+        painter.setPen(QPen(colour, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.setBrush(QBrush(colour))
+        painter.strokePath(arc, painter.pen())
+        painter.drawPolygon(head_polygon)
+    painter.end()
+    return QIcon(pixmap)
 
 
 def colour_swatch(colour: str) -> QIcon:
@@ -78,9 +153,11 @@ class FieldEditor(QDialog):
 
         self.field_list = QListWidget()
         self.field_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.field_list.setFixedWidth(LIST_WIDTH_PX)
         self.add_button = QPushButton("+")
         self.remove_button = QPushButton("−")  # a minus sign, the width of the "+"
+        for button in (self.add_button, self.remove_button):
+            button.setFixedSize(*STRIP_BUTTON_SIZE_PX)
+            button.setStyleSheet(STRIP_BUTTON_STYLE)
         self.add_button.setToolTip("Add a field: a copy of the selected one")
         self.remove_button.setToolTip("Remove the selected fields")
 
@@ -91,6 +168,7 @@ class FieldEditor(QDialog):
             box.setRange(minimum, maximum)
             box.setSingleStep(step)
             box.setDecimals(decimals)
+            box.setFixedWidth(SPIN_BOX_WIDTH_PX)
             # Bind the attribute name now; the lambda would otherwise see the loop's last one.
             box.valueChanged.connect(
                 lambda value, attribute=attribute: self.set_field_value(attribute, value)
@@ -98,12 +176,22 @@ class FieldEditor(QDialog):
             self.value_boxes[attribute] = box
             form.addRow(label, box)
 
-        self.colour_button = QPushButton("Choose...")
+        # The colour is a filled rectangle (click to change it), followed by a small square
+        # button that goes back to the colour of the wavelength. Together they are as wide
+        # as a spin box, so the form's right edge stays close to the boxes.
+        self.colour_button = QPushButton()
         self.colour_button.setToolTip("Draw this beam in a colour of your choice")
-        self.auto_colour_button = QPushButton("From wavelength")
-        self.auto_colour_button.setToolTip("Draw this beam in the colour of its wavelength")
+        self.auto_colour_button = QPushButton()
+        self.auto_colour_button.setIcon(reset_colour_icon())
+        self.auto_colour_button.setToolTip("Reset: draw this beam in the colour of its wavelength")
+        button_height_px = self.value_boxes["wavelength_nm"].sizeHint().height()
+        self.auto_colour_button.setFixedSize(button_height_px, button_height_px)
+        self.auto_colour_button.setIconSize(self.auto_colour_button.size() * 0.8)
+        self.colour_button.setFixedHeight(button_height_px)
         colour_row = QHBoxLayout()
-        colour_row.addWidget(self.colour_button)
+        colour_row.setContentsMargins(0, 0, 0, 0)
+        colour_row.setSpacing(4)
+        colour_row.addWidget(self.colour_button, 1)
         colour_row.addWidget(self.auto_colour_button)
         form.addRow("Colour", colour_row)
 
@@ -117,11 +205,16 @@ class FieldEditor(QDialog):
         self.refresh()
 
     def _lay_out(self, form: QFormLayout) -> None:
-        """The list with its +/- buttons on the left, the form on the right."""
+        """The list with its +/- strip directly below it on the left, the form on the right."""
+        # No gaps: the buttons sit tight against the list's bottom edge and each other, and
+        # a stretch keeps them at the left rather than spread across the column.
         plus_minus_row = QHBoxLayout()
+        plus_minus_row.setSpacing(0)
         plus_minus_row.addWidget(self.add_button)
         plus_minus_row.addWidget(self.remove_button)
+        plus_minus_row.addStretch(1)
         list_column = QVBoxLayout()
+        list_column.setSpacing(0)
         list_column.addWidget(self.field_list)
         list_column.addLayout(plus_minus_row)
 
@@ -129,7 +222,16 @@ class FieldEditor(QDialog):
         form_column.addLayout(form)
         form_column.addStretch(1)
 
+        # The list grows towards the window's left and top edges, which are a third of their
+        # usual distance away; the form and the list's right and bottom edges stay put.
         layout = QHBoxLayout(self)
+        margins = layout.contentsMargins()
+        extra_px = margins.left() * 2 // 3
+        layout.setContentsMargins(
+            margins.left() - extra_px, margins.top() - extra_px, margins.right(), margins.bottom()
+        )
+        form_column.setContentsMargins(0, extra_px, 0, 0)
+        self.field_list.setFixedWidth(LIST_WIDTH_PX + extra_px)
         layout.addLayout(list_column)
         layout.addLayout(form_column)
 
@@ -155,6 +257,14 @@ class FieldEditor(QDialog):
             box.blockSignals(True)
             box.setValue(getattr(beam, attribute))
             box.blockSignals(False)
+        self._show_colour(beam)
+
+    def _show_colour(self, beam: BeamField) -> None:
+        """Fill the colour rectangle with the field's colour; enable reset if it is its own."""
+        self.colour_button.setStyleSheet(
+            f"QPushButton {{ background-color: {beam.display_colour()}; "
+            "border: 1px solid palette(mid); border-radius: 0px; }"
+        )
         self.auto_colour_button.setEnabled(beam.colour is not None)
 
     def update_remove_button(self) -> None:
@@ -197,6 +307,7 @@ class FieldEditor(QDialog):
         setattr(self.model.state.selected_field, attribute, float(value))
         if attribute == "wavelength_nm":
             self._update_current_swatch()
+            self._show_colour(self.model.state.selected_field)
         self.fields_changed.emit()
 
     def choose_colour(self) -> None:
@@ -213,6 +324,6 @@ class FieldEditor(QDialog):
     def set_colour(self, colour: str | None) -> None:
         """Set the selected field's own colour (None for the colour of its wavelength)."""
         self.model.state.selected_field.colour = colour
-        self.auto_colour_button.setEnabled(colour is not None)
+        self._show_colour(self.model.state.selected_field)
         self._update_current_swatch()
         self.fields_changed.emit()
