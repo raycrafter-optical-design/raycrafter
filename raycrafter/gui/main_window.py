@@ -27,10 +27,8 @@ dragged (a lens or the image plane):
 
 from __future__ import annotations
 
-import copy
 import time
 from collections.abc import Callable
-from dataclasses import replace
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QPoint, Qt, QTimer, QUrl
@@ -56,7 +54,7 @@ from raycrafter import palette
 from raycrafter.core.analysis import FastTrace, airy_radius
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
-from raycrafter.core.state import OpticalState, PlacedLens
+from raycrafter.core.state import PlacedLens
 from raycrafter.core.zmx_import import ZmxImportError
 from raycrafter.gui.about_dialog import DOCS_URL, AboutDialog
 from raycrafter.gui.analysis_panels import (
@@ -120,9 +118,9 @@ class MainWindow(QMainWindow):
         self.side_view.rebuild_lens_graphics()
         self.recompute_and_redraw()
 
-        # The design as last saved or loaded (at first, the start-up bench): New, Load and
-        # Quit ask before throwing away a design that differs from it.
-        self.saved_state: OpticalState = copy.deepcopy(self.model.state)
+        # The start-up bench (after its autofocus) counts as saved: New, Load and Quit ask
+        # before throwing away a design that differs from the saved one.
+        self.model.mark_saved()
 
     # ------------------------------------------------------------------ setup
 
@@ -442,18 +440,6 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ files
 
-    def has_unsaved_changes(self) -> bool:
-        """True if the design differs from the one last saved or loaded.
-
-        Which field is selected is not saved in a ZMX file, so it is not compared.
-        """
-        current = replace(self.model.state, selected_field_index=0)
-        return current != replace(self.saved_state, selected_field_index=0)
-
-    def mark_saved(self) -> None:
-        """Remember the current design as saved (after Save, Load or New)."""
-        self.saved_state = copy.deepcopy(self.model.state)
-
     def confirm_discard_changes(self, action_text: str) -> bool:
         """If there are unsaved changes, ask whether to save them first.
 
@@ -467,7 +453,7 @@ class MainWindow(QMainWindow):
         bool
             True to go ahead (nothing to lose, saved, or discarded); False to stop.
         """
-        if not self.has_unsaved_changes():
+        if not self.model.has_unsaved_changes():
             return True
         answer = QMessageBox.question(
             self,
@@ -496,7 +482,6 @@ class MainWindow(QMainWindow):
         if not self.confirm_discard_changes("starting a new design"):
             return
         self.model.new_design()
-        self.mark_saved()
         self.show_new_design()
 
     def load_zmx(self) -> None:
@@ -513,7 +498,6 @@ class MainWindow(QMainWindow):
         except ZmxImportError as error:
             QMessageBox.critical(self, "Load failed", f"Could not load {file_path}:\n{error}")
             return
-        self.mark_saved()
         self.show_new_design()
         if notes:
             QMessageBox.information(
@@ -541,7 +525,6 @@ class MainWindow(QMainWindow):
         except Exception as error:  # show any export problem instead of crashing the GUI
             QMessageBox.critical(self, "Save failed", f"Could not save {file_path}:\n{error}")
             return False
-        self.mark_saved()
         self.statusBar().showMessage(f"Saved {file_path}", 5000)
         return True
 

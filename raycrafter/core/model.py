@@ -16,6 +16,7 @@ Example
 
 from __future__ import annotations
 
+import copy
 from dataclasses import replace
 
 import numpy as np
@@ -64,6 +65,9 @@ class OpticalModel:
         self.catalog = catalog if catalog is not None else thorlabs.load_lenses()
         if add_default_lens and DEFAULT_LENS_PART in self.catalog:
             self.add_lens(DEFAULT_LENS_PART)
+        self.saved_state: OpticalState = copy.deepcopy(
+            self.state
+        )  # the start-up bench counts as saved
 
     # --------------------------------------------------------------- adding and removing
 
@@ -466,13 +470,31 @@ class OpticalModel:
 
     # ---------------------------------------------------------------- files
 
+    def has_unsaved_changes(self) -> bool:
+        """True if the design differs from the one last saved, loaded or started.
+
+        Which field is selected is not saved in a ZMX file, so it is not compared.
+        """
+        current = replace(self.state, selected_field_index=0)
+        return current != replace(self.saved_state, selected_field_index=0)
+
+    def mark_saved(self) -> None:
+        """Remember the current design as the saved one.
+
+        Called by ``save_zmx``, ``load_zmx`` and ``new_design``. A front end calls it
+        itself after changes that count as part of starting up (e.g. the first autofocus).
+        """
+        self.saved_state = copy.deepcopy(self.state)
+
     def new_design(self) -> None:
-        """Start again: no lenses, one default field."""
+        """Start again: no lenses, one default field. Counts as saved."""
         self.state = OpticalState()
+        self.mark_saved()
 
     def save_zmx(self, file_path: str) -> None:
         """Write the current system to a Zemax .zmx file."""
         optic_builder.save_zmx(self.state, file_path)
+        self.mark_saved()
 
     def load_zmx(self, file_path: str) -> list[str]:
         """Replace the bench with the system in a Zemax .zmx file.
@@ -490,4 +512,5 @@ class OpticalModel:
         """
         imported = zmx_import.load_zmx(file_path, self.catalog)
         self.state = imported.state
+        self.mark_saved()
         return imported.notes

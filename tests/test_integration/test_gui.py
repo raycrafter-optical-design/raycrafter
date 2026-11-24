@@ -259,9 +259,9 @@ def test_picking_another_field_is_not_an_unsaved_change(application):
     """Zemax files do not store which field is selected, so selecting one changes nothing."""
     window = MainWindow()
     window.model.add_field()
-    window.mark_saved()
+    window.model.mark_saved()
     window.model.select_field(0)
-    assert not window.has_unsaved_changes()
+    assert not window.model.has_unsaved_changes()
     window.close()
 
 
@@ -358,16 +358,16 @@ def test_file_menu_new_save_and_load(application, discard_unsaved_changes, monke
     window = MainWindow()
     menu_titles = [action.text() for action in window.menuBar().actions()]
     assert menu_titles == ["RayCrafter", "File", "Help"]
-    assert not window.has_unsaved_changes()  # the start-up bench counts as saved
+    assert not window.model.has_unsaved_changes()  # the start-up bench counts as saved
 
     # Save writes the file and marks the design saved.
     window.model.add_lens("AC254-050-A")
     window.model.flip_lens(1)
-    assert window.has_unsaved_changes()
+    assert window.model.has_unsaved_changes()
     zmx_path = str(tmp_path / "design.zmx")
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (zmx_path, ""))
     assert window.save_zmx()
-    assert not window.has_unsaved_changes()
+    assert not window.model.has_unsaved_changes()
 
     # New after a change asks first (the fixture answers "Discard"), then empties the bench.
     window.model.state.image_z += 5.0
@@ -381,7 +381,7 @@ def test_file_menu_new_save_and_load(application, discard_unsaved_changes, monke
     lenses = window.model.state.lenses
     assert [lens.part_number for lens in lenses] == ["ACT508-200-A", "AC254-050-A"]
     assert lenses[1].flipped and len(window.side_view.lens_graphics) == 2
-    assert not window.has_unsaved_changes()
+    assert not window.model.has_unsaved_changes()
     window.close()
 
 
@@ -391,7 +391,7 @@ def test_unsaved_changes_can_cancel_new(application, monkeypatch):
     monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Cancel)
     window.new_design()
     assert len(window.model.state.lenses) == 2  # nothing was thrown away
-    window.mark_saved()  # so the window can close without asking
+    window.model.mark_saved()  # so the window can close without asking
     window.close()
 
 
