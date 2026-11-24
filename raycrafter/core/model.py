@@ -2,9 +2,9 @@
 
 ``OpticalModel`` owns the bench state (``raycrafter.core.state``) and the list of lenses
 that can be placed. It provides the editing operations: add, insert, delete, move and swap
-lenses, and make or split Plossl pairs. It also gives access to the analyses
-(``raycrafter.core.analysis``) and to Zemax export, applied to its current state. It has
-no Qt code.
+lenses, make or split Plossl pairs, and add or remove fields. It also gives access to the
+analyses (``raycrafter.core.analysis``) and to Zemax import and export, applied to its
+current state. It has no Qt code.
 
 Example
 -------
@@ -20,7 +20,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from raycrafter.core import analysis, optic_builder
+from raycrafter.core import analysis, optic_builder, zmx_import
 from raycrafter.core.prescription import prescription_from_zmx_text, surface_sag
 from raycrafter.core.state import AXIS_START_Z, BeamField, OpticalState, PlacedLens
 from raycrafter.lenscatalog import thorlabs
@@ -456,6 +456,30 @@ class OpticalModel:
         """Best focus against field angle (see ``analysis.compute_field_curvature``)."""
         return analysis.compute_field_curvature(self.state)
 
+    # ---------------------------------------------------------------- files
+
+    def new_design(self) -> None:
+        """Start again: no lenses, one default field."""
+        self.state = OpticalState()
+
     def save_zmx(self, file_path: str) -> None:
         """Write the current system to a Zemax .zmx file."""
         optic_builder.save_zmx(self.state, file_path)
+
+    def load_zmx(self, file_path: str) -> list[str]:
+        """Replace the bench with the system in a Zemax .zmx file.
+
+        Returns
+        -------
+        list of str
+            Notes on anything that was simplified (see ``zmx_import.load_zmx``).
+
+        Raises
+        ------
+        zmx_import.ZmxImportError
+            If the file cannot be read or describes something RayCrafter cannot show. The
+            bench is then left as it was.
+        """
+        imported = zmx_import.load_zmx(file_path, self.catalog)
+        self.state = imported.state
+        return imported.notes

@@ -8,8 +8,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QPoint, QPointF, Qt  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
 
+from raycrafter.gui.about_dialog import PROJECT_URL, AboutDialog  # noqa: E402
 from raycrafter.gui.lens_picker import ALL_COATINGS, LensPickerDialog  # noqa: E402
 from raycrafter.gui.main_window import MainWindow  # noqa: E402
 from raycrafter.gui.range_slider import RangeSlider  # noqa: E402
@@ -20,6 +21,23 @@ from raycrafter.gui.style import force_light_colour_scheme  # noqa: E402
 def application():
     """One QApplication for all GUI tests (Qt allows only one per process)."""
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def discard_unsaved_changes(monkeypatch):
+    """Answer "Discard" to "Save your changes?", which would otherwise block a headless test.
+
+    Closing a window with unsaved changes asks this, and most tests change the bench.
+    Returns the list of questions asked, for tests that check one was.
+    """
+    questions = []
+
+    def answer(_parent, _title, text, *_args):
+        questions.append(text)
+        return QMessageBox.StandardButton.Discard
+
+    monkeypatch.setattr(QMessageBox, "question", answer)
+    return questions
 
 
 def test_window_adds_pairs_and_deletes_lenses(application):
@@ -272,3 +290,51 @@ def test_drags_defer_the_slow_work_until_release(application):
     window.update_slow_plots()  # what the slow timer runs
     assert not fade.isEnabled()
     window.close()
+
+
+def test_file_menu_new_save_and_load(application, discard_unsaved_changes, monkeypatch, tmp_path):
+    window = MainWindow()
+    menu_titles = [action.text() for action in window.menuBar().actions()]
+    assert menu_titles == ["RayCrafter", "File"]
+    assert not window.has_unsaved_changes()  # the start-up bench counts as saved
+
+    # Save writes the file and marks the design saved.
+    window.model.add_lens("AC254-050-A")
+    window.model.flip_lens(1)
+    assert window.has_unsaved_changes()
+    zmx_path = str(tmp_path / "design.zmx")
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (zmx_path, ""))
+    assert window.save_zmx()
+    assert not window.has_unsaved_changes()
+
+    # New after a change asks first (the fixture answers "Discard"), then empties the bench.
+    window.model.state.image_z += 5.0
+    window.new_design()
+    assert len(discard_unsaved_changes) == 1
+    assert window.model.state.lenses == [] and len(window.side_view.lens_graphics) == 0
+
+    # Load brings the saved design back, with its part numbers and orientation.
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (zmx_path, ""))
+    window.load_zmx()
+    lenses = window.model.state.lenses
+    assert [lens.part_number for lens in lenses] == ["ACT508-200-A", "AC254-050-A"]
+    assert lenses[1].flipped and len(window.side_view.lens_graphics) == 2
+    assert not window.has_unsaved_changes()
+    window.close()
+
+
+def test_unsaved_changes_can_cancel_new(application, monkeypatch):
+    window = MainWindow()
+    window.model.add_lens("AC254-050-A")
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Cancel)
+    window.new_design()
+    assert len(window.model.state.lenses) == 2  # nothing was thrown away
+    window.mark_saved()  # so the window can close without asking
+    window.close()
+
+
+def test_about_box_shows_the_project_link(application):
+    about = AboutDialog()
+    assert "RayCrafter" in about.text_label.text()
+    assert PROJECT_URL in about.text_label.text()
+    about.close()

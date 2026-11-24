@@ -22,6 +22,7 @@ import warnings
 
 import numpy as np
 from optiland.fileio import save_zemax_file
+from optiland.materials.warnings import OptilandMaterialWarning
 from optiland.optic import Optic
 from optiland.physical_apertures import RadialAperture
 
@@ -157,7 +158,11 @@ def _add_lens_and_image_surfaces(optic: Optic, state: OpticalState) -> None:
             # Optiland uses air when no material is given ("material=None" is rejected).
             if surface.material_after != "air" and not is_last_surface:
                 surface_settings["material"] = surface.material_after
-            optic.surfaces.add(**surface_settings)
+            with warnings.catch_warnings():
+                # Some glass names (e.g. SF10) are in several of Optiland's catalogues. It
+                # warns and picks Schott's, which is the right one for the Thorlabs lenses.
+                warnings.simplefilter("ignore", OptilandMaterialWarning)
+                optic.surfaces.add(**surface_settings)
             surface_index += 1
     optic.surfaces.add(index=surface_index)
 

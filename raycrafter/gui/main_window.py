@@ -8,6 +8,8 @@
   lens to slide it along the axis; drag it past a neighbour's centre to swap them. Drag the
   green line to move the image plane (not while "Lock focus" is on).
 - Right-click a lens for Flip (F), Delete (Del or Backspace) and Make / Split Plossl.
+- The RayCrafter menu has About and Quit; the File menu has New, Load ZMX and Save ZMX.
+  New, Load and Quit ask first if the design has changed since it was last saved or loaded.
 - "Add field" opens the field window (``raycrafter.gui.field_editor``), where beams are
   added, removed and edited while the bench updates live.
 
@@ -25,12 +27,13 @@ dragged (a lens or the image plane):
 
 from __future__ import annotations
 
+import copy
 import time
 from collections.abc import Callable
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QPoint, Qt, QTimer
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -53,7 +56,9 @@ from raycrafter import palette
 from raycrafter.core.analysis import FastTrace, airy_radius
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
-from raycrafter.core.state import PlacedLens
+from raycrafter.core.state import OpticalState, PlacedLens
+from raycrafter.core.zmx_import import ZmxImportError
+from raycrafter.gui.about_dialog import AboutDialog
 from raycrafter.gui.analysis_panels import (
     FieldCurvaturePanel,
     MtfPanel,
@@ -98,6 +103,7 @@ class MainWindow(QMainWindow):
         self.field_editor: FieldEditor | None = None  # made on first use, then kept
         self.f_number_readout: str | None = None  # last f-number text, kept during a drag
         self._build_widgets()
+        self._build_menus()
         self._connect_signals()
 
         # Updates are coalesced: many drag events trigger one recompute per event-loop pass.
@@ -113,6 +119,10 @@ class MainWindow(QMainWindow):
         self.model.autofocus()
         self.side_view.rebuild_lens_graphics()
         self.recompute_and_redraw()
+
+        # The design as last saved or loaded (at first, the start-up bench): New, Load and
+        # Quit ask before throwing away a design that differs from it.
+        self.saved_state: OpticalState = copy.deepcopy(self.model.state)
 
     # ------------------------------------------------------------------ setup
 
@@ -177,7 +187,6 @@ class MainWindow(QMainWindow):
         self.autofocus_button = QPushButton("Autofocus")
         self.add_field_button = QPushButton("Add field")
         self.add_field_button.setToolTip("Open the field window to add, remove and edit beams")
-        self.save_zmx_button = QPushButton("Save ZMX")
         self.report_button = QPushButton("Generate report")
         self.lock_focus_checkbox = QCheckBox("Lock focus")  # off by default
         self.lock_focus_checkbox.setToolTip(
@@ -213,10 +222,9 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.autofocus_button, 1, 0)
         controls.addWidget(self.lock_focus_checkbox, 1, 1)
         controls.addWidget(self.add_field_button, 2, 0)
-        controls.addWidget(self.save_zmx_button, 2, 1)
-        controls.addWidget(self.report_button, 3, 0, 1, 2)
-        controls.setRowStretch(4, 1)  # spare space goes above the hint, which sits at the foot
-        controls.addWidget(hint_label, 5, 0, 1, 2, Qt.AlignmentFlag.AlignBottom)
+        controls.addWidget(self.report_button, 2, 1)
+        controls.setRowStretch(3, 1)  # spare space goes above the hint, which sits at the foot
+        controls.addWidget(hint_label, 4, 0, 1, 2, Qt.AlignmentFlag.AlignBottom)
         controls.setContentsMargins(14, 14, 14, 14)
 
         # A framed card (QFrame#controls in the style sheet), so the controls read as one panel.
@@ -225,6 +233,38 @@ class MainWindow(QMainWindow):
         control_panel.setLayout(controls)
         control_panel.setFixedWidth(CONTROL_PANEL_WIDTH_PX)
         return control_panel
+
+    def _build_menus(self) -> None:
+        """The RayCrafter menu (About, Quit) and the File menu (New, Load ZMX, Save ZMX).
+
+        On macOS, Qt moves About and Quit into the application menu, which is named after
+        the app, so they appear where Mac users expect them; the menu roles tell it which.
+        """
+        menu_bar = self.menuBar()
+
+        def add_action(menu, text: str, slot, shortcut=None, role=None) -> QAction:
+            action = menu.addAction(text)
+            action.triggered.connect(slot)
+            if shortcut is not None:
+                action.setShortcut(QKeySequence(shortcut))
+            if role is not None:
+                action.setMenuRole(role)
+            return action
+
+        app_menu = menu_bar.addMenu("RayCrafter")
+        add_action(app_menu, "About", self.show_about, role=QAction.MenuRole.AboutRole)
+        add_action(
+            app_menu,
+            "Quit RayCrafter",
+            self.close,  # closeEvent asks first if there are unsaved changes
+            shortcut=QKeySequence.StandardKey.Quit,
+            role=QAction.MenuRole.QuitRole,
+        )
+
+        file_menu = menu_bar.addMenu("File")
+        add_action(file_menu, "New", self.new_design, shortcut=QKeySequence.StandardKey.New)
+        add_action(file_menu, "Load ZMX...", self.load_zmx, shortcut=QKeySequence.StandardKey.Open)
+        add_action(file_menu, "Save ZMX...", self.save_zmx, shortcut=QKeySequence.StandardKey.Save)
 
     def _connect_signals(self) -> None:
         """Wire the buttons, side view and keyboard shortcuts to their handlers."""
@@ -236,7 +276,6 @@ class MainWindow(QMainWindow):
         )
         self.autofocus_button.clicked.connect(self.run_autofocus)
         self.add_field_button.clicked.connect(self.open_field_editor)
-        self.save_zmx_button.clicked.connect(self.save_zmx)
         self.report_button.clicked.connect(self.generate_report)
         self.lock_focus_checkbox.toggled.connect(self.on_lock_focus_toggled)
 
@@ -388,21 +427,117 @@ class MainWindow(QMainWindow):
         self.field_editor.raise_()
         self.field_editor.activateWindow()
 
-    def save_zmx(self) -> None:
-        """Ask the user where to save, then export the current system as a Zemax .zmx file."""
+    # ------------------------------------------------------------------ files
+
+    def has_unsaved_changes(self) -> bool:
+        """True if the design differs from the one last saved or loaded."""
+        return self.model.state != self.saved_state
+
+    def mark_saved(self) -> None:
+        """Remember the current design as saved (after Save, Load or New)."""
+        self.saved_state = copy.deepcopy(self.model.state)
+
+    def confirm_discard_changes(self, action_text: str) -> bool:
+        """If there are unsaved changes, ask whether to save them first.
+
+        Parameters
+        ----------
+        action_text : str
+            What is about to happen, e.g. "starting a new design".
+
+        Returns
+        -------
+        bool
+            True to go ahead (nothing to lose, saved, or discarded); False to stop.
+        """
+        if not self.has_unsaved_changes():
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Unsaved changes",
+            f"The design has changed since it was last saved. Save it before {action_text}?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if answer == QMessageBox.StandardButton.Save:
+            return self.save_zmx()
+        return answer == QMessageBox.StandardButton.Discard
+
+    def show_new_design(self) -> None:
+        """Redraw everything after the model's state was replaced (New or Load)."""
+        self.side_view.cancel_placement()
+        self.side_view.rebuild_lens_graphics()
+        if self.field_editor is not None:
+            self.field_editor.refresh()
+        self.f_number_readout = None
+        self.request_update()
+
+    def new_design(self) -> None:
+        """File > New: an empty bench with one default field."""
+        if not self.confirm_discard_changes("starting a new design"):
+            return
+        self.model.new_design()
+        self.mark_saved()
+        self.show_new_design()
+
+    def load_zmx(self) -> None:
+        """File > Load ZMX: replace the design with the system in a Zemax file."""
+        if not self.confirm_discard_changes("loading another design"):
+            return
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
+            self, "Load Zemax file", "", "Zemax files (*.zmx)"
+        )
+        if not file_path:
+            return  # dialog cancelled
+        try:
+            notes = self.model.load_zmx(file_path)
+        except ZmxImportError as error:
+            QMessageBox.critical(self, "Load failed", f"Could not load {file_path}:\n{error}")
+            return
+        self.mark_saved()
+        self.show_new_design()
+        if notes:
+            QMessageBox.information(
+                self, "Loaded with changes", "\n\n".join(["Some details were simplified:"] + notes)
+            )
+        self.statusBar().showMessage(f"Loaded {file_path}", 5000)
+
+    def save_zmx(self) -> bool:
+        """File > Save ZMX: ask where to save, then export the system as a Zemax .zmx file.
+
+        Returns
+        -------
+        bool
+            True if the file was written.
+        """
         file_path, _selected_filter = QFileDialog.getSaveFileName(
             self, "Save Zemax file", "lens_system.zmx", "Zemax files (*.zmx)"
         )
         if not file_path:
-            return  # dialog cancelled
+            return False  # dialog cancelled
         if not file_path.lower().endswith(".zmx"):
             file_path += ".zmx"
         try:
             self.model.save_zmx(file_path)
         except Exception as error:  # show any export problem instead of crashing the GUI
             QMessageBox.critical(self, "Save failed", f"Could not save {file_path}:\n{error}")
-            return
+            return False
+        self.mark_saved()
         self.statusBar().showMessage(f"Saved {file_path}", 5000)
+        return True
+
+    def show_about(self) -> None:
+        """RayCrafter > About: the icon, name, version and project link."""
+        AboutDialog(self).exec()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Closing the window (or Quit) asks first if there are unsaved changes."""
+        if self.confirm_discard_changes("quitting"):
+            event.accept()
+        else:
+            event.ignore()
 
     def generate_report(self) -> None:
         """Write an HTML report of the current system and open it in the web browser."""
