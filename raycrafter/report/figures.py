@@ -1,7 +1,9 @@
-"""matplotlib figures for the HTML report, each returned as an inline SVG string.
+"""matplotlib figures for the HTML report and for agents.
 
-Each ``draw_*`` function takes analysis results from ``raycrafter.core`` and draws the same
-picture as the matching GUI panel, in the same colours (``raycrafter.palette``).
+Each ``draw_*`` function takes analysis results from ``raycrafter.core`` and returns a
+matplotlib ``Figure`` with the same picture as the matching GUI panel, in the same colours
+(``raycrafter.palette``). ``figure_to_inline_svg`` and ``figure_to_png_bytes`` turn a figure
+into something that can be embedded in the report or sent to an agent.
 """
 
 from __future__ import annotations
@@ -87,6 +89,13 @@ def figure_to_inline_svg(figure: Figure) -> str:
     return root_tag + svg_text[root_tag_end:]
 
 
+def figure_to_png_bytes(figure: Figure, dots_per_inch: int = 100) -> bytes:
+    """Render a matplotlib figure to PNG bytes, on a white background (for agents to look at)."""
+    buffer = io.BytesIO()
+    figure.savefig(buffer, format="png", dpi=dots_per_inch, facecolor="white")
+    return buffer.getvalue()
+
+
 def draw_paraxial_lens(axes, lens: PlacedLens) -> None:
     """A paraxial lens: a thick vertical line with an arrowhead at each end.
 
@@ -102,7 +111,7 @@ def draw_paraxial_lens(axes, lens: PlacedLens) -> None:
         )
 
 
-def draw_ray_diagram(state: OpticalState, fast_trace: FastTrace) -> str:
+def draw_ray_diagram(state: OpticalState, fast_trace: FastTrace) -> Figure:
     """The side view: lenses, every field's rays (in its colour) and the image plane."""
     figure, axes = new_axes(
         (13.0, 4.4), dict(left=0.05, right=0.99, top=0.97, bottom=0.14), "z (mm)", "y (mm)"
@@ -150,10 +159,10 @@ def draw_ray_diagram(state: OpticalState, fast_trace: FastTrace) -> str:
         zorder=6,
         bbox={"boxstyle": "round,pad=0.3", "facecolor": palette.IMAGE, "edgecolor": "none"},
     )
-    return figure_to_inline_svg(figure)
+    return figure
 
 
-def draw_spot_diagram(state: OpticalState, fast_trace: FastTrace) -> str:
+def draw_spot_diagram(state: OpticalState, fast_trace: FastTrace) -> Figure:
     """Every field's spot (micrometres about its centroid), with the selected field's Airy circle."""
     figure, axes = new_axes(SQUARE_FIGURE_SIZE, SQUARE_MARGINS, "x (um)", "y (um)")
     axes.set_aspect("equal", adjustable="box")
@@ -182,10 +191,10 @@ def draw_spot_diagram(state: OpticalState, fast_trace: FastTrace) -> str:
     half_width = spot_view_half_width_um(fast_trace.spots, fast_trace.spot)
     axes.set_xlim(-half_width, half_width)
     axes.set_ylim(-half_width, half_width)
-    return figure_to_inline_svg(figure)
+    return figure
 
 
-def draw_through_focus(result: ThroughFocusResult) -> str:
+def draw_through_focus(result: ThroughFocusResult) -> Figure:
     """RMS radius against image plane offset, with the best focus and the Airy radius."""
     figure, axes = new_axes(
         SQUARE_FIGURE_SIZE, SQUARE_MARGINS, "image plane offset (mm)", "RMS radius (um)"
@@ -206,10 +215,10 @@ def draw_through_focus(result: ThroughFocusResult) -> str:
         y_maximum_um = max(curve_maximum_um, min(airy_um, 3.0 * curve_maximum_um))
     axes.set_xlim(result.offsets[0], result.offsets[-1])
     axes.set_ylim(0, y_maximum_um * 1.08)
-    return figure_to_inline_svg(figure)
+    return figure
 
 
-def draw_mtf(mtf: MtfResult) -> str:
+def draw_mtf(mtf: MtfResult) -> Figure:
     """Tangential and sagittal MTF with the diffraction limit."""
     figure, axes = new_axes(
         SQUARE_FIGURE_SIZE, SQUARE_MARGINS, "spatial frequency (cycles/mm)", "modulation"
@@ -235,14 +244,14 @@ def draw_mtf(mtf: MtfResult) -> str:
             transform=axes.transAxes,
             color=palette.TEXT,
         )
-        return figure_to_inline_svg(figure)
+        return figure
     axes.set_xlim(0, mtf.frequency[-1])
     axes.set_ylim(0, 1.02)
     axes.legend(frameon=False, fontsize=9, labelcolor=palette.TEXT)
-    return figure_to_inline_svg(figure)
+    return figure
 
 
-def draw_ray_fan(fan: RayFanResult) -> str:
+def draw_ray_fan(fan: RayFanResult) -> Figure:
     """Transverse ray aberration against pupil coordinate."""
     figure, axes = new_axes(
         WIDE_FIGURE_SIZE, WIDE_MARGINS, "pupil coordinate", "image plane error (um)"
@@ -269,10 +278,10 @@ def draw_ray_fan(fan: RayFanResult) -> str:
     axes.set_xlim(-1.02, 1.02)
     axes.set_ylim(-limit_um, limit_um)
     axes.legend(frameon=False, fontsize=9, labelcolor=palette.TEXT)
-    return figure_to_inline_svg(figure)
+    return figure
 
 
-def draw_field_curvature(curvature: FieldCurvatureResult, current_angle: float) -> str:
+def draw_field_curvature(curvature: FieldCurvatureResult, current_angle: float) -> Figure:
     """Best-focus shift against field angle; a dashed line marks the current beam angle."""
     figure, axes = new_axes(
         WIDE_FIGURE_SIZE, WIDE_MARGINS, "focus shift from image plane (mm)", "field angle (deg)"
@@ -305,4 +314,4 @@ def draw_field_curvature(curvature: FieldCurvatureResult, current_angle: float) 
     axes.set_xlim(-largest_shift * 1.1, largest_shift * 1.1)
     axes.set_ylim(0, FIELD_CURVATURE_MAX_ANGLE * 1.02)
     axes.legend(frameon=False, fontsize=9, labelcolor=palette.TEXT)
-    return figure_to_inline_svg(figure)
+    return figure

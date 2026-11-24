@@ -18,9 +18,18 @@ from raycrafter.core import analysis
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.zmx_import import ZmxImportError
 from raycrafter.lenscatalog.catalog import CatalogEntry
+from raycrafter.report import figures
 
 MAX_CURVE_POINTS = 25  # curves sent to the agent are thinned to about this many points
 DEFAULT_SEARCH_LIMIT = 20
+PLOT_KINDS = (
+    "ray_diagram",
+    "spot_diagram",
+    "through_focus",
+    "mtf",
+    "ray_fan",
+    "field_curvature",
+)
 
 
 def _number(value: float, digits: int = 4) -> float | None:
@@ -212,6 +221,31 @@ class DesignTools:
             "sagittal_shift_mm": _thinned(result.sagittal_shift, indices, 3),
             "note": "null means too few rays got through to find a focus.",
         }
+
+    def get_plot(self, kind: str) -> bytes:
+        """A PNG picture of one analysis: the same plot as the GUI and the HTML report.
+
+        ``kind`` is one of PLOT_KINDS. MTF, ray fan and through-focus show the selected field.
+        """
+        if kind not in PLOT_KINDS:
+            raise ValueError(f"Unknown plot {kind!r}; choose one of: {', '.join(PLOT_KINDS)}")
+
+        if kind in ("ray_diagram", "spot_diagram", "through_focus"):
+            fast_trace = self.model.trace_fast()
+        if kind == "ray_diagram":
+            figure = figures.draw_ray_diagram(self.model.state, fast_trace)
+        elif kind == "spot_diagram":
+            figure = figures.draw_spot_diagram(self.model.state, fast_trace)
+        elif kind == "through_focus":
+            figure = figures.draw_through_focus(self.model.compute_through_focus(fast_trace))
+        elif kind == "mtf":
+            figure = figures.draw_mtf(self.model.compute_mtf())
+        elif kind == "ray_fan":
+            figure = figures.draw_ray_fan(self.model.compute_ray_fan())
+        else:
+            angle_deg = self.model.state.selected_field.angle_deg
+            figure = figures.draw_field_curvature(self.model.compute_field_curvature(), angle_deg)
+        return figures.figure_to_png_bytes(figure)
 
     # ------------------------------------------------------------------ editing lenses
 

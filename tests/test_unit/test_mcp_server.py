@@ -32,3 +32,8 @@ def test_a_bad_request_comes_back_as_a_tool_error_with_the_reason():
 
     with pytest.raises(ToolError, match="There is no field 7"):
         anyio.run(ask_for_a_missing_field)
+
+
+def test_get_plot_returns_an_image():
+    result = anyio.run(build_server().call_tool, "get_plot", {"kind": "spot_diagram"})
+    assert result.content[0].type == "image" and result.content[0].mime_type == "image/png"

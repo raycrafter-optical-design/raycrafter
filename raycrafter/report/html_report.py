@@ -145,7 +145,7 @@ def build_report_html(model: OpticalModel) -> str:
             "rays",
             "Ray diagram",
             ray_subtitle,
-            figures.draw_ray_diagram(state, fast_trace),
+            figures.figure_to_inline_svg(figures.draw_ray_diagram(state, fast_trace)),
             "span-6",
             with_help=False,
         ),
@@ -153,23 +153,33 @@ def build_report_html(model: OpticalModel) -> str:
             "spot",
             "Spot diagram",
             spot_subtitle,
-            figures.draw_spot_diagram(state, fast_trace),
+            figures.figure_to_inline_svg(figures.draw_spot_diagram(state, fast_trace)),
             "span-2",
         ),
         card_html(
             "through_focus",
             "Through-focus",
             f"Best focus {best_focus_text} mm from the image plane",
-            figures.draw_through_focus(through_focus),
+            figures.figure_to_inline_svg(figures.draw_through_focus(through_focus)),
             "span-2",
         ),
-        card_html("mtf", "MTF", angle_text, figures.draw_mtf(mtf), "span-2"),
-        card_html("ray_fan", "Ray fan", angle_text, figures.draw_ray_fan(ray_fan), "span-3"),
+        card_html(
+            "mtf", "MTF", angle_text, figures.figure_to_inline_svg(figures.draw_mtf(mtf)), "span-2"
+        ),
+        card_html(
+            "ray_fan",
+            "Ray fan",
+            angle_text,
+            figures.figure_to_inline_svg(figures.draw_ray_fan(ray_fan)),
+            "span-3",
+        ),
         card_html(
             "field",
             "Field curvature",
             "Best focus against field angle",
-            figures.draw_field_curvature(curvature, selected.angle_deg),
+            figures.figure_to_inline_svg(
+                figures.draw_field_curvature(curvature, selected.angle_deg)
+            ),
             "span-3",
         ),
     ]

@@ -13,6 +13,7 @@ from collections.abc import Callable
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.utilities.types import Image
 
 from raycrafter.core.model import OpticalModel
 from raycrafter.mcp_server.tools import DesignTools
@@ -35,6 +36,7 @@ TOOL_NAMES = [
     "get_ray_fan",
     "get_through_focus",
     "get_field_curvature",
+    "get_plot",
     "add_lens",
     "insert_lens",
     "add_paraxial_lens",
@@ -71,12 +73,30 @@ def _report_value_errors(tool: Callable) -> Callable:
     return wrapper
 
 
+def _plot_tool(tools: DesignTools) -> Callable:
+    """The get_plot tool: DesignTools gives PNG bytes, MCP wants them wrapped as an Image."""
+
+    def get_plot(kind: str) -> Image:
+        """A picture (PNG) of one analysis, as seen in the GUI.
+
+        kind is one of: ray_diagram, spot_diagram, through_focus, mtf, ray_fan,
+        field_curvature. MTF, ray fan and through-focus show the selected field.
+        """
+        return Image(data=tools.get_plot(kind), format="png")
+
+    return get_plot
+
+
 def build_server(model: OpticalModel | None = None) -> MCPServer:
     """An MCP server whose tools act on ``model`` (a fresh default bench if omitted)."""
     tools = DesignTools(model if model is not None else OpticalModel())
     server = MCPServer("raycrafter", instructions=SERVER_INSTRUCTIONS)
     for tool_name in TOOL_NAMES:
-        server.add_tool(_report_value_errors(getattr(tools, tool_name)), name=tool_name)
+        if tool_name == "get_plot":
+            tool = _plot_tool(tools)
+        else:
+            tool = getattr(tools, tool_name)
+        server.add_tool(_report_value_errors(tool), name=tool_name)
     return server
 
 

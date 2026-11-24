@@ -5,7 +5,7 @@ import json
 import pytest
 
 from raycrafter.core.model import OpticalModel
-from raycrafter.mcp_server.tools import DesignTools
+from raycrafter.mcp_server.tools import PLOT_KINDS, DesignTools
 
 
 @pytest.fixture
@@ -113,3 +113,14 @@ def test_destructive_file_tools_protect_unsaved_work(tools, tmp_path):
 def test_loading_a_missing_file_is_a_value_error(tools, tmp_path):
     with pytest.raises(ValueError, match="Could not load"):
         tools.load_zmx(str(tmp_path / "missing.zmx"))
+
+
+@pytest.mark.parametrize("kind", PLOT_KINDS)
+def test_every_plot_is_a_png(tools, kind):
+    tools.add_field()
+    assert tools.get_plot(kind).startswith(b"\x89PNG")
+
+
+def test_unknown_plot_names_the_choices(tools):
+    with pytest.raises(ValueError, match="ray_diagram"):
+        tools.get_plot("pie_chart")
