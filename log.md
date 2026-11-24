@@ -183,3 +183,21 @@ dispersion shows, e.g. as a chromatic focal shift between a blue and a red field
 **Supersedes:** "One wavelength (555 nm) for every lens, including IR designs".
 **Why:** Rob's choice when fields gained a wavelength; using it only for the beam colour
 would have been misleading.
+
+## 2026-11-24: Each field's rays are launched by RayCrafter, not Optiland (#7)
+**Decision:** The Optiland system is built once per update and each field's rays are made
+in numpy (`core/ray_launch.py`) and traced with `optic.surfaces.trace`. A beam is defined
+where it crosses the first lens's front vertex plane. The MTF still uses Optiland's own
+object and pupil (it needs them), so it ignores a field's offset (#10).
+**Supersedes:** "Beam vergence is an object at -1000/V mm" in "Pilot: modelling choices in
+the analyses", except for the MTF and the ZMX export.
+**Why:** Optiland's aperture, object and field angles are system-wide, but each field has its
+own width, vergence, offset and wavelength. One build per field would cost ~8 ms each.
+
+## 2026-11-24: Loading ZMX files matches lenses against the catalogue (#8)
+**Decision:** Load ZMX turns each run of glass surfaces into a lens and looks it up in the
+catalogue (curvatures, thicknesses and glasses, both ways round), so part numbers and flips
+come back; unmatched lenses keep their prescription as "Imported lens N". Paraxial surfaces
+become paraxial lenses. Aspheres, conics, mirrors and tilts are refused. Fields are rebuilt
+from the EPD, object distance, angles and wavelengths, with any simplification reported.
+**Why:** Matching keeps designs editable as catalogue parts. Lossy parts are parked (#11, #12).
