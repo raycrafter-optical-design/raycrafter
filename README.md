@@ -30,6 +30,25 @@ raycrafter
 Or, with [uv](https://docs.astral.sh/uv/): `uvx raycrafter`.
 
 
+## Use it from an AI agent (experimental)
+
+RayCrafter includes an [MCP](https://modelcontextprotocol.io) server, so an AI agent such as
+Claude can search for lenses, build and edit a design, and read back the optics. At present the
+server has its own design and no window; it does not control a running RayCrafter GUI (#26).
+
+```
+pip install "raycrafter[mcp]"
+```
+
+Then add it to the MCP settings of your client. For the Claude desktop app, add this to
+`claude_desktop_config.json` (use the full path to `raycrafter-mcp` if it is not on the
+app's `PATH`):
+
+```json
+{"mcpServers": {"raycrafter": {"command": "raycrafter-mcp"}}}
+```
+
+
 ## An agent-generated project
 
 The code in this repository is written by AI coding agents, working with the project's

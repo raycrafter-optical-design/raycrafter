@@ -37,9 +37,14 @@ classifiers = [
 
 [project.scripts]
 raycrafter = "raycrafter.gui.app:main"
+raycrafter-mcp = "raycrafter.mcp_server.server:main"  # needs the "mcp" extra
 
 [project.optional-dependencies]
+# The MCP server that lets AI agents drive RayCrafter (raycrafter.mcp). Pinned to the minor
+# version we have tested against.
+mcp = ["mcp>=2.3,<2.4"]
 dev = [
+  "mcp>=2.3,<2.4",
   "pytest",
   "pytest-cov",
   "coverage",

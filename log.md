@@ -229,3 +229,12 @@ is often the real one (SMOD4.5's objective back aperture), and resizing would hi
 Zemax's order (`palette.FIELD_COLOURS`). Extra wavelengths share the 0 degree field's colour.
 **Why:** Rob's choice. Wavelength colours could not tell the fields apart (same wavelength,
 or all infrared). Doing the same for fields made in RayCrafter is #25.
+
+## 2026-11-24: MCP server uses the official `mcp` SDK, in its own package (#26)
+**Decision:** The agent interface is `raycrafter.mcp_server`, built on the official `mcp` Python
+SDK (`MCPServer`), pinned to a minor version and installed with the `mcp` extra. `DesignTools`
+holds the tools as plain methods on an `OpticalModel`; `server.py` only publishes them. File
+loading and saving are not restricted, and undo/redo is not offered (Rob's choice).
+**Why:** `fastmcp` was the alternative: a bigger dependency we do not need. Keeping the tools
+free of the MCP library lets the same tools later drive the model inside the GUI. The package
+is not called `mcp` so it cannot be confused with the library.
