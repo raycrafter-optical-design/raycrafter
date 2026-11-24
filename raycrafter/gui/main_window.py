@@ -39,7 +39,6 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -78,7 +77,7 @@ STALE_PLOT_OPACITY = 0.4  # the slower plots are this faded while a drag makes t
 DEFAULT_PARAXIAL_FOCAL_LENGTH_MM = 100
 PARAXIAL_FOCAL_LENGTH_RANGE_MM = (-2000, 2000)
 FOCAL_LENGTH_BOX_WIDTH_PX = 82  # room for "-2000 mm" and the arrows, leaving the rest to buttons
-CONTROL_PANEL_WIDTH_PX = 385
+NARROW_BUTTON_STYLE = "padding: 6px 8px;"  # a button only as wide as its text needs
 HINT_MIN_HEIGHT_PX = 52  # height reserved for the help text at the foot of the control panel
 
 
@@ -202,36 +201,41 @@ class MainWindow(QMainWindow):
         hint_label.setObjectName("hintLabel")
         hint_label.setWordWrap(True)
         # A wrapped label reports a large height-for-width size hint, which swelled the bottom
-        # row and squeezed the side view to a sliver. Ignoring its vertical hint keeps the
-        # panel's size set by the controls; the label just uses the spare space at the bottom.
-        hint_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Ignored)
+        # row and squeezed the side view to a sliver. Ignoring its size hints keeps the panel's
+        # size set by the controls; the label just wraps to fit the space at the bottom.
+        hint_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         hint_label.setMinimumHeight(HINT_MIN_HEIGHT_PX)
         hint_label.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
 
-        # Top row: the two ways of adding a lens; the paraxial one has its focal length beside it.
-        add_lens_row = QHBoxLayout()
-        add_lens_row.setSpacing(6)
-        for button in (self.add_catalogue_lens_button, self.add_paraxial_lens_button):
-            button.setStyleSheet("padding: 6px 6px;")  # narrower than usual, so the row fits
-            add_lens_row.addWidget(button)
-        add_lens_row.addWidget(self.paraxial_focal_length_box)
+        # One column of controls, so the panel is narrow and the plots get the width. The two
+        # rows with something beside a button set that width; the other buttons fill it.
+        paraxial_row = QHBoxLayout()
+        paraxial_row.addWidget(self.add_paraxial_lens_button, stretch=1)
+        paraxial_row.addWidget(self.paraxial_focal_length_box)
 
-        controls = QGridLayout()
+        autofocus_row = QHBoxLayout()
+        self.autofocus_button.setStyleSheet(NARROW_BUTTON_STYLE)
+        autofocus_row.addWidget(self.autofocus_button)
+        autofocus_row.addWidget(self.lock_focus_checkbox)
+        autofocus_row.addStretch(1)
+
+        controls = QVBoxLayout()
         controls.setSpacing(8)
-        controls.addLayout(add_lens_row, 0, 0, 1, 2)
-        controls.addWidget(self.autofocus_button, 1, 0)
-        controls.addWidget(self.lock_focus_checkbox, 1, 1)
-        controls.addWidget(self.add_field_button, 2, 0)
-        controls.addWidget(self.report_button, 2, 1)
-        controls.setRowStretch(3, 1)  # spare space goes above the hint, which sits at the foot
-        controls.addWidget(hint_label, 4, 0, 1, 2, Qt.AlignmentFlag.AlignBottom)
+        controls.addWidget(self.add_catalogue_lens_button)
+        controls.addLayout(paraxial_row)
+        controls.addWidget(self.add_field_button)
+        controls.addLayout(autofocus_row)
+        controls.addWidget(self.report_button)
+        controls.addStretch(1)  # spare space goes above the hint, which sits at the foot
+        controls.addWidget(hint_label)
         controls.setContentsMargins(14, 14, 14, 14)
 
         # A framed card (QFrame#controls in the style sheet), so the controls read as one panel.
+        # It keeps the width its controls need and gives none of the spare width to itself.
         control_panel = QFrame()
         control_panel.setObjectName("controls")
         control_panel.setLayout(controls)
-        control_panel.setFixedWidth(CONTROL_PANEL_WIDTH_PX)
+        control_panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         return control_panel
 
     def _build_menus(self) -> None:
