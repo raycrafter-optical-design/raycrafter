@@ -4,9 +4,9 @@
 [![PyPI Version](https://img.shields.io/pypi/v/raycrafter.svg)](https://pypi.org/project/raycrafter)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/raycrafter-optical-design/raycrafter/blob/main/LICENSE)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/raycrafter-optical-design/raycrafter/test_and_deploy.yml?branch=main&label=CI)](https://github.com/raycrafter-optical-design/raycrafter/actions/workflows/test_and_deploy.yml)
-[![codecov](https://codecov.io/gh/raycrafter-optical-design/raycrafter/branch/main/graph/badge.svg)](https://codecov.io/gh/raycrafter-optical-design/raycrafter)
 [![Code style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
+[![codecov](https://codecov.io/gh/raycrafter-optical-design/raycrafter/branch/main/graph/badge.svg)](https://codecov.io/gh/raycrafter-optical-design/raycrafter)
 
 RayCrafter is an early proof of principle for a lens-level optical design tool. You place
 off-the-shelf lenses on an optical axis, drag them around, and see the spot diagram,
