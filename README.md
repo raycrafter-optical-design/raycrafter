@@ -30,23 +30,54 @@ raycrafter
 Or, with [uv](https://docs.astral.sh/uv/): `uvx raycrafter`.
 
 
-## Use it from an AI agent (experimental)
+## Use it from an AI agent
 
 RayCrafter includes an [MCP](https://modelcontextprotocol.io) server, so an AI agent such as
 Claude can search for lenses, build and edit a design, and read back the optics. At present the
 server has its own design and no window; it does not control a running RayCrafter GUI (#26).
 
-```
-pip install "raycrafter[mcp]"
-```
+**1. Install the MCP extra.**
 
-Then add it to the MCP settings of your client. For the Claude desktop app, add this to
-`claude_desktop_config.json` (use the full path to `raycrafter-mcp` if it is not on the
-app's `PATH`):
+- With pip: `pip install "raycrafter[mcp]"`. This installs the `raycrafter-mcp` command.
+- With [uv](https://docs.astral.sh/uv/): `uv tool install "raycrafter[mcp]"` installs both
+  `raycrafter` and `raycrafter-mcp`. Or install nothing and let uv fetch it on demand; see the
+  `uvx` setting below.
+
+**2. Tell your MCP client where it is.** In the Claude desktop app, open Settings, then
+Developer, then Edit Config. This opens the file `claude_desktop_config.json`, which is at
+`~/Library/Application Support/Claude/` on macOS and `%APPDATA%\Claude\` on Windows. Add
+RayCrafter under `mcpServers`, then quit and reopen the app:
 
 ```json
-{"mcpServers": {"raycrafter": {"command": "raycrafter-mcp"}}}
+{
+  "mcpServers": {
+    "raycrafter": {
+      "command": "/full/path/to/raycrafter-mcp"
+    }
+  }
+}
 ```
+
+The path must be written out in full: the app does not expand `~`, and it may not see the same
+`PATH` as your terminal. Find the path with `which raycrafter-mcp` (macOS, Linux) or
+`where raycrafter-mcp` (Windows).
+
+If you use uv and installed nothing, run RayCrafter through `uvx` instead (find its path with
+`which uvx`):
+
+```json
+{
+  "mcpServers": {
+    "raycrafter": {
+      "command": "/full/path/to/uvx",
+      "args": ["--from", "raycrafter[mcp]", "raycrafter-mcp"]
+    }
+  }
+}
+```
+
+Other MCP clients (for example Claude Code: `claude mcp add raycrafter -- raycrafter-mcp`) take
+the same command.
 
 
 ## An agent-generated project
