@@ -88,19 +88,27 @@ raycrafter/
   requests into `dev`.
 - Small changes on `main` may be committed and pushed without asking. Merging `dev` into
   `main`, tagging and releasing need explicit approval from Rob.
-- Versions come from git tags via setuptools-scm, using semantic versioning. Pushing a
-  `vX.Y.Z` tag publishes to PyPI. Always verify your proposed new version number with the
-  human managing the project.
 - Stop and ask at natural check-points rather than finishing large pieces of work in one go.
 - Expect that people may have changed files you recently worked on or are working on now.
   Re-read a file before modifying it; otherwise you risk reverting a human developer's saved
   changes.
+
+## Releases
+
 - When it is time for a new release, you will first conduct an adversarial code review of
   work down between now and the last release. The main task of the review will be to find
   bugs that may have been introduced. However, you should also verify that the changes made
   are in keeping with the design plan of the software. Once any fixes have been applied
   after the review ends, it is OK to increment the version and deploy the new release.
-
+- Versions come from git tags via setuptools-scm, using semantic versioning. Pushing a
+  `vX.Y.Z` tag publishes to PyPI. Always verify your proposed new version number with the
+  human managing the project.
+- You will write a release message that succinctly summarises the changes in the release.
+  This will be placed in the release message on GitHub. You will also maintain a Changelog.md
+  that is designed to be read by a human who wishes to see the evolution of the project.
+  The changelog must be very succinct and orderly. You have a tendency to be over-complete.
+  Do not do this. Place links to issues and links to release messages for people who may
+  wish more information.
 
 # Environment
 
