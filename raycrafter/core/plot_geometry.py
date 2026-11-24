@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from raycrafter.core.analysis import RayPaths, SpotResult, airy_radius
+from raycrafter.core.analysis import FNumberResult, RayPaths, SpotResult, airy_radius
 from raycrafter.core.prescription import surface_sag
 from raycrafter.core.state import OpticalState, PlacedLens
 
@@ -72,16 +72,52 @@ def spot_view_half_width_um(spot: SpotResult, on_axis_spot: SpotResult | None) -
     It also widens to show the Airy circle, unless that is far bigger than the spots: then
     the circle is cropped rather than shrinking the spots to a dot.
     """
-    extent_um = np.abs(np.concatenate([spot.x, spot.y])).max() * 1000.0
+    spot_coordinates = [spot.x, spot.y]
     if on_axis_spot is not None:
-        on_axis_extent_um = np.abs(np.concatenate([on_axis_spot.x, on_axis_spot.y])).max() * 1000
-        extent_um = max(extent_um, on_axis_extent_um)
+        spot_coordinates += [on_axis_spot.x, on_axis_spot.y]
+    extent_um = largest_magnitude(*spot_coordinates) * 1000.0
 
     half_width = max(extent_um * 1.2, MIN_SPOT_HALF_WIDTH_UM)
     airy = airy_radius(spot.numerical_aperture)
     if airy is not None:
         half_width = max(half_width, min(airy * 1000.0 * 1.2, half_width * 3.0))
     return float(half_width)
+
+
+def largest_magnitude(*arrays: np.ndarray, floor: float = 0.0) -> float:
+    """The largest absolute value in the arrays, ignoring NaN, and never less than ``floor``.
+
+    Analyses give NaN for rays or angles where no light gets through, and empty arrays when
+    none does at all, so plot ranges are worked out with this rather than ``.max()``.
+    """
+    largest = floor
+    for values in arrays:
+        finite = np.abs(np.asarray(values, dtype=float))
+        finite = finite[np.isfinite(finite)]
+        if finite.size:
+            largest = max(largest, float(finite.max()))
+    return largest
+
+
+def rms_radius_text(spot: SpotResult, micrometre_symbol: str = "um") -> str:
+    """The spot's RMS radius for display, e.g. "1.23 um", or "no light" if no ray arrives."""
+    if not spot.has_light:
+        return "no light"
+    return f"{spot.rms_radius * 1000:.2f} {micrometre_symbol}"
+
+
+def f_number_text(result: FNumberResult) -> str:
+    """The f-number for display, e.g. "f/4.0", noting when a lens rim cuts the beam.
+
+    When the beam is clipped the f-number is based on the part that gets through, so the
+    text says so, e.g. "f/1.9 (beam clipped to 10.8 mm)".
+    """
+    if not np.isfinite(result.f_number):
+        return "f/- (no light)"
+    text = f"f/{result.f_number:.1f}"
+    if result.beam_is_clipped:
+        text += f" (beam clipped to {result.transmitted_beam_diameter:.1f} mm)"
+    return text
 
 
 def ray_fan_limit_um(largest_error_mm: float) -> float:

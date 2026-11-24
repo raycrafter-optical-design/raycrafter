@@ -363,6 +363,10 @@ class OpticalModel:
         """Spots, side-view rays and first-order summary (see ``analysis.trace_fast``)."""
         return analysis.trace_fast(self.state)
 
+    def compute_f_number(self) -> analysis.FNumberResult | None:
+        """f-number from the transmitted beam (see ``analysis.compute_f_number``)."""
+        return analysis.compute_f_number(self.state)
+
     def compute_through_focus(self, fast_trace: analysis.FastTrace) -> analysis.ThroughFocusResult:
         """RMS radius against image plane position (see ``analysis.compute_through_focus``)."""
         return analysis.compute_through_focus(self.state, fast_trace)

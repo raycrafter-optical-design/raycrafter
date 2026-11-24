@@ -7,10 +7,16 @@
   green line to move the image plane (not while "Lock focus" is on).
 - Right-click a lens for Flip (F), Delete (Del or Backspace) and Make / Split Plossl.
 
-Updates come in two speeds. The side view, spot, through-focus plot and status bar are
-recomputed on every change (coalesced, so a burst of drag events costs one recompute). The
-MTF, ray fan and field curvature are slower, so they are recomputed only once changes have
-stopped for SLOW_PLOT_DELAY_MS, and only for the tab that is showing.
+Updates come in two speeds, to keep the window responsive (see CLAUDE.md). The side view,
+spot, through-focus plot and status bar are recomputed on every change (coalesced, so a
+burst of drag events costs one recompute). Everything else waits until nothing is being
+dragged (a lens, the image plane or a slider handle):
+
+- The MTF, ray fan and field curvature are faded while a drag goes on, then recomputed
+  once the mouse is released (or SLOW_PLOT_DELAY_MS after a change that is not a drag),
+  and only for the tab that is showing.
+- The f-number needs an extra trace, so during a drag the status bar keeps showing the
+  last value, and it is recomputed on release.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QFrame,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -41,6 +48,7 @@ from PyQt6.QtWidgets import (
 from raycrafter import palette
 from raycrafter.core.analysis import FastTrace, airy_radius
 from raycrafter.core.model import OpticalModel
+from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
 from raycrafter.gui.analysis_panels import (
     FieldCurvaturePanel,
     MtfPanel,
@@ -55,6 +63,7 @@ from raycrafter.gui.style import style_sheet
 from raycrafter.report import write_and_open_report
 
 SLOW_PLOT_DELAY_MS = 120  # MTF, ray fan and field curvature wait this long after the last change
+STALE_PLOT_OPACITY = 0.4  # the slower plots are this faded while a drag makes them out of date
 VERGENCE_LIMIT_DIOPTRES = 1.0  # the vergence slider spans +/- this (as for an f = 1000 mm lens)
 DEFAULT_BEAM_DIAMETER_MM = 10  # what "Reset beam" restores
 BEAM_DIAMETER_RANGE_MM = (1, 40)
@@ -81,6 +90,7 @@ class MainWindow(QMainWindow):
 
         self.model = model if model is not None else OpticalModel()
         self.lens_picker: LensPickerDialog | None = None  # made on first use, then kept
+        self.f_number_readout: str | None = None  # last f-number text, kept during a drag
         self._build_widgets()
         self._connect_signals()
 
@@ -108,6 +118,16 @@ class MainWindow(QMainWindow):
         self.mtf_panel = MtfPanel()
         self.ray_fan_panel = RayFanPanel()
         self.field_curvature_panel = FieldCurvaturePanel()
+
+        # The slower plots fade while a drag leaves them out of date. The effect is switched
+        # off (not set to full opacity) when they are current, so it costs nothing then.
+        self.slow_plot_fades: list[QGraphicsOpacityEffect] = []
+        for panel in (self.mtf_panel, self.ray_fan_panel, self.field_curvature_panel):
+            fade = QGraphicsOpacityEffect(panel)
+            fade.setOpacity(STALE_PLOT_OPACITY)
+            fade.setEnabled(False)
+            panel.setGraphicsEffect(fade)
+            self.slow_plot_fades.append(fade)
 
         # Three tab widgets of equal width. Field curvature gets a one-tab widget so that all
         # three plots line up.
@@ -226,6 +246,11 @@ class MainWindow(QMainWindow):
         self.side_view.changed.connect(self.request_update)
         self.side_view.lens_menu_requested.connect(self.show_lens_menu)
         self.side_view.placement_finished.connect(self.on_placement_finished)
+
+        # Releasing a dragged item brings back the readouts that are skipped during a drag.
+        self.side_view.drag_finished.connect(self.request_update)
+        for slider in (self.diameter_slider, self.angle_slider, self.vergence_slider):
+            slider.sliderReleased.connect(self.request_update)
 
         # F and Delete/Backspace act on the lens under the pointer.
         QShortcut(
@@ -439,14 +464,20 @@ class MainWindow(QMainWindow):
 
         self.update_readouts(fast_trace)
         self.side_view.set_timings(trace_ms, draw_ms)
-        self.slow_timer.start(SLOW_PLOT_DELAY_MS)
+
+        if self.is_dragging():
+            # The slower plots wait for the mouse to be released; faded, they read as stale.
+            self.slow_timer.stop()
+            self.set_slow_plots_faded(True)
+        else:
+            self.slow_timer.start(SLOW_PLOT_DELAY_MS)
 
     def update_readouts(self, fast_trace: FastTrace) -> None:
         """Status bar: image plane, RMS spot radius, first-order properties and Airy radius."""
         state = self.model.state
         readouts = [
             f"image z={state.image_z:.1f} mm",
-            f"RMS={fast_trace.spot.rms_radius * 1000:.2f} um",
+            f"RMS={rms_radius_text(fast_trace.spot)}",
         ]
 
         summary = fast_trace.summary
@@ -454,12 +485,22 @@ class MainWindow(QMainWindow):
             readouts += [
                 f"EFL={summary.effective_focal_length:.1f} mm",
                 f"BFL={summary.back_focal_length:.1f} mm",
-                f"f/{summary.f_number:.1f}",
             ]
+        # The f-number needs an extra trace: during a drag the last value stays on show.
+        if not self.is_dragging():
+            f_number = self.model.compute_f_number()
+            self.f_number_readout = None if f_number is None else f_number_text(f_number)
+        if self.f_number_readout is not None:
+            readouts.append(self.f_number_readout)
         airy = airy_radius(fast_trace.spot.numerical_aperture)
         if airy is not None:
             readouts.append(f"Airy radius={airy * 1000:.1f} um")
         self.status_label.setText("   ".join(readouts))
+
+    def is_dragging(self) -> bool:
+        """True while the mouse holds a lens, the image plane or a slider handle."""
+        sliders = (self.diameter_slider, self.angle_slider, self.vergence_slider)
+        return self.side_view.is_dragging() or any(slider.isSliderDown() for slider in sliders)
 
     def vergence_description(self) -> str:
         """Plain-words description of the beam vergence: collimated, converging or diverging."""
@@ -468,12 +509,20 @@ class MainWindow(QMainWindow):
             return "collimated"
         return "converging" if vergence > 0 else "diverging"
 
+    def set_slow_plots_faded(self, faded: bool) -> None:
+        """Fade the MTF, ray fan and field curvature (out of date), or show them normally."""
+        for fade in self.slow_plot_fades:
+            fade.setEnabled(faded)
+
     def update_slow_plots(self) -> None:
-        """Recompute the slower plots (run once changes have settled)."""
+        """Recompute the slower plots (run once changes have settled) and un-fade them."""
+        if self.is_dragging():
+            return  # they are recomputed when the drag ends
         self.update_mtf_tab()
         self.field_curvature_panel.show_result(
             self.model.compute_field_curvature(), self.model.state.field_angle
         )
+        self.set_slow_plots_faded(False)
 
     def update_mtf_tab(self) -> None:
         """Compute whichever of the MTF and ray fan is showing; the other waits until selected."""

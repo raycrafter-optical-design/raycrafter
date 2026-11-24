@@ -26,6 +26,7 @@ from raycrafter.core.analysis import (
 from raycrafter.core.plot_geometry import (
     AXIS_Y_RANGE,
     AXIS_Z_RANGE,
+    largest_magnitude,
     lens_surface_arcs,
     ray_fan_limit_um,
     rays_from_axis_start,
@@ -176,11 +177,12 @@ def draw_through_focus(result: ThroughFocusResult) -> str:
     )
 
     rms_current_um = result.rms_current * 1000.0
-    curve_maximum_um = rms_current_um.max()
+    curve_maximum_um = largest_magnitude(rms_current_um)
     if result.rms_on_axis is not None:
         rms_on_axis_um = result.rms_on_axis * 1000.0
         axes.plot(result.offsets, rms_on_axis_um, color=palette.ON_AXIS, linewidth=2)
-        curve_maximum_um = max(curve_maximum_um, rms_on_axis_um.max())
+        curve_maximum_um = largest_magnitude(rms_current_um, rms_on_axis_um)
+    curve_maximum_um = curve_maximum_um or 1.0  # no light: any range will do
     axes.plot(result.offsets, rms_current_um, color=palette.TANGENTIAL, linewidth=2)
 
     axes.axvline(0, color=palette.IMAGE, linewidth=2)
@@ -214,6 +216,16 @@ def draw_mtf(mtf: MtfResult) -> str:
         mtf.frequency, mtf.tangential, color=palette.TANGENTIAL, linewidth=2, label="tangential"
     )
     axes.plot(mtf.frequency, mtf.sagittal, color=palette.SAGITTAL, linewidth=2, label="sagittal")
+    if mtf.frequency.size == 0:
+        axes.text(
+            0.5,
+            0.5,
+            "No MTF: the beam is blocked at this angle",
+            ha="center",
+            transform=axes.transAxes,
+            color=palette.TEXT,
+        )
+        return figure_to_inline_svg(figure)
     axes.set_xlim(0, mtf.frequency[-1])
     axes.set_ylim(0, 1.02)
     axes.legend(frameon=False, fontsize=9, labelcolor=palette.TEXT)
@@ -242,7 +254,7 @@ def draw_ray_fan(fan: RayFanResult) -> str:
         label="sagittal",
     )
 
-    largest_error_mm = max(np.abs(fan.tangential_error).max(), np.abs(fan.sagittal_error).max())
+    largest_error_mm = largest_magnitude(fan.tangential_error, fan.sagittal_error)
     limit_um = ray_fan_limit_um(largest_error_mm)
     axes.set_xlim(-1.02, 1.02)
     axes.set_ylim(-limit_um, limit_um)
@@ -277,8 +289,8 @@ def draw_field_curvature(curvature: FieldCurvatureResult, current_angle: float) 
         label="sagittal",
     )
 
-    largest_shift = max(
-        np.abs(curvature.tangential_shift).max(), np.abs(curvature.sagittal_shift).max(), 0.5
+    largest_shift = largest_magnitude(
+        curvature.tangential_shift, curvature.sagittal_shift, floor=0.5
     )
     axes.set_xlim(-largest_shift * 1.1, largest_shift * 1.1)
     axes.set_ylim(0, FIELD_CURVATURE_MAX_ANGLE * 1.02)

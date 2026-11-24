@@ -110,3 +110,60 @@ Aspheres are in the file but not offered until `LensSurface` can represent them 
 **Why:** The picker's categories and filters need the full range. Coating variants share
 prescriptions, so the 3 MB of JSON compresses about 27-fold.
 **Supersedes:** 2026-11-23 "Ship only the lenses the GUI offers".
+
+## 2026-11-24: Lens picker design (#1)
+**Decision:** "Add lens" opens a dialog: category -> diameter -> lens tree, part-number search,
+and filters for coating (default: all coatings), |f| range and sign. The |f| slider is
+logarithmic and uses the magnitude; the sign is chosen with "hide positive/negative". After
+Insert, a ghost follows the pointer and snaps to the nearest gap the lens fits in.
+**Why:** An "Uncoated" default hid every achromat (Thorlabs sells none uncoated). A log scale
+suits focal lengths from 4 mm to 2.5 m. Snapping means a placed lens never overlaps another.
+
+## 2026-11-24: Lens surfaces have their clear aperture (#3)
+**Decision:** Every lens surface blocks rays outside the lens's clear semi-aperture. Analyses
+use only the rays that get through; with none, they report "no light". The MTF uses the part
+of the beam that gets through on axis. Blocked rays are drawn up to the plane of the rim.
+**Why:** Without apertures, a beam wider than a lens was traced through surfaces that do not
+exist, giving wrong results or NaN (and a crash). Thorlabs' ZMX files give every surface the
+same fixed aperture, so this matches the vendor model; Zemax agreement to be checked (#4).
+
+## 2026-11-24: f-number from the transmitted beam
+**Decision:** The f-number is |EFL| / the diameter of the on-axis beam that gets through every
+lens, and is shown as e.g. "f/1.9 (beam clipped to 10.8 mm)" when a lens rim cuts the beam.
+**Why:** When the beam overfills a lens, the rim sets the cone of light, so the nominal beam
+overstates the speed. This probably differs from Zemax's paraxial F/#, which uses the system
+aperture (#5); matching Zemax is not the aim, since a Zemax user would set the stop to the
+lens. RayCrafter has no field stops yet. The probe costs about 3.5 ms per fast update.
+
+## 2026-11-24: One wavelength (555 nm) for every lens, including IR designs
+**Decision:** All tracing is at 555 nm, whatever a lens's design wavelength. The picker lists
+the catalogue focal length.
+**Why:** Recorded while adding the full catalogue: our prescriptions reproduce Optiland's own
+ZMX import exactly, but IR-designed lenses (C, E, 1064 coatings etc.) come out a few percent
+off their catalogue focal length at 555 nm because of dispersion. Wavelength choice is future
+work.
+
+## 2026-11-24: "Test in Zemax" issues
+**Decision:** Checks that need a Zemax licence become GitHub issues with the "Test in Zemax"
+label, each saying what to compare and how (e.g. #4, #5). Results can become reference tests.
+**Why:** Not every developer has Zemax, and these checks are what support our claims of
+agreement with it, so they need a visible queue rather than notes in a conversation.
+
+## 2026-11-24: Responsiveness first: only essential work on every frame
+**Decision:** The GUI must stay responsive, so anything computed on every change (each drag
+event or slider tick) must be something the user is watching. Other work runs after changes
+settle (the slow plots) or only once nothing is being dragged. The f-number is the first
+case: it is computed only then, and is left out of the status bar during a drag.
+**Supersedes:** the "about 3.5 ms per fast update" in "f-number from the transmitted beam".
+**Why:** Optiland is noticeably slower on some machines (Rob's Windows PC), and nobody reads
+the f-number while dragging.
+
+## 2026-11-24: Slow plots fade during a drag and update on release
+**Decision:** While a lens, the image plane or a slider handle is dragged, the MTF, ray fan
+and field curvature are faded (40% opacity) and not recomputed; they are recomputed when
+the mouse is released. The f-number keeps showing its last value until then.
+**Supersedes:** the slow plots' "after changes settle" in "Pilot: fast and slow update
+paths", for drags only (other changes still wait SLOW_PLOT_DELAY_MS), and hiding the f-number
+during a drag in "Responsiveness first".
+**Why:** A pause mid-drag used to trigger the slow plots, which stutters on slower machines.
+Fading shows they are out of date; keeping the last f-number is less jarring than hiding it.

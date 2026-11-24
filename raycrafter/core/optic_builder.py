@@ -6,6 +6,11 @@ editing a long-lived one (see log.md, "rebuild the Optiland system on every chan
 A collimated beam is modelled as an object at infinity with an entrance pupil diameter
 equal to the beam diameter. A converging or diverging beam moves the object to a finite
 (possibly virtual) distance instead.
+
+Every lens surface is given its clear aperture, so rays that pass outside a lens's rim are
+blocked: Optiland sets their intensity to zero, and the analyses leave them out. Without
+this, a beam wider than a lens was traced through the (non-existent) continuation of its
+surfaces, giving wrong results or NaN where a sphere does not reach that far (issue #3).
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ import warnings
 import numpy as np
 from optiland.fileio import save_zemax_file
 from optiland.optic import Optic
+from optiland.physical_apertures import RadialAperture
 
 from raycrafter.core.state import AXIS_START_Z, OpticalState
 
@@ -39,12 +45,18 @@ def object_distance_mm(beam_vergence: float) -> float:
     return -1000.0 / beam_vergence
 
 
-def build_optic(state: OpticalState, field_angles: list[float] | None = None) -> Optic:
+def build_optic(
+    state: OpticalState,
+    field_angles: list[float] | None = None,
+    beam_diameter_mm: float | None = None,
+) -> Optic:
     """Create a fresh Optiland system from the bench state.
 
     Lenses are chained left to right. The last surface of each lens is followed by air up
-    to the next lens (or the image plane). The first surface is the aperture stop. With no
-    lenses a flat air surface is the stop, so the beam still reaches the image.
+    to the next lens (or the image plane). Each lens surface has the lens's clear aperture,
+    which blocks rays outside the rim. The first surface is where the entrance pupil (the
+    beam) is defined. With no lenses a flat air surface takes that role, so the beam still
+    reaches the image.
 
     Parameters
     ----------
@@ -52,6 +64,9 @@ def build_optic(state: OpticalState, field_angles: list[float] | None = None) ->
         The lenses, beam and image plane.
     field_angles : list of float, optional
         Field angles in degrees. By default there is one field, at the current beam angle.
+    beam_diameter_mm : float, optional
+        Use this beam diameter instead of the state's (the MTF uses the part of the beam
+        that gets through; see ``analysis.transmitted_beam_diameter``).
 
     Returns
     -------
@@ -76,6 +91,7 @@ def build_optic(state: OpticalState, field_angles: list[float] | None = None) ->
                     radius=surface.radius,
                     thickness=gap_after_lens if is_last_surface else surface.thickness_after,
                     is_stop=(surface_index == 1),
+                    aperture=RadialAperture(r_max=lens.semi_aperture),
                 )
                 # Optiland uses air when no material is given ("material=None" is rejected).
                 if surface.material_after != "air" and not is_last_surface:
@@ -93,7 +109,7 @@ def build_optic(state: OpticalState, field_angles: list[float] | None = None) ->
         image_index = 2
 
     optic.surfaces.add(index=image_index)
-    optic.set_aperture("EPD", state.beam_diameter)
+    optic.set_aperture("EPD", state.beam_diameter if beam_diameter_mm is None else beam_diameter_mm)
     optic.fields.set_type("angle")
     for angle in field_angles if field_angles is not None else [abs(state.field_angle)]:
         optic.fields.add(y=angle)

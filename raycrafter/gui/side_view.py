@@ -201,11 +201,14 @@ class SideView(pg.PlotWidget):
         The user right-clicked lens ``index`` at the given global screen position.
     placement_finished(bool)
         Placing a lens ended: True if it was put on the bench, False if cancelled.
+    drag_finished
+        The mouse was released after dragging a lens or the image plane.
     """
 
     changed = pyqtSignal()
     lens_menu_requested = pyqtSignal(int, QPoint)
     placement_finished = pyqtSignal(bool)
+    drag_finished = pyqtSignal()
 
     def __init__(self, model: OpticalModel) -> None:
         super().__init__()
@@ -234,6 +237,8 @@ class SideView(pg.PlotWidget):
 
         side.vb.sigResized.connect(self.update_grid)
         self.image_line.sigPositionChanged.connect(self.on_image_dragged)
+        # The signal passes the line itself; drag_finished takes no arguments.
+        self.image_line.sigPositionChangeFinished.connect(lambda _line: self.drag_finished.emit())
         self.image_line.sigPositionChanged.connect(self.place_image_label)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.on_right_click)
@@ -649,6 +654,11 @@ class SideView(pg.PlotWidget):
         """The mouse was released after dragging a lens: bring the name tag back."""
         self.lens_drag_active = False
         self.place_name_tag()
+        self.drag_finished.emit()
+
+    def is_dragging(self) -> bool:
+        """True while the mouse is holding a lens or the image plane."""
+        return self.lens_drag_active or self.image_line.moving
 
     def on_image_dragged(self) -> None:
         """The image line was dragged: keep it behind the last lens and inside the view."""

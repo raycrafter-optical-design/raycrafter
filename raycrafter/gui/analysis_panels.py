@@ -21,7 +21,12 @@ from raycrafter.core.analysis import (
     ThroughFocusResult,
     airy_radius,
 )
-from raycrafter.core.plot_geometry import ray_fan_limit_um, spot_view_half_width_um
+from raycrafter.core.plot_geometry import (
+    largest_magnitude,
+    ray_fan_limit_um,
+    rms_radius_text,
+    spot_view_half_width_um,
+)
 from raycrafter.gui.style import PLOT_MIN_SIZE_PX, style_plot
 
 TITLE_SIZE = "11pt"
@@ -94,13 +99,15 @@ class SpotPanel(pg.PlotWidget):
 
         # The title doubles as the legend: each RMS radius is written in its spot colour.
         if on_axis_spot is None:
-            title = f"RMS radius {spot.rms_radius * 1000:.2f} um"
+            title = f"RMS radius {rms_radius_text(spot)}"
+            if not spot.has_light:
+                title = "No light reaches the image plane"
         else:
             title = (
                 f'<span style="color:{palette.TANGENTIAL}">{field_angle:+.1f} deg: '
-                f"{spot.rms_radius * 1000:.2f} um</span>&nbsp;&nbsp;"
+                f"{rms_radius_text(spot)}</span>&nbsp;&nbsp;"
                 f'<span style="color:{palette.ON_AXIS}">0 deg: '
-                f"{on_axis_spot.rms_radius * 1000:.2f} um</span>"
+                f"{rms_radius_text(on_axis_spot)}</span>"
             )
         plot.setTitle(title, size="10pt")
 
@@ -133,15 +140,16 @@ class ThroughFocusPanel(pg.PlotWidget):
     def show_result(self, result: ThroughFocusResult) -> None:
         """Draw RMS radius against offset, with the best focus and the Airy radius marked."""
         rms_current_um = result.rms_current * 1000.0
-        self.current_curve.setData(result.offsets, rms_current_um)
-        curve_maximum_um = rms_current_um.max()
+        self.current_curve.setData(result.offsets, rms_current_um, connect="finite")
+        curve_maximum_um = largest_magnitude(rms_current_um)
 
         if result.rms_on_axis is not None:
             rms_on_axis_um = result.rms_on_axis * 1000.0
-            self.on_axis_curve.setData(result.offsets, rms_on_axis_um)
-            curve_maximum_um = max(curve_maximum_um, rms_on_axis_um.max())
+            self.on_axis_curve.setData(result.offsets, rms_on_axis_um, connect="finite")
+            curve_maximum_um = largest_magnitude(rms_current_um, rms_on_axis_um)
         else:
             self.on_axis_curve.setData([], [])
+        curve_maximum_um = curve_maximum_um or 1.0  # no light: any range will do
 
         self.best_focus_line.setValue(result.best_offset)
 
@@ -178,11 +186,14 @@ class MtfPanel(pg.PlotWidget):
         self.sagittal_curve = plot.plot(pen=pg.mkPen(palette.SAGITTAL, width=2), name="sagittal")
 
     def show_result(self, mtf: MtfResult, field_angle: float) -> None:
-        """Draw the MTF curves computed at ``field_angle`` degrees."""
+        """Draw the MTF curves computed at ``field_angle`` degrees (or say why there are none)."""
         self.limit_curve.setData(mtf.frequency, mtf.diffraction_limit)
         self.tangential_curve.setData(mtf.frequency, mtf.tangential)
         self.sagittal_curve.setData(mtf.frequency, mtf.sagittal)
         plot = self.getPlotItem()
+        if mtf.frequency.size == 0:
+            plot.setTitle(f"No MTF: beam blocked at {field_angle:+.1f} deg", size=TITLE_SIZE)
+            return
         plot.setTitle(f"MTF at {field_angle:+.1f} deg", size=TITLE_SIZE)
         plot.setXRange(0, mtf.frequency[-1], padding=0)
 
@@ -207,12 +218,13 @@ class RayFanPanel(pg.PlotWidget):
 
     def show_result(self, fan: RayFanResult, field_angle: float) -> None:
         """Draw the ray fan (micrometres) computed at ``field_angle`` degrees."""
-        self.tangential_curve.setData(fan.pupil, fan.tangential_error * 1000.0)
-        self.sagittal_curve.setData(fan.pupil, fan.sagittal_error * 1000.0)
+        # Blocked rays are NaN; connect="finite" leaves gaps there instead of failing.
+        self.tangential_curve.setData(fan.pupil, fan.tangential_error * 1000.0, connect="finite")
+        self.sagittal_curve.setData(fan.pupil, fan.sagittal_error * 1000.0, connect="finite")
         plot = self.getPlotItem()
         plot.setTitle(f"Ray fan at {field_angle:+.1f} deg", size=TITLE_SIZE)
 
-        largest_error_mm = max(np.abs(fan.tangential_error).max(), np.abs(fan.sagittal_error).max())
+        largest_error_mm = largest_magnitude(fan.tangential_error, fan.sagittal_error)
         limit_um = ray_fan_limit_um(largest_error_mm)
         plot.setYRange(-limit_um, limit_um, padding=0)
 
@@ -250,11 +262,14 @@ class FieldCurvaturePanel(pg.PlotWidget):
 
     def show_result(self, curvature: FieldCurvatureResult, field_angle: float) -> None:
         """Draw the curves; a dashed line marks the current beam angle."""
-        self.tangential_curve.setData(curvature.tangential_shift, curvature.angles)
-        self.sagittal_curve.setData(curvature.sagittal_shift, curvature.angles)
+        # Angles with too little light are NaN; connect="finite" leaves gaps there.
+        self.tangential_curve.setData(
+            curvature.tangential_shift, curvature.angles, connect="finite"
+        )
+        self.sagittal_curve.setData(curvature.sagittal_shift, curvature.angles, connect="finite")
         self.current_angle_line.setValue(abs(field_angle))
 
-        largest_shift = max(
-            np.abs(curvature.tangential_shift).max(), np.abs(curvature.sagittal_shift).max(), 0.5
+        largest_shift = largest_magnitude(
+            curvature.tangential_shift, curvature.sagittal_shift, floor=0.5
         )
         self.getPlotItem().setXRange(-largest_shift * 1.1, largest_shift * 1.1, padding=0)

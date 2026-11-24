@@ -14,6 +14,12 @@ little or no AI. If something would confuse a careful human reader, it is wrong.
   calls on it. It holds no optical state of its own beyond what it needs to draw.
 - **Object-oriented, modular.** One clear responsibility per module. Subpackages must be usable
   on their own, e.g. `from raycrafter.lenscatalog import thorlabs` must not pull in Qt or the GUI.
+- **Responsiveness first.** The GUI must respond immediately, on slow machines too (Optiland
+  is noticeably slower on some). Be very careful about what is calculated on every change
+  (each drag event or slider tick): only what the user is watching while they drag. Anything
+  else goes on the slow path (after changes settle) or runs only once nothing is being
+  dragged, as the f-number does (`MainWindow.is_dragging`). Measure what you add to the fast
+  path; the side view shows the trace and draw times.
 - **File size.** Aim for files under about 1000 lines. This is a soft limit: if a file has to be
   bigger, say why in `log.md`.
 - **Optiland.** It is pinned to a tested minor version in `pyproject.toml`. Any workaround for an

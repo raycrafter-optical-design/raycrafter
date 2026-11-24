@@ -26,6 +26,7 @@ from pathlib import Path
 from raycrafter import palette
 from raycrafter.core.analysis import airy_radius
 from raycrafter.core.model import OpticalModel
+from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
 from raycrafter.report import figures
 from raycrafter.report.explanations import EXPLANATIONS
 
@@ -97,14 +98,16 @@ def build_report_html(model: OpticalModel) -> str:
         chip_html("Angle", f"{state.field_angle:+.1f}°"),
         chip_html("Vergence", f"{state.beam_vergence:+.2f} D"),
         chip_html("Image plane", f"z = {state.image_z:.1f} mm"),
-        chip_html("RMS radius", f"{spot.rms_radius * 1000:.2f} µm"),
+        chip_html("RMS radius", rms_radius_text(spot, "µm")),
     ]
     if summary is not None:
         chips += [
             chip_html("EFL", f"{summary.effective_focal_length:.1f} mm"),
             chip_html("BFL", f"{summary.back_focal_length:.1f} mm"),
-            chip_html("f-number", f"f/{summary.f_number:.1f}"),
         ]
+    f_number = model.compute_f_number()
+    if f_number is not None:
+        chips.append(chip_html("f-number", f_number_text(f_number)))
     if airy is not None:
         chips.append(chip_html("Airy radius", f"{airy * 1000:.1f} µm"))
 
@@ -115,13 +118,13 @@ def build_report_html(model: OpticalModel) -> str:
     ray_subtitle = f"{lens_names} &middot; {vergence_words(state.beam_vergence)} beam"
 
     if on_axis_spot is None:
-        spot_subtitle = f"RMS radius {spot.rms_radius * 1000:.2f} µm"
+        spot_subtitle = f"RMS radius {rms_radius_text(spot, 'µm')}"
     else:
         spot_subtitle = (
             f'<span style="color:{palette.TANGENTIAL}">{state.field_angle:+.1f}°: '
-            f"{spot.rms_radius * 1000:.2f} µm</span> &nbsp; "
+            f"{rms_radius_text(spot, 'µm')}</span> &nbsp; "
             f'<span style="color:{palette.ON_AXIS}">0°: '
-            f"{on_axis_spot.rms_radius * 1000:.2f} µm</span>"
+            f"{rms_radius_text(on_axis_spot, 'µm')}</span>"
         )
 
     # "+ 0.0" turns a rounded -0.000 into 0.000.

@@ -159,3 +159,41 @@ def test_range_slider_handles_follow_the_mouse_and_cannot_cross(application):
     QTest.mouseRelease(slider, Qt.MouseButton.LeftButton, pos=QPoint(210, middle_y))
     assert slider.values() == (high, high)
     slider.close()
+
+
+def test_window_redraws_when_the_beam_is_wider_than_the_lens(application):
+    """A 10 mm beam on a Ø2 mm lens crashed the field curvature plot with NaN (issue #3)."""
+    window = MainWindow()
+    window.delete_lens(0)
+    window.model.add_lens("AC020-004-A")
+    window.side_view.rebuild_lens_graphics()
+    window.recompute_and_redraw()
+    window.update_slow_plots()
+    window.mtf_tabs.setCurrentIndex(1)  # ray fan, with its blocked (NaN) rays
+    window.update_mtf_tab()
+    assert "RMS=no light" not in window.status_label.text()
+    window.close()
+
+
+def test_drags_defer_the_slow_work_until_release(application):
+    """During a drag the f-number keeps its last value and the slower plots fade; on release
+    both are recomputed and the plots return to normal."""
+    window = MainWindow()
+    window.recompute_and_redraw()
+    window.update_slow_plots()
+    assert "f/20.0" in window.status_label.text()
+    fade = window.mtf_panel.graphicsEffect()
+    assert not fade.isEnabled()
+
+    window.model.state.beam_diameter = 20.0  # as if the beam slider were being dragged
+    window.side_view.lens_drag_active = True  # (any drag will do)
+    window.recompute_and_redraw()
+    assert "f/20.0" in window.status_label.text()  # stale value kept, not recomputed
+    assert fade.isEnabled() and not window.slow_timer.isActive()
+
+    window.side_view.on_lens_drag_finished()  # mouse released
+    window.recompute_and_redraw()
+    assert "f/10.0" in window.status_label.text()
+    window.update_slow_plots()  # what the slow timer runs
+    assert not fade.isEnabled()
+    window.close()
