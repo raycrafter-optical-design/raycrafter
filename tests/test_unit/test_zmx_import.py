@@ -1,6 +1,11 @@
 """Tests of loading Zemax files back into a bench (``raycrafter.core.zmx_import``)."""
 
+import warnings
+
+import numpy as np
 import pytest
+from optiland.fileio import save_zemax_file
+from optiland.optic import Optic
 
 from raycrafter.core import OpticalModel
 from raycrafter.core.zmx_import import ZmxImportError, load_zmx
@@ -64,6 +69,27 @@ def test_a_lens_not_in_the_catalogue_keeps_its_prescription(mixed_bench, tmp_pat
     assert imported.semi_aperture == pytest.approx(lens.semi_aperture)  # from the file's CLAP
     assert not imported.is_negative
     assert any("not in the catalogue" in note for note in loaded.notes)
+
+
+def test_vergence_counts_the_air_before_the_first_lens(tmp_path):
+    # Object 100 mm in front of a stop surface, then 50 mm of air to a paraxial lens: the
+    # beam at the lens comes from a point 150 mm away.
+    optic = Optic()
+    optic.surfaces.add(index=0, radius=np.inf, thickness=100.0)
+    optic.surfaces.add(index=1, radius=np.inf, thickness=50.0, is_stop=True)
+    optic.surfaces.add(index=2, surface_type="paraxial", f=50.0, thickness=100.0)
+    optic.surfaces.add(index=3)
+    optic.set_aperture("EPD", 5.0)
+    optic.fields.set_type("angle")
+    optic.fields.add(y=0.0)
+    optic.wavelengths.add(0.55, is_primary=True)
+    zmx_path = str(tmp_path / "leading_air.zmx")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        save_zemax_file(optic, zmx_path)
+
+    loaded = load_zmx(zmx_path, OpticalModel().catalog)
+    assert loaded.state.selected_field.vergence_dioptres == pytest.approx(-1000.0 / 150.0)
 
 
 def test_a_conic_surface_is_refused(mixed_bench, tmp_path):

@@ -56,6 +56,14 @@ def test_removing_fields_always_leaves_one():
     assert len(model.state.fields) == 1
 
 
+def test_removing_a_field_that_does_not_exist_changes_nothing():
+    model = OpticalModel()
+    model.add_field()
+    with pytest.raises(IndexError, match="no field 5"):
+        model.remove_fields([1, 5])
+    assert len(model.state.fields) == 2
+
+
 def test_wavelength_colours_follow_the_spectrum():
     def rgb(wavelength_nm: float) -> tuple[int, ...]:
         colour = wavelength_colour(wavelength_nm)

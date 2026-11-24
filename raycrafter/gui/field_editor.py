@@ -252,10 +252,18 @@ class FieldEditor(QDialog):
         self.fill_form(self.model.state.selected_field)
 
     def fill_form(self, beam: BeamField) -> None:
-        """Show a field's values, without these updates counting as edits."""
-        for attribute, box in self.value_boxes.items():
+        """Show a field's values, without these updates counting as edits.
+
+        A field loaded from a file or set by a script may lie outside a box's usual range.
+        Qt would silently clamp it, so the box would show a value the model does not have;
+        instead the box's range is widened to include it.
+        """
+        for attribute, _label, minimum, maximum, _step, _decimals in FIELD_PROPERTIES:
+            box = self.value_boxes[attribute]
+            value = getattr(beam, attribute)
             box.blockSignals(True)
-            box.setValue(getattr(beam, attribute))
+            box.setRange(min(minimum, value), max(maximum, value))
+            box.setValue(value)
             box.blockSignals(False)
         self._show_colour(beam)
 

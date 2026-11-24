@@ -95,9 +95,13 @@ def load_zmx(file_path: str, catalog: dict[str, CatalogEntry]) -> ZmxImport:
             raise ZmxImportError(f"Optiland could not read the file: {error}") from error
 
         notes: list[str] = []
-        state = OpticalState(fields=_fields_from_optic(optic, notes))
         surfaces = optic.surfaces.surfaces
-        state.lenses, state.image_z = _lenses_from_surfaces(surfaces, catalog, notes)
+        lenses, image_z = _lenses_from_surfaces(surfaces, catalog, notes)
+        # Air surfaces (a stop, say) may come before the first lens; the beam is defined at
+        # the lens, so its vergence must count that air too.
+        air_before_first_lens_mm = lenses[0].z - FIRST_LENS_Z if lenses else 0.0
+        fields = _fields_from_optic(optic, air_before_first_lens_mm, notes)
+        state = OpticalState(lenses=lenses, image_z=image_z, fields=fields)
         for lens in state.lenses:
             if not lens.is_paraxial and lens.part_number.startswith("Imported"):
                 lens.is_negative = _is_diverging(lens)
@@ -332,8 +336,12 @@ def _same_prescription(expected: list[LensSurface], found: list[LensSurface]) ->
 # --------------------------------------------------------------------------- fields
 
 
-def _fields_from_optic(optic, notes: list[str]) -> list[BeamField]:
-    """RayCrafter fields from the file's aperture, object, field angles and wavelengths."""
+def _fields_from_optic(optic, air_before_first_lens_mm: float, notes: list[str]) -> list[BeamField]:
+    """RayCrafter fields from the file's aperture, object, field angles and wavelengths.
+
+    The vergence is that of the beam at the first lens, which is the object distance plus
+    ``air_before_first_lens_mm`` away from the object.
+    """
     aperture = optic.aperture
     if aperture is not None and aperture.ap_type == "EPD":
         diameter_mm = float(aperture.value)
@@ -344,7 +352,7 @@ def _fields_from_optic(optic, notes: list[str]) -> list[BeamField]:
             f"{DEFAULT_BEAM_DIAMETER_MM:g} mm."
         )
 
-    object_distance_mm = float(optic.surfaces.surfaces[0].thickness)
+    object_distance_mm = float(optic.surfaces.surfaces[0].thickness) + air_before_first_lens_mm
     vergence = 0.0 if np.isinf(object_distance_mm) else -1000.0 / object_distance_mm
 
     field_type = getattr(optic.fields.field_definition, "name", str(optic.fields.field_definition))

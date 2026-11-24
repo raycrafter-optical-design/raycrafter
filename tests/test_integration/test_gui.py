@@ -230,6 +230,40 @@ def test_field_window_adds_edits_and_removes_fields_live(application):
     window.close()
 
 
+def test_field_window_shows_values_outside_its_usual_ranges(application):
+    """A -20 D beam (an object 50 mm away, from a ZMX file) was shown, and edited, as -10 D."""
+    window = MainWindow()
+    window.model.state.selected_field.vergence_dioptres = -20.0
+    window.add_field_button.click()
+    vergence_box = window.field_editor.value_boxes["vergence_dioptres"]
+    assert vergence_box.value() == -20.0
+    vergence_box.stepUp()
+    assert window.model.state.selected_field.vergence_dioptres == pytest.approx(-19.95)
+    window.close()
+
+
+def test_a_drag_event_for_a_deleted_lens_is_ignored(application):
+    """Pressing Del mid-drag rebuilt the graphics; the next drag event raised ValueError."""
+    window = MainWindow()
+    window.model.add_lens("AC254-050-A")
+    window.side_view.rebuild_lens_graphics()
+    dragged = window.side_view.lens_graphics[1]
+    window.delete_lens(1)  # rebuilds the graphics, so `dragged` is no longer shown
+    window.side_view.on_lens_dragged(dragged)
+    assert len(window.model.state.lenses) == 1
+    window.close()
+
+
+def test_picking_another_field_is_not_an_unsaved_change(application):
+    """Zemax files do not store which field is selected, so selecting one changes nothing."""
+    window = MainWindow()
+    window.model.add_field()
+    window.mark_saved()
+    window.model.select_field(0)
+    assert not window.has_unsaved_changes()
+    window.close()
+
+
 def test_range_slider_handles_follow_the_mouse_and_cannot_cross(application):
     slider = RangeSlider(0, 100)
     slider.resize(220, 30)

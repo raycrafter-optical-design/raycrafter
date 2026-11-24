@@ -1504,7 +1504,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "optiland", specifier = ">=0.6.3,<0.7" },
     { name = "pre-commit", marker = "extra == 'dev'" },
-    { name = "pyqt6" },
+    { name = "pyqt6", specifier = ">=6.8" },
     { name = "pyqtgraph", specifier = ">=0.14" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-cov", marker = "extra == 'dev'" },

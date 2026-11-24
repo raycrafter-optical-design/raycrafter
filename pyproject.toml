@@ -13,7 +13,7 @@ dependencies = [
   "numpy",
   "scipy",
   "matplotlib",
-  "PyQt6",
+  "PyQt6>=6.8",  # QStyleHints.setColorScheme, used to force the light scheme
   "pyqtgraph>=0.14",
 ]
 

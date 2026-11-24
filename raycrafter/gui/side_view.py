@@ -720,6 +720,10 @@ class SideView(pg.PlotWidget):
 
     def on_lens_dragged(self, graphics: LensGraphics) -> None:
         """A lens was dragged: move it (with its Plossl partner), or swap it with a neighbour."""
+        # pyqtgraph keeps sending drag events to the item under the mouse even after the
+        # graphics were rebuilt (e.g. Del pressed mid-drag); that lens is no longer shown.
+        if graphics not in self.lens_graphics:
+            return
         self.lens_drag_active = True
         index = self.lens_graphics.index(graphics)
         new_order = self.model.move_lens(index, graphics.requested_front_z())

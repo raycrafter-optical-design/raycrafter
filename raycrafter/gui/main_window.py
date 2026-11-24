@@ -30,6 +30,7 @@ from __future__ import annotations
 import copy
 import time
 from collections.abc import Callable
+from dataclasses import replace
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QPoint, Qt, QTimer
@@ -434,8 +435,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ files
 
     def has_unsaved_changes(self) -> bool:
-        """True if the design differs from the one last saved or loaded."""
-        return self.model.state != self.saved_state
+        """True if the design differs from the one last saved or loaded.
+
+        Which field is selected is not saved in a ZMX file, so it is not compared.
+        """
+        current = replace(self.model.state, selected_field_index=0)
+        return current != replace(self.saved_state, selected_field_index=0)
 
     def mark_saved(self) -> None:
         """Remember the current design as saved (after Save, Load or New)."""

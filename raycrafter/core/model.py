@@ -408,8 +408,16 @@ class OpticalModel:
 
         If every field is listed, the first field is kept. The selection moves to the field
         just before the first one removed (or to the first field).
+
+        Raises
+        ------
+        IndexError
+            If any index is not a field; nothing is removed then.
         """
         fields = self.state.fields
+        for field_index in field_indices:
+            if not 0 <= field_index < len(fields):
+                raise IndexError(f"There is no field {field_index}")
         to_remove = sorted(set(field_indices))
         if len(to_remove) >= len(fields):
             to_remove = to_remove[1:]  # keep the first field
