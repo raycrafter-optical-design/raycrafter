@@ -25,7 +25,8 @@ little or no AI. If something would confuse a careful human reader, it is wrong.
 - **Optiland.** It is pinned to a tested minor version in `pyproject.toml`. Any workaround for an
   Optiland bug goes in one clearly marked place, with a comment that links to the upstream issue.
   Delete the workaround once the fix is released. When new versions of Optiland are released:
-  test them and upgrade as soon as possible.
+  test them and upgrade as soon as possible. Every workaround, and every upstream fix we are
+  waiting for, is recorded in `optiland_fix.md` (see Releases for the check at each release).
 
 Package layout:
 
@@ -95,6 +96,17 @@ raycrafter/
 
 ## Releases
 
+- **Optiland check, before the code review.** When a release is being prepared, first check
+  whether Optiland has a new release (`gh release list --repo optiland/optiland`). If it has:
+  1. Switch to it (update the pin in `pyproject.toml` and `uv.lock`).
+  2. Go through `optiland_fix.md` and remove every workaround the new release makes
+     unnecessary. Move its entry to "Retired".
+  3. Re-patch anything that is still broken, and make sure each remaining workaround is in
+     `optiland_fix.md` with its upstream issue link (file an issue if there is none; ask Rob
+     before filing, and search existing issues first).
+  4. Run the full tests and pre-commit hooks.
+  Only then start the adversarial code review below. Update the "last checked" date in
+  `optiland_fix.md` even when there is no new release.
 - When it is time for a new release, you will first conduct an adversarial code review of
   work down between now and the last release. The main task of the review will be to find
   bugs that may have been introduced. However, you should also verify that the changes made
