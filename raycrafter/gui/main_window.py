@@ -69,7 +69,7 @@ from raycrafter.gui.analysis_panels import (
 )
 from raycrafter.gui.field_editor import FieldEditor
 from raycrafter.gui.lens_picker import LensPickerDialog
-from raycrafter.gui.side_view import IMAGE_MAX_Z, MIN_IMAGE_GAP_MM, SideView
+from raycrafter.gui.side_view import MIN_IMAGE_GAP_MM, SideView
 from raycrafter.gui.style import style_sheet
 from raycrafter.report import write_and_open_report
 
@@ -578,7 +578,9 @@ class MainWindow(QMainWindow):
 
         previous_image_z = state.image_z
         focus_z = self.model.autofocus()
-        focus_is_in_view = state.last_back_z() + MIN_IMAGE_GAP_MM <= focus_z <= IMAGE_MAX_Z
+        focus_is_in_view = (
+            state.last_back_z() + MIN_IMAGE_GAP_MM <= focus_z <= self.side_view.image_max_z()
+        )
         if not focus_is_in_view:
             state.image_z = previous_image_z
 
@@ -595,6 +597,10 @@ class MainWindow(QMainWindow):
         trace_ms = (time.perf_counter() - start) * 1000
 
         start = time.perf_counter()
+        if not self.is_dragging():
+            # The axes are refitted only once nothing is held, so they never move under the
+            # mouse; a design dragged beyond the view is brought into view on release.
+            self.side_view.fit_to_design()
         self.side_view.update_view(fast_trace.paths)
         self.spot_panel.show_result(fast_trace, state.fields)
         self.through_focus_panel.show_result(through_focus)

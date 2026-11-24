@@ -326,6 +326,33 @@ def test_drags_defer_the_slow_work_until_release(application):
     window.close()
 
 
+def test_side_view_fits_a_long_design_but_not_during_a_drag(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    default_z_range = window.side_view.getPlotItem().vb.viewRange()[0]
+
+    window.model.insert_lens(window.model.make_paraxial_lens(50.0, z=700.0))
+    window.model.state.image_z = 760.0
+    window.side_view.rebuild_lens_graphics()
+
+    # While a lens is held the axes stay still; they are refitted on release.
+    window.side_view.lens_drag_active = True
+    window.recompute_and_redraw()
+    assert window.side_view.getPlotItem().vb.viewRange()[0] == pytest.approx(default_z_range)
+
+    window.side_view.lens_drag_active = False
+    window.recompute_and_redraw()
+    z_min, z_max = window.side_view.getPlotItem().vb.viewRange()[0]
+    assert z_min <= 0.0 and z_max > 760.0
+    assert window.side_view.image_max_z() > 760.0  # the image plane can be dragged on
+
+    window.new_design()
+    window.recompute_and_redraw()
+    assert window.side_view.getPlotItem().vb.viewRange()[0] == pytest.approx(default_z_range)
+    window.close()
+
+
 def test_file_menu_new_save_and_load(application, discard_unsaved_changes, monkeypatch, tmp_path):
     window = MainWindow()
     menu_titles = [action.text() for action in window.menuBar().actions()]

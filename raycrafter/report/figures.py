@@ -24,8 +24,7 @@ from raycrafter.core.analysis import (
     airy_radius,
 )
 from raycrafter.core.plot_geometry import (
-    AXIS_Y_RANGE,
-    AXIS_Z_RANGE,
+    axis_ranges,
     largest_magnitude,
     lens_surface_arcs,
     ray_fan_limit_um,
@@ -108,8 +107,9 @@ def draw_ray_diagram(state: OpticalState, fast_trace: FastTrace) -> str:
     figure, axes = new_axes(
         (13.0, 4.4), dict(left=0.05, right=0.99, top=0.97, bottom=0.14), "z (mm)", "y (mm)"
     )
-    axes.set_xlim(*AXIS_Z_RANGE)
-    axes.set_ylim(*AXIS_Y_RANGE)
+    z_range, y_range = axis_ranges(state)
+    axes.set_xlim(*z_range)
+    axes.set_ylim(*y_range)
     axes.axhline(0, color=palette.AXIS_LINE, linewidth=0.9, linestyle="--", zorder=1)
 
     for paths, beam in zip(fast_trace.paths, state.fields):
@@ -141,7 +141,7 @@ def draw_ray_diagram(state: OpticalState, fast_trace: FastTrace) -> str:
     axes.axvline(state.image_z, color=palette.IMAGE, linewidth=3, zorder=5)
     axes.text(
         state.image_z,
-        AXIS_Y_RANGE[1] - 1.5,
+        y_range[1] - 1.5,
         "image",
         color="white",
         fontsize=9.5,

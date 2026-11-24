@@ -24,6 +24,27 @@ SIDE_GRID = "#e9ecef"  # faint square grid behind the side view
 TIMING = "#adb5bd"  # trace/draw timing text
 CANVAS_BORDER = "#adb5bd"  # thin frame around each plot
 
+# Colours for telling field angles apart, in the order Zemax uses (blue, green, red, ...),
+# dark enough to read on white. After the last one they repeat.
+FIELD_COLOURS = [
+    "#1c62d6",  # blue
+    "#2b9a3e",  # green
+    "#d62728",  # red
+    "#d9a400",  # yellow
+    "#8e44c9",  # purple
+    "#0f9fb0",  # cyan
+    "#e8590c",  # orange
+    "#c2255c",  # pink
+    "#5c3d2e",  # brown
+    "#495057",  # grey
+]
+
+
+def field_colour(field_number: int) -> str:
+    """The colour of the field with this (zero-based) number when fields are told apart."""
+    return FIELD_COLOURS[field_number % len(FIELD_COLOURS)]
+
+
 # Beam colours from wavelength are darkened to this fraction of full brightness, so that
 # yellow and green beams still stand out against the white background.
 BEAM_COLOUR_BRIGHTNESS = 0.8
