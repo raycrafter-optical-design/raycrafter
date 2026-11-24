@@ -7,10 +7,11 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QPoint, QPointF, Qt  # noqa: E402
+from PyQt6.QtGui import QDesktopServices  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
 
-from raycrafter.gui.about_dialog import PROJECT_URL, AboutDialog  # noqa: E402
+from raycrafter.gui.about_dialog import DOCS_URL, PROJECT_URL, AboutDialog  # noqa: E402
 from raycrafter.gui.lens_picker import ALL_COATINGS, LensPickerDialog  # noqa: E402
 from raycrafter.gui.main_window import MainWindow  # noqa: E402
 from raycrafter.gui.range_slider import RangeSlider  # noqa: E402
@@ -356,7 +357,7 @@ def test_side_view_fits_a_long_design_but_not_during_a_drag(application):
 def test_file_menu_new_save_and_load(application, discard_unsaved_changes, monkeypatch, tmp_path):
     window = MainWindow()
     menu_titles = [action.text() for action in window.menuBar().actions()]
-    assert menu_titles == ["RayCrafter", "File"]
+    assert menu_titles == ["RayCrafter", "File", "Help"]
     assert not window.has_unsaved_changes()  # the start-up bench counts as saved
 
     # Save writes the file and marks the design saved.
@@ -391,6 +392,16 @@ def test_unsaved_changes_can_cancel_new(application, monkeypatch):
     window.new_design()
     assert len(window.model.state.lenses) == 2  # nothing was thrown away
     window.mark_saved()  # so the window can close without asking
+    window.close()
+
+
+def test_help_menu_opens_the_documentation(application, monkeypatch):
+    window = MainWindow()
+    opened_urls = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened_urls.append(url.toString()))
+    help_menu = window.menuBar().actions()[-1].menu()
+    help_menu.actions()[0].trigger()
+    assert opened_urls == [DOCS_URL]
     window.close()
 
 

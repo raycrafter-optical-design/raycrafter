@@ -33,8 +33,8 @@ from collections.abc import Callable
 from dataclasses import replace
 
 import pyqtgraph as pg
-from PyQt6.QtCore import QPoint, Qt, QTimer
-from PyQt6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
+from PyQt6.QtCore import QPoint, Qt, QTimer, QUrl
+from PyQt6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -58,7 +58,7 @@ from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
 from raycrafter.core.state import OpticalState, PlacedLens
 from raycrafter.core.zmx_import import ZmxImportError
-from raycrafter.gui.about_dialog import AboutDialog
+from raycrafter.gui.about_dialog import DOCS_URL, AboutDialog
 from raycrafter.gui.analysis_panels import (
     FieldCurvaturePanel,
     MtfPanel,
@@ -240,7 +240,7 @@ class MainWindow(QMainWindow):
         return control_panel
 
     def _build_menus(self) -> None:
-        """The RayCrafter menu (About, Quit) and the File menu (New, Load ZMX, Save ZMX).
+        """The RayCrafter menu (About, Quit), the File menu (New, Load ZMX, Save ZMX) and Help.
 
         On macOS, Qt moves About and Quit into the application menu, which is named after
         the app, so they appear where Mac users expect them; the menu roles tell it which.
@@ -270,6 +270,14 @@ class MainWindow(QMainWindow):
         add_action(file_menu, "New", self.new_design, shortcut=QKeySequence.StandardKey.New)
         add_action(file_menu, "Load ZMX...", self.load_zmx, shortcut=QKeySequence.StandardKey.Open)
         add_action(file_menu, "Save ZMX...", self.save_zmx, shortcut=QKeySequence.StandardKey.Save)
+
+        help_menu = menu_bar.addMenu("Help")
+        add_action(
+            help_menu,
+            "RayCrafter Documentation",
+            self.open_documentation,
+            shortcut=QKeySequence.StandardKey.HelpContents,
+        )
 
     def _connect_signals(self) -> None:
         """Wire the buttons, side view and keyboard shortcuts to their handlers."""
@@ -536,6 +544,10 @@ class MainWindow(QMainWindow):
         self.mark_saved()
         self.statusBar().showMessage(f"Saved {file_path}", 5000)
         return True
+
+    def open_documentation(self) -> None:
+        """Help > RayCrafter Documentation: open the online documentation in the web browser."""
+        QDesktopServices.openUrl(QUrl(DOCS_URL))
 
     def show_about(self) -> None:
         """RayCrafter > About: the icon, name, version and project link."""
