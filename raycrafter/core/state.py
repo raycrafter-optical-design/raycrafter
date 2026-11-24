@@ -1,6 +1,6 @@
-"""The state of the lens bench: the lenses on the axis, the beam and the image plane.
+"""The state of the lens bench: the lenses on the axis, the beams and the image plane.
 
-All z positions are absolute positions along the optical axis, in mm. The beam comes from
+All z positions are absolute positions along the optical axis, in mm. The beams come from
 the left (negative z). These classes hold data only; editing is done by ``OpticalModel``
 (``raycrafter.core.model``) and optics by ``raycrafter.core.optic_builder`` and
 ``raycrafter.core.analysis``.
@@ -11,8 +11,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from raycrafter.core.prescription import LensSurface, flipped_prescription, lens_thickness
+from raycrafter.palette import wavelength_colour
 
-AXIS_START_Z = 0.0  # mm, where the beam starts
+AXIS_START_Z = 0.0  # mm, where the beams start
+DEFAULT_WAVELENGTH_NM = 555.0  # green, where the eye is most sensitive
 
 
 @dataclass
@@ -89,8 +91,50 @@ class PlacedLens:
 
 
 @dataclass
+class BeamField:
+    """One beam of light entering the bench from the left (a "field").
+
+    The beam is defined where it meets the plane of the first lens's front vertex (or the
+    start of the axis when there are no lenses): there it is ``diameter_mm`` wide and its
+    centre is ``offset_mm`` above the axis. Moving the first lens therefore carries the
+    beam's aim with it, as it always has for the beam angle.
+
+    Attributes
+    ----------
+    diameter_mm : float
+        Beam diameter at the first lens.
+    angle_deg : float
+        Angle of the beam's central ray to the axis, in degrees (positive rises).
+    vergence_dioptres : float
+        Dioptres (1/m): positive is converging, negative diverging, zero collimated.
+    offset_mm : float
+        Height of the beam centre above the axis at the first lens.
+    wavelength_nm : float
+        Wavelength the beam is traced at.
+    colour : str or None
+        Hex colour the beam is drawn in; None for the colour of its wavelength.
+    """
+
+    diameter_mm: float = 10.0
+    angle_deg: float = 0.0
+    vergence_dioptres: float = 0.0
+    offset_mm: float = 0.0
+    wavelength_nm: float = DEFAULT_WAVELENGTH_NM
+    colour: str | None = None
+
+    @property
+    def wavelength_um(self) -> float:
+        """Wavelength in micrometres, as Optiland wants it."""
+        return self.wavelength_nm / 1000.0
+
+    def display_colour(self) -> str:
+        """The colour to draw the beam in: its own, or else that of its wavelength."""
+        return self.colour if self.colour is not None else wavelength_colour(self.wavelength_nm)
+
+
+@dataclass
 class OpticalState:
-    """Everything the user can change: the lenses, the beam and the image plane.
+    """Everything the user can change: the lenses, the beams and the image plane.
 
     Attributes
     ----------
@@ -98,23 +142,33 @@ class OpticalState:
         Ordered left to right along the axis.
     next_group_id : int
         The id the next Plossl pair will get.
-    beam_diameter : float
-        Beam diameter at the first lens, in mm.
-    field_angle : float
-        Beam angle to the axis, in degrees.
-    beam_vergence : float
-        Dioptres (1/m): positive is converging, negative diverging, zero collimated.
+    fields : list of BeamField
+        The beams entering the bench. There is always at least one.
+    selected_field_index : int
+        The field that autofocus and the single-field analyses (through-focus, MTF, ray
+        fan, field curvature, f-number) use. The spot diagram and side view show every field.
     image_z : float
         z of the image plane, in mm.
     """
 
     lenses: list[PlacedLens] = field(default_factory=list)
     next_group_id: int = 1
-    beam_diameter: float = 10.0
-    field_angle: float = 0.0
-    beam_vergence: float = 0.0
+    fields: list[BeamField] = field(default_factory=lambda: [BeamField()])
+    selected_field_index: int = 0
     image_z: float = 310.0
+
+    @property
+    def selected_field(self) -> BeamField:
+        """The field the single-field analyses use."""
+        return self.fields[self.selected_field_index]
 
     def last_back_z(self) -> float:
         """z of the back vertex of the rightmost lens (0 if there are no lenses)."""
         return self.lenses[-1].back_z if self.lenses else AXIS_START_Z
+
+    def beam_reference_z(self) -> float:
+        """z of the plane where each field's diameter and offset are defined (mm).
+
+        This is the front vertex of the first lens, or the start of the axis with no lenses.
+        """
+        return self.lenses[0].z if self.lenses else AXIS_START_Z

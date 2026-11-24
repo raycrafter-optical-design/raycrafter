@@ -8,11 +8,13 @@
   lens to slide it along the axis; drag it past a neighbour's centre to swap them. Drag the
   green line to move the image plane (not while "Lock focus" is on).
 - Right-click a lens for Flip (F), Delete (Del or Backspace) and Make / Split Plossl.
+- "Add field" opens the field window (``raycrafter.gui.field_editor``), where beams are
+  added, removed and edited while the bench updates live.
 
 Updates come in two speeds, to keep the window responsive (see CLAUDE.md). The side view,
 spot, through-focus plot and status bar are recomputed on every change (coalesced, so a
 burst of drag events costs one recompute). Everything else waits until nothing is being
-dragged (a lens, the image plane or a slider handle):
+dragged (a lens or the image plane):
 
 - The MTF, ray fan and field curvature are faded while a drag goes on, then recomputed
   once the mouse is released (or SLOW_PLOT_DELAY_MS after a change that is not a drag),
@@ -42,7 +44,6 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -61,6 +62,7 @@ from raycrafter.gui.analysis_panels import (
     ThroughFocusPanel,
     make_tabs,
 )
+from raycrafter.gui.field_editor import FieldEditor
 from raycrafter.gui.lens_picker import LensPickerDialog
 from raycrafter.gui.side_view import IMAGE_MAX_Z, MIN_IMAGE_GAP_MM, SideView
 from raycrafter.gui.style import style_sheet
@@ -68,10 +70,6 @@ from raycrafter.report import write_and_open_report
 
 SLOW_PLOT_DELAY_MS = 120  # MTF, ray fan and field curvature wait this long after the last change
 STALE_PLOT_OPACITY = 0.4  # the slower plots are this faded while a drag makes them out of date
-VERGENCE_LIMIT_DIOPTRES = 1.0  # the vergence slider spans +/- this (as for an f = 1000 mm lens)
-DEFAULT_BEAM_DIAMETER_MM = 10  # what "Reset beam" restores
-BEAM_DIAMETER_RANGE_MM = (1, 40)
-BEAM_ANGLE_LIMIT_TENTHS = 100  # the angle slider works in tenths of a degree: +/-10 deg
 DEFAULT_PARAXIAL_FOCAL_LENGTH_MM = 100
 PARAXIAL_FOCAL_LENGTH_RANGE_MM = (-2000, 2000)
 FOCAL_LENGTH_BOX_WIDTH_PX = 82  # room for "-2000 mm" and the arrows, leaving the rest to buttons
@@ -97,6 +95,7 @@ class MainWindow(QMainWindow):
 
         self.model = model if model is not None else OpticalModel()
         self.lens_picker: LensPickerDialog | None = None  # made on first use, then kept
+        self.field_editor: FieldEditor | None = None  # made on first use, then kept
         self.f_number_readout: str | None = None  # last f-number text, kept during a drag
         self._build_widgets()
         self._connect_signals()
@@ -145,7 +144,8 @@ class MainWindow(QMainWindow):
         self.field_tabs = make_tabs([("Field curvature", self.field_curvature_panel)])
 
         bottom_row = QHBoxLayout()
-        bottom_row.addWidget(self._build_control_panel())
+        self.control_panel = self._build_control_panel()
+        bottom_row.addWidget(self.control_panel)
         for tab_widget in (self.spot_tabs, self.mtf_tabs, self.field_tabs):
             bottom_row.addWidget(tab_widget, stretch=1)
 
@@ -163,8 +163,7 @@ class MainWindow(QMainWindow):
         self.statusBar().addWidget(self.status_label)
 
     def _build_control_panel(self) -> QFrame:
-        """The framed panel of buttons and sliders."""
-        state = self.model.state
+        """The framed panel of buttons."""
         self.add_catalogue_lens_button = QPushButton("Add catalogue lens")
         self.add_paraxial_lens_button = QPushButton("Add paraxial lens")
         self.paraxial_focal_length_box = QSpinBox()
@@ -176,26 +175,14 @@ class MainWindow(QMainWindow):
             "Focal length of the next paraxial (ideal thin) lens; negative for a diverging lens"
         )
         self.autofocus_button = QPushButton("Autofocus")
-        self.reset_beam_button = QPushButton("Reset beam")
+        self.add_field_button = QPushButton("Add field")
+        self.add_field_button.setToolTip("Open the field window to add, remove and edit beams")
         self.save_zmx_button = QPushButton("Save ZMX")
         self.report_button = QPushButton("Generate report")
         self.lock_focus_checkbox = QCheckBox("Lock focus")  # off by default
         self.lock_focus_checkbox.setToolTip(
-            "Keep the image plane at best focus as lenses or the beam change, "
+            "Keep the image plane at best focus as lenses or the beams change, "
             "whenever that focus is in view"
-        )
-
-        self.diameter_slider, self.diameter_label = self._make_slider(
-            *BEAM_DIAMETER_RANGE_MM, value=int(state.beam_diameter)
-        )
-        self.angle_slider, self.angle_label = self._make_slider(
-            -BEAM_ANGLE_LIMIT_TENTHS, BEAM_ANGLE_LIMIT_TENTHS, value=int(state.field_angle * 10)
-        )
-        vergence_limit_hundredths = round(VERGENCE_LIMIT_DIOPTRES * 100)
-        self.vergence_slider, self.vergence_label = self._make_slider(
-            -vergence_limit_hundredths,
-            vergence_limit_hundredths,
-            value=round(state.beam_vergence * 100),
         )
 
         # Reminder of where the per-lens actions are, since they are not buttons.
@@ -225,17 +212,11 @@ class MainWindow(QMainWindow):
         controls.addLayout(add_lens_row, 0, 0, 1, 2)
         controls.addWidget(self.autofocus_button, 1, 0)
         controls.addWidget(self.lock_focus_checkbox, 1, 1)
-        controls.addWidget(self.diameter_label, 2, 0, 1, 2)
-        controls.addWidget(self.diameter_slider, 3, 0, 1, 2)
-        controls.addWidget(self.angle_label, 4, 0, 1, 2)
-        controls.addWidget(self.angle_slider, 5, 0, 1, 2)
-        controls.addWidget(self.vergence_label, 6, 0, 1, 2)
-        controls.addWidget(self.vergence_slider, 7, 0, 1, 2)
-        controls.addWidget(self.reset_beam_button, 8, 0)
-        controls.addWidget(self.save_zmx_button, 8, 1)
-        controls.addWidget(self.report_button, 9, 0, 1, 2)
-        controls.setRowStretch(10, 1)  # spare space goes above the hint, which sits at the foot
-        controls.addWidget(hint_label, 11, 0, 1, 2, Qt.AlignmentFlag.AlignBottom)
+        controls.addWidget(self.add_field_button, 2, 0)
+        controls.addWidget(self.save_zmx_button, 2, 1)
+        controls.addWidget(self.report_button, 3, 0, 1, 2)
+        controls.setRowStretch(4, 1)  # spare space goes above the hint, which sits at the foot
+        controls.addWidget(hint_label, 5, 0, 1, 2, Qt.AlignmentFlag.AlignBottom)
         controls.setContentsMargins(14, 14, 14, 14)
 
         # A framed card (QFrame#controls in the style sheet), so the controls read as one panel.
@@ -245,18 +226,8 @@ class MainWindow(QMainWindow):
         control_panel.setFixedWidth(CONTROL_PANEL_WIDTH_PX)
         return control_panel
 
-    @staticmethod
-    def _make_slider(minimum: int, maximum: int, value: int) -> tuple[QSlider, QLabel]:
-        """A horizontal slider and the label shown above it."""
-        slider = QSlider(Qt.Orientation.Horizontal)
-        slider.setRange(minimum, maximum)
-        slider.setValue(value)
-        label = QLabel()
-        label.setObjectName("sliderLabel")
-        return slider, label
-
     def _connect_signals(self) -> None:
-        """Wire the buttons, sliders, side view and keyboard shortcuts to their handlers."""
+        """Wire the buttons, side view and keyboard shortcuts to their handlers."""
         self.add_catalogue_lens_button.clicked.connect(self.open_lens_picker)
         self.add_paraxial_lens_button.clicked.connect(self.start_paraxial_lens_placement)
         # A focal length of zero is not a lens, so the button is off while the box shows 0.
@@ -264,10 +235,7 @@ class MainWindow(QMainWindow):
             lambda focal_length_mm: self.add_paraxial_lens_button.setEnabled(focal_length_mm != 0)
         )
         self.autofocus_button.clicked.connect(self.run_autofocus)
-        self.diameter_slider.valueChanged.connect(self.set_beam_diameter)
-        self.angle_slider.valueChanged.connect(self.set_field_angle)
-        self.vergence_slider.valueChanged.connect(self.set_beam_vergence)
-        self.reset_beam_button.clicked.connect(self.reset_beam)
+        self.add_field_button.clicked.connect(self.open_field_editor)
         self.save_zmx_button.clicked.connect(self.save_zmx)
         self.report_button.clicked.connect(self.generate_report)
         self.lock_focus_checkbox.toggled.connect(self.on_lock_focus_toggled)
@@ -278,8 +246,6 @@ class MainWindow(QMainWindow):
 
         # Releasing a dragged item brings back the readouts that are skipped during a drag.
         self.side_view.drag_finished.connect(self.request_update)
-        for slider in (self.diameter_slider, self.angle_slider, self.vergence_slider):
-            slider.sliderReleased.connect(self.request_update)
 
         # F and Delete/Backspace act on the lens under the pointer.
         QShortcut(
@@ -406,27 +372,21 @@ class MainWindow(QMainWindow):
         self.model.autofocus()
         self.request_update()
 
-    def set_beam_diameter(self, value_mm: int) -> None:
-        """Slider callback: beam diameter in mm."""
-        self.model.state.beam_diameter = float(value_mm)
-        self.request_update()
+    def open_field_editor(self) -> None:
+        """Show the field window (made on first use) and bring it to the front.
 
-    def set_field_angle(self, value_tenths: int) -> None:
-        """Slider callback: beam angle in tenths of a degree."""
-        self.model.state.field_angle = value_tenths / 10.0
-        self.request_update()
-
-    def set_beam_vergence(self, value_hundredths: int) -> None:
-        """Slider callback: beam vergence in hundredths of a dioptre (positive = converging)."""
-        self.model.state.beam_vergence = value_hundredths / 100.0
-        self.request_update()
-
-    def reset_beam(self) -> None:
-        """Put the beam back to collimated, on axis, at the default diameter."""
-        # Moving a slider fires its callback, which updates the model and schedules the redraw.
-        self.vergence_slider.setValue(0)
-        self.angle_slider.setValue(0)
-        self.diameter_slider.setValue(DEFAULT_BEAM_DIAMETER_MM)
+        The first time, it is put over the control panel, so it covers neither the side
+        view nor the plots the user is watching.
+        """
+        if self.field_editor is None:
+            self.field_editor = FieldEditor(self.model, parent=self)
+            self.field_editor.fields_changed.connect(self.request_update)
+            self.field_editor.adjustSize()
+            self.field_editor.move(self.control_panel.mapToGlobal(QPoint(0, 0)))
+        self.field_editor.refresh()  # the bench may have changed since it was last open
+        self.field_editor.show()
+        self.field_editor.raise_()
+        self.field_editor.activateWindow()
 
     def save_zmx(self) -> None:
         """Ask the user where to save, then export the current system as a Zemax .zmx file."""
@@ -483,12 +443,6 @@ class MainWindow(QMainWindow):
     def recompute_and_redraw(self) -> None:
         """Re-trace the system; refresh the side view, spot, through-focus and readouts."""
         state = self.model.state
-        self.diameter_label.setText(f"Beam diameter: {state.beam_diameter:.0f} mm")
-        self.angle_label.setText(f"Beam angle: {state.field_angle:+.1f} deg")
-        self.vergence_label.setText(
-            f"Beam vergence: {state.beam_vergence:+.2f} D  ({self.vergence_description()})"
-        )
-
         start = time.perf_counter()
         if self.lock_focus_checkbox.isChecked():
             self.refocus_if_focus_in_view()
@@ -498,7 +452,7 @@ class MainWindow(QMainWindow):
 
         start = time.perf_counter()
         self.side_view.update_view(fast_trace.paths)
-        self.spot_panel.show_result(fast_trace, state.field_angle)
+        self.spot_panel.show_result(fast_trace, state.fields)
         self.through_focus_panel.show_result(through_focus)
         draw_ms = (time.perf_counter() - start) * 1000
 
@@ -532,22 +486,14 @@ class MainWindow(QMainWindow):
             self.f_number_readout = None if f_number is None else f_number_text(f_number)
         if self.f_number_readout is not None:
             readouts.append(self.f_number_readout)
-        airy = airy_radius(fast_trace.spot.numerical_aperture)
+        airy = airy_radius(fast_trace.spot)
         if airy is not None:
             readouts.append(f"Airy radius={airy * 1000:.1f} um")
         self.status_label.setText("   ".join(readouts))
 
     def is_dragging(self) -> bool:
-        """True while the mouse holds a lens, the image plane or a slider handle."""
-        sliders = (self.diameter_slider, self.angle_slider, self.vergence_slider)
-        return self.side_view.is_dragging() or any(slider.isSliderDown() for slider in sliders)
-
-    def vergence_description(self) -> str:
-        """Plain-words description of the beam vergence: collimated, converging or diverging."""
-        vergence = self.model.state.beam_vergence
-        if vergence == 0.0:
-            return "collimated"
-        return "converging" if vergence > 0 else "diverging"
+        """True while the mouse holds a lens or the image plane."""
+        return self.side_view.is_dragging()
 
     def set_slow_plots_faded(self, faded: bool) -> None:
         """Fade the MTF, ray fan and field curvature (out of date), or show them normally."""
@@ -560,13 +506,13 @@ class MainWindow(QMainWindow):
             return  # they are recomputed when the drag ends
         self.update_mtf_tab()
         self.field_curvature_panel.show_result(
-            self.model.compute_field_curvature(), self.model.state.field_angle
+            self.model.compute_field_curvature(), self.model.state.selected_field.angle_deg
         )
         self.set_slow_plots_faded(False)
 
     def update_mtf_tab(self) -> None:
         """Compute whichever of the MTF and ray fan is showing; the other waits until selected."""
-        field_angle = self.model.state.field_angle
+        field_angle = self.model.state.selected_field.angle_deg
         if self.mtf_tabs.currentWidget() is self.mtf_panel:
             self.mtf_panel.show_result(self.model.compute_mtf(), field_angle)
         else:

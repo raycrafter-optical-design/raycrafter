@@ -29,18 +29,18 @@ def test_autofocus_lands_on_the_back_focal_point(focused_model):
 def test_on_axis_spot_is_far_below_the_diffraction_limit(focused_model):
     spot = focused_model.trace_fast().spot
     assert spot.rms_radius * 1000 == pytest.approx(0.07, abs=0.02)  # micrometres
-    assert spot.rms_radius < airy_radius(spot.numerical_aperture)
+    assert spot.rms_radius < airy_radius(spot)
 
 
 def test_off_axis_image_height_is_f_tan_theta(focused_model):
-    focused_model.state.field_angle = 5.0
+    focused_model.state.selected_field.angle_deg = 5.0
     spot = focused_model.trace_fast().spot
     assert abs(spot.centroid_y) == pytest.approx(200.0 * np.tan(np.radians(5.0)), rel=0.01)
 
 
 def test_flipping_the_lens_makes_the_spot_much_worse():
     model = OpticalModel()
-    model.state.beam_diameter = 20.0
+    model.state.selected_field.diameter_mm = 20.0
     model.autofocus()
     correct_way_round = model.trace_fast().spot.rms_radius
 
@@ -72,7 +72,7 @@ def bench_with(part_number: str, beam_diameter_mm: float) -> OpticalModel:
     """One lens on the bench, a collimated beam of the given diameter, autofocused."""
     model = OpticalModel(add_default_lens=False)
     model.add_lens(part_number)
-    model.state.beam_diameter = beam_diameter_mm
+    model.state.selected_field.diameter_mm = beam_diameter_mm
     model.autofocus()
     return model
 
@@ -109,7 +109,7 @@ def test_no_light_at_all_is_reported_not_an_error():
     model = OpticalModel(add_default_lens=False)
     first = model.add_lens("AC020-004-A")
     model.insert_lens(model.make_lens("AC020-004-A", front_z=first.back_z + 300.0))
-    model.state.field_angle = 10.0
+    model.state.selected_field.angle_deg = 10.0
     image_z = model.state.image_z
 
     fast_trace = model.trace_fast()

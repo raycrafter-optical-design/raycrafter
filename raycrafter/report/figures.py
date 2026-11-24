@@ -29,7 +29,7 @@ from raycrafter.core.plot_geometry import (
     largest_magnitude,
     lens_surface_arcs,
     ray_fan_limit_um,
-    rays_from_axis_start,
+    ray_polylines,
     spot_view_half_width_um,
 )
 from raycrafter.core.state import OpticalState, PlacedLens
@@ -104,7 +104,7 @@ def draw_paraxial_lens(axes, lens: PlacedLens) -> None:
 
 
 def draw_ray_diagram(state: OpticalState, fast_trace: FastTrace) -> str:
-    """The side view: lenses, rays and the image plane."""
+    """The side view: lenses, every field's rays (in its colour) and the image plane."""
     figure, axes = new_axes(
         (13.0, 4.4), dict(left=0.05, right=0.99, top=0.97, bottom=0.14), "z (mm)", "y (mm)"
     )
@@ -112,8 +112,9 @@ def draw_ray_diagram(state: OpticalState, fast_trace: FastTrace) -> str:
     axes.set_ylim(*AXIS_Y_RANGE)
     axes.axhline(0, color=palette.AXIS_LINE, linewidth=0.9, linestyle="--", zorder=1)
 
-    for ray_z, ray_y in rays_from_axis_start(state, fast_trace.paths):
-        axes.plot(ray_z, ray_y, color=palette.RAY, linewidth=1.3, zorder=3)
+    for paths, beam in zip(fast_trace.paths, state.fields):
+        for ray_z, ray_y in ray_polylines(paths):
+            axes.plot(ray_z, ray_y, color=beam.display_colour(), linewidth=1.3, zorder=3)
 
     # Lenses: a filled glass body between the first and last surface, every surface outlined.
     for lens in state.lenses:
@@ -152,26 +153,22 @@ def draw_ray_diagram(state: OpticalState, fast_trace: FastTrace) -> str:
     return figure_to_inline_svg(figure)
 
 
-def draw_spot_diagram(fast_trace: FastTrace) -> str:
-    """Spot diagram (micrometres about each centroid) with the Airy circle."""
-    spot, on_axis_spot = fast_trace.spot, fast_trace.on_axis_spot
+def draw_spot_diagram(state: OpticalState, fast_trace: FastTrace) -> str:
+    """Every field's spot (micrometres about its centroid), with the selected field's Airy circle."""
     figure, axes = new_axes(SQUARE_FIGURE_SIZE, SQUARE_MARGINS, "x (um)", "y (um)")
     axes.set_aspect("equal", adjustable="box")
     axes.axhline(0, color="#dee2e6", linewidth=1)
     axes.axvline(0, color="#dee2e6", linewidth=1)
 
-    # The 0 degree spot goes underneath so the current-angle spot lies on top.
-    if on_axis_spot is not None:
-        axes.scatter(
-            on_axis_spot.x * 1000.0,
-            on_axis_spot.y * 1000.0,
-            s=9,
-            color=palette.ON_AXIS,
-            linewidths=0,
-        )
-    axes.scatter(spot.x * 1000.0, spot.y * 1000.0, s=9, color=palette.TANGENTIAL, linewidths=0)
+    # The selected field's spot is drawn last, so it lies on top.
+    selected_index = fast_trace.selected_field_index
+    drawing_order = [index for index in range(len(fast_trace.spots)) if index != selected_index]
+    for index in drawing_order + [selected_index]:
+        field_spot = fast_trace.spots[index]
+        colour = state.fields[index].display_colour()
+        axes.scatter(field_spot.x * 1000.0, field_spot.y * 1000.0, s=9, color=colour, linewidths=0)
 
-    airy = airy_radius(spot.numerical_aperture)
+    airy = airy_radius(fast_trace.spot)
     if airy is not None:
         airy_um = airy * 1000.0
         angles = np.linspace(0.0, 2.0 * np.pi, 160)
@@ -182,7 +179,7 @@ def draw_spot_diagram(fast_trace: FastTrace) -> str:
             linewidth=1.3,
             linestyle="--",
         )
-    half_width = spot_view_half_width_um(spot, on_axis_spot)
+    half_width = spot_view_half_width_um(fast_trace.spots, fast_trace.spot)
     axes.set_xlim(-half_width, half_width)
     axes.set_ylim(-half_width, half_width)
     return figure_to_inline_svg(figure)
@@ -195,12 +192,7 @@ def draw_through_focus(result: ThroughFocusResult) -> str:
     )
 
     rms_current_um = result.rms_current * 1000.0
-    curve_maximum_um = largest_magnitude(rms_current_um)
-    if result.rms_on_axis is not None:
-        rms_on_axis_um = result.rms_on_axis * 1000.0
-        axes.plot(result.offsets, rms_on_axis_um, color=palette.ON_AXIS, linewidth=2)
-        curve_maximum_um = largest_magnitude(rms_current_um, rms_on_axis_um)
-    curve_maximum_um = curve_maximum_um or 1.0  # no light: any range will do
+    curve_maximum_um = largest_magnitude(rms_current_um) or 1.0  # no light: any range will do
     axes.plot(result.offsets, rms_current_um, color=palette.TANGENTIAL, linewidth=2)
 
     axes.axvline(0, color=palette.IMAGE, linewidth=2)

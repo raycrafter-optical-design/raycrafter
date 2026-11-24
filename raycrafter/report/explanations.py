@@ -15,8 +15,8 @@ EXPLANATIONS = {
             "off-axis aberrations such as coma.",
             "The <b>dashed grey circle</b> is the Airy disk, the smallest spot even a perfect lens can make "
             "because of diffraction. If the cloud sits inside it, the system is <i>diffraction limited</i>.",
-            "Blue is the current beam angle. Orange is the same beam on axis (0 deg), drawn for comparison "
-            "whenever the beam is tilted.",
+            "Each field (beam) is drawn in its own colour, centred on its own spot. The Airy disk and "
+            "the RMS radius quoted are those of the selected field.",
         ],
     ),
     "through_focus": (
@@ -67,7 +67,7 @@ EXPLANATIONS = {
             "A flat detector can only be at one distance, so the further these curves bend away from the "
             "green line, the more out of focus the edges of the field are when the centre is sharp.",
             "Blue (tangential) and orange (sagittal) separating from each other is astigmatism. The dashed "
-            "horizontal line, when present, marks the current beam angle.",
+            "horizontal line, when present, marks the selected field's angle.",
         ],
     ),
 }

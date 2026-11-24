@@ -13,8 +13,9 @@ off-the-shelf lenses on an optical axis, drag them around, and see the spot diag
 through-focus curve, MTF, ray fan and field curvature update as you go. The ray tracing is
 done by [Optiland](https://github.com/HarrisonKramer/optiland).
 
-At present it offers a short list of Thorlabs achromats, a single wavelength (555 nm) and a
-single beam. It can export the system as a Zemax `.zmx` file and write an HTML report.
+At present it offers the Thorlabs spherical lenses and ideal (paraxial) lenses, and any number
+of beams, each with its own width, angle, vergence, offset and wavelength. It can export the
+system as a Zemax `.zmx` file and write an HTML report.
 
 **Status:** pre-alpha. Expect anything to change, including the API.
 

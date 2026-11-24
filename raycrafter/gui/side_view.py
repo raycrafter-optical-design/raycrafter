@@ -1,5 +1,7 @@
 """The side view: the optical axis with its lenses, rays and image plane.
 
+Each field's rays are drawn in the field's colour.
+
 Lenses and the image plane can be dragged along the axis. Hovering a lens darkens it and
 shows its part number; that lens is the target of the right-click menu and the keyboard
 shortcuts (handled by the main window). The view edits the model directly when something
@@ -29,7 +31,7 @@ from raycrafter.core.plot_geometry import (
     AXIS_Y_RANGE,
     AXIS_Z_RANGE,
     lens_surface_arcs,
-    rays_from_axis_start,
+    ray_polylines,
 )
 from raycrafter.core.state import PlacedLens
 from raycrafter.gui.style import (
@@ -55,6 +57,7 @@ IMAGE_HOVER_TOLERANCE_PX = 6  # a pointer this close to the image line counts as
 LENS_FILL_ALPHA = 70  # fill opacity (0-255) of a lens on the bench
 GHOST_FILL_ALPHA = 35  # fill opacity of a lens being placed
 GHOST_Z_VALUE = 80  # the ghost is drawn above the lenses on the bench
+RAY_WIDTH_PX = 1.3
 PARAXIAL_LINE_WIDTH_PX = 3  # a paraxial lens is drawn as a line this thick
 PARAXIAL_ARROW_SIZE_PX = 11  # size of the arrowheads at each end of a paraxial lens
 PARAXIAL_GRAB_HALF_WIDTH_PX = 5  # a paraxial lens can be hovered and dragged this far either side
@@ -309,8 +312,7 @@ class SideView(pg.PlotWidget):
         self.grid_curve.setZValue(-10)  # behind the lenses and rays
         side.addItem(self.grid_curve)
 
-        self.ray_curve = pg.PlotCurveItem(pen=pg.mkPen(palette.RAY, width=1.3), connect="finite")
-        side.addItem(self.ray_curve)
+        self.ray_curves: list[pg.PlotCurveItem] = []  # one per field, made in update_view
 
         self.image_line = pg.InfiniteLine(
             angle=90,
@@ -378,11 +380,20 @@ class SideView(pg.PlotWidget):
             graphics.region.sigRegionChangeFinished.connect(self.on_lens_drag_finished)
             self.lens_graphics.append(graphics)
 
-    def update_view(self, paths: RayPaths) -> None:
-        """Redraw the rays, every lens and the image line from the current model state."""
-        rays = rays_from_axis_start(self.model.state, paths)
-        ray_z, ray_y = join_with_gaps([z for z, _ in rays], [y for _, y in rays])
-        self.ray_curve.setData(ray_z, ray_y)
+    def update_view(self, field_paths: list[RayPaths]) -> None:
+        """Redraw the rays, every lens and the image line from the current model state.
+
+        Parameters
+        ----------
+        field_paths : list of RayPaths
+            The side-view rays of each field, in the order of the model's fields.
+        """
+        fields = self.model.state.fields
+        self._match_ray_curve_count(len(field_paths))
+        for paths, beam, curve in zip(field_paths, fields, self.ray_curves):
+            rays = ray_polylines(paths)
+            ray_z, ray_y = join_with_gaps([z for z, _ in rays], [y for _, y in rays])
+            curve.setData(ray_z, ray_y, pen=pg.mkPen(beam.display_colour(), width=RAY_WIDTH_PX))
 
         # Move the draggable image line without re-triggering its own change signal.
         self.image_line.blockSignals(True)
@@ -391,6 +402,16 @@ class SideView(pg.PlotWidget):
         self.place_image_label()
 
         self.refresh_lens_colours()
+
+    def _match_ray_curve_count(self, field_count: int) -> None:
+        """Add or remove ray curves so there is one per field."""
+        side = self.getPlotItem()
+        while len(self.ray_curves) < field_count:
+            curve = pg.PlotCurveItem(connect="finite")
+            side.addItem(curve)
+            self.ray_curves.append(curve)
+        while len(self.ray_curves) > field_count:
+            side.removeItem(self.ray_curves.pop())
 
     def set_timings(self, trace_ms: float, draw_ms: float) -> None:
         """Show the trace and draw times, right-aligned in the top-right corner."""

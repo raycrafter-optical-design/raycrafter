@@ -26,7 +26,7 @@ def test_paraxial_lens_focuses_a_collimated_beam_at_f(paraxial_model):
 
 
 def test_off_axis_image_height_is_f_tan_theta(paraxial_model):
-    paraxial_model.state.field_angle = 5.0
+    paraxial_model.state.selected_field.angle_deg = 5.0
     paraxial_model.state.image_z = 150.0
     spot = paraxial_model.trace_fast().spot
     assert abs(spot.centroid_y) == pytest.approx(100.0 * np.tan(np.radians(5.0)), rel=1e-6)

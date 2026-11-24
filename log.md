@@ -167,3 +167,19 @@ paths", for drags only (other changes still wait SLOW_PLOT_DELAY_MS), and hiding
 during a drag in "Responsiveness first".
 **Why:** A pause mid-drag used to trigger the slow plots, which stutters on slower machines.
 Fading shows they are out of date; keeping the last f-number is less jarring than hiding it.
+
+## 2026-11-24: Fields replace the beam sliders (#7)
+**Decision:** The bench has a list of fields (beams), each with its own diameter, angle,
+vergence, offset, wavelength and colour, edited live in a small non-modal field window. The
+beam diameter, angle and vergence sliders and "Reset beam" are removed. The spot diagram and
+side view show every field; through-focus, MTF, ray fan, field curvature, f-number and
+autofocus use the selected field.
+**Why:** The sliders were a single-beam prototype. Rob chose to remove them rather than keep
+two ways of setting the same beam.
+
+## 2026-11-24: Each field is traced at its own wavelength
+**Decision:** Every field is traced at its own wavelength (default 555 nm), so glass
+dispersion shows, e.g. as a chromatic focal shift between a blue and a red field.
+**Supersedes:** "One wavelength (555 nm) for every lens, including IR designs".
+**Why:** Rob's choice when fields gained a wavelength; using it only for the beam colour
+would have been misleading.

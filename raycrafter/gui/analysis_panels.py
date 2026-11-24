@@ -27,6 +27,7 @@ from raycrafter.core.plot_geometry import (
     rms_radius_text,
     spot_view_half_width_um,
 )
+from raycrafter.core.state import BeamField
 from raycrafter.gui.style import PLOT_MIN_SIZE_PX, style_plot
 
 TITLE_SIZE = "11pt"
@@ -51,10 +52,10 @@ def make_tabs(tabs: list[tuple[str, QWidget]]) -> QTabWidget:
 
 
 class SpotPanel(pg.PlotWidget):
-    """Spot diagram, each field centred on its own centroid, with the Airy disk dashed.
+    """Spot diagram of every field, each centred on its own centroid and drawn in the field's
+    colour, with the selected field's Airy disk dashed.
 
-    The current-angle spot is blue. When the beam is tilted the 0 degree spot is drawn too
-    (orange, underneath) so the off-axis degradation can be compared at a glance.
+    The selected field's spot is drawn on top, so it is never hidden by the others.
     """
 
     def __init__(self) -> None:
@@ -67,25 +68,31 @@ class SpotPanel(pg.PlotWidget):
         self.airy_curve = pg.PlotCurveItem(
             pen=pg.mkPen(palette.AIRY, width=1.2, style=Qt.PenStyle.DashLine)
         )
-        self.on_axis_scatter = pg.ScatterPlotItem(
-            size=5, pen=None, brush=pg.mkBrush(palette.ON_AXIS)
-        )
-        self.current_scatter = pg.ScatterPlotItem(
-            size=5, pen=None, brush=pg.mkBrush(palette.TANGENTIAL)
-        )
-        for item in (self.airy_curve, self.on_axis_scatter, self.current_scatter):
-            plot.addItem(item)
+        plot.addItem(self.airy_curve)
+        self.field_scatters: list[pg.ScatterPlotItem] = []  # one per field
 
-    def show_result(self, fast_trace: FastTrace, field_angle: float) -> None:
-        """Draw the spots (micrometres about each centroid), the Airy disk and the RMS radii."""
-        spot, on_axis_spot = fast_trace.spot, fast_trace.on_axis_spot
-        self.current_scatter.setData(spot.x * 1000.0, spot.y * 1000.0)
-        if on_axis_spot is not None:
-            self.on_axis_scatter.setData(on_axis_spot.x * 1000.0, on_axis_spot.y * 1000.0)
-        else:
-            self.on_axis_scatter.setData([], [])
+    def show_result(self, fast_trace: FastTrace, fields: list[BeamField]) -> None:
+        """Draw every field's spot (micrometres about its centroid), the Airy disk and RMS.
 
-        airy = airy_radius(spot.numerical_aperture)
+        Parameters
+        ----------
+        fast_trace : FastTrace
+            The spots, one per field.
+        fields : list of BeamField
+            The fields, for their colours.
+        """
+        self._match_scatter_count(len(fast_trace.spots))
+        selected_index = fast_trace.selected_field_index
+        for index, (spot, beam, scatter) in enumerate(
+            zip(fast_trace.spots, fields, self.field_scatters)
+        ):
+            scatter.setData(
+                spot.x * 1000.0, spot.y * 1000.0, brush=pg.mkBrush(beam.display_colour())
+            )
+            scatter.setZValue(10 if index == selected_index else 5)
+
+        spot = fast_trace.spot
+        airy = airy_radius(spot)
         if airy is None:
             self.airy_curve.setData([], [])
         else:
@@ -93,27 +100,33 @@ class SpotPanel(pg.PlotWidget):
             angles = np.linspace(0.0, 2.0 * np.pi, 120)
             self.airy_curve.setData(airy_um * np.cos(angles), airy_um * np.sin(angles))
 
-        half_width = spot_view_half_width_um(spot, on_axis_spot)
+        half_width = spot_view_half_width_um(fast_trace.spots, spot)
         plot = self.getPlotItem()
         plot.setRange(xRange=(-half_width, half_width), yRange=(-half_width, half_width), padding=0)
 
-        # The title doubles as the legend: each RMS radius is written in its spot colour.
-        if on_axis_spot is None:
-            title = f"RMS radius {rms_radius_text(spot)}"
-            if not spot.has_light:
-                title = "No light reaches the image plane"
+        # With several fields, the title names the selected one, in its colour.
+        if not spot.has_light:
+            title = "No light reaches the image plane"
         else:
-            title = (
-                f'<span style="color:{palette.TANGENTIAL}">{field_angle:+.1f} deg: '
-                f"{rms_radius_text(spot)}</span>&nbsp;&nbsp;"
-                f'<span style="color:{palette.ON_AXIS}">0 deg: '
-                f"{rms_radius_text(on_axis_spot)}</span>"
-            )
+            title = f"RMS radius {rms_radius_text(spot)}"
+        if len(fields) > 1:
+            colour = fields[selected_index].display_colour()
+            title = f'<span style="color:{colour}">Field {selected_index + 1}: {title}</span>'
         plot.setTitle(title, size="10pt")
+
+    def _match_scatter_count(self, field_count: int) -> None:
+        """Add or remove scatter items so there is one per field."""
+        plot = self.getPlotItem()
+        while len(self.field_scatters) < field_count:
+            scatter = pg.ScatterPlotItem(size=5, pen=None)
+            plot.addItem(scatter)
+            self.field_scatters.append(scatter)
+        while len(self.field_scatters) > field_count:
+            plot.removeItem(self.field_scatters.pop())
 
 
 class ThroughFocusPanel(pg.PlotWidget):
-    """RMS spot radius against image plane position.
+    """RMS spot radius of the selected field against image plane position.
 
     Green is the current image plane, the dotted blue line the best focus and the dashed
     grey line the Airy radius.
@@ -134,22 +147,13 @@ class ThroughFocusPanel(pg.PlotWidget):
             label="Airy radius",
             labelOpts={"position": 0.12, "color": palette.AIRY},
         )
-        self.on_axis_curve = plot.plot(pen=pg.mkPen(palette.ON_AXIS, width=2))
         self.current_curve = plot.plot(pen=pg.mkPen(palette.TANGENTIAL, width=2))
 
     def show_result(self, result: ThroughFocusResult) -> None:
         """Draw RMS radius against offset, with the best focus and the Airy radius marked."""
         rms_current_um = result.rms_current * 1000.0
         self.current_curve.setData(result.offsets, rms_current_um, connect="finite")
-        curve_maximum_um = largest_magnitude(rms_current_um)
-
-        if result.rms_on_axis is not None:
-            rms_on_axis_um = result.rms_on_axis * 1000.0
-            self.on_axis_curve.setData(result.offsets, rms_on_axis_um, connect="finite")
-            curve_maximum_um = largest_magnitude(rms_current_um, rms_on_axis_um)
-        else:
-            self.on_axis_curve.setData([], [])
-        curve_maximum_um = curve_maximum_um or 1.0  # no light: any range will do
+        curve_maximum_um = largest_magnitude(rms_current_um) or 1.0  # no light: any range
 
         self.best_focus_line.setValue(result.best_offset)
 
@@ -261,7 +265,7 @@ class FieldCurvaturePanel(pg.PlotWidget):
         )
 
     def show_result(self, curvature: FieldCurvatureResult, field_angle: float) -> None:
-        """Draw the curves; a dashed line marks the current beam angle."""
+        """Draw the curves; a dashed line marks the selected field's angle."""
         # Angles with too little light are NaN; connect="finite" leaves gaps there.
         self.tangential_curve.setData(
             curvature.tangential_shift, curvature.angles, connect="finite"

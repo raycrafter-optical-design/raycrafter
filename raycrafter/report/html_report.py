@@ -23,10 +23,10 @@ from datetime import datetime
 from importlib import resources
 from pathlib import Path
 
-from raycrafter import palette
 from raycrafter.core.analysis import airy_radius
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
+from raycrafter.core.state import BeamField
 from raycrafter.report import figures
 from raycrafter.report.explanations import EXPLANATIONS
 
@@ -69,6 +69,17 @@ def vergence_words(vergence: float) -> str:
     return "converging" if vergence > 0 else "diverging"
 
 
+def field_html(field_index: int, beam: BeamField) -> str:
+    """A one-line description of a field, in the field's colour."""
+    text = (
+        f"Field {field_index + 1}: {beam.diameter_mm:g} mm {vergence_words(beam.vergence_dioptres)}"
+        f" at {beam.angle_deg:+.1f}°, {beam.wavelength_nm:g} nm"
+    )
+    if beam.offset_mm != 0.0:
+        text += f", offset {beam.offset_mm:+g} mm"
+    return f'<span style="color:{beam.display_colour()}">{html.escape(text)}</span>'
+
+
 def build_report_html(model: OpticalModel) -> str:
     """Trace the current system, draw every plot and return the whole report as HTML.
 
@@ -89,14 +100,13 @@ def build_report_html(model: OpticalModel) -> str:
     ray_fan = model.compute_ray_fan()
     curvature = model.compute_field_curvature()
 
-    spot, on_axis_spot = fast_trace.spot, fast_trace.on_axis_spot
+    spot = fast_trace.spot
     summary = fast_trace.summary
-    airy = airy_radius(spot.numerical_aperture)
+    airy = airy_radius(spot)
+    selected = state.selected_field
 
     chips = [
-        chip_html("Beam", f"{state.beam_diameter:.0f} mm"),
-        chip_html("Angle", f"{state.field_angle:+.1f}°"),
-        chip_html("Vergence", f"{state.beam_vergence:+.2f} D"),
+        chip_html("Fields", str(len(state.fields))),
         chip_html("Image plane", f"z = {state.image_z:.1f} mm"),
         chip_html("RMS radius", rms_radius_text(spot, "µm")),
     ]
@@ -115,21 +125,21 @@ def build_report_html(model: OpticalModel) -> str:
         html.escape(lens.part_number) + (" (flipped)" if lens.flipped else "")
         for lens in state.lenses
     )
-    ray_subtitle = f"{lens_names} &middot; {vergence_words(state.beam_vergence)} beam"
+    ray_subtitle = " &middot; ".join(
+        [lens_names] + [field_html(index, beam) for index, beam in enumerate(state.fields)]
+    )
 
-    if on_axis_spot is None:
-        spot_subtitle = f"RMS radius {rms_radius_text(spot, 'µm')}"
-    else:
+    # The spot shows every field; the RMS radius quoted is the selected field's.
+    spot_subtitle = f"RMS radius {rms_radius_text(spot, 'µm')}"
+    if len(state.fields) > 1:
         spot_subtitle = (
-            f'<span style="color:{palette.TANGENTIAL}">{state.field_angle:+.1f}°: '
-            f"{rms_radius_text(spot, 'µm')}</span> &nbsp; "
-            f'<span style="color:{palette.ON_AXIS}">0°: '
-            f"{rms_radius_text(on_axis_spot, 'µm')}</span>"
+            f'<span style="color:{selected.display_colour()}">'
+            f"Field {state.selected_field_index + 1}: {spot_subtitle}</span>"
         )
 
     # "+ 0.0" turns a rounded -0.000 into 0.000.
     best_focus_text = f"{round(through_focus.best_offset, 3) + 0.0:+.3f}"
-    angle_text = f"at {state.field_angle:+.1f}°"
+    angle_text = f"Field {state.selected_field_index + 1}, at {selected.angle_deg:+.1f}°"
     cards = [
         card_html(
             "rays",
@@ -140,7 +150,11 @@ def build_report_html(model: OpticalModel) -> str:
             with_help=False,
         ),
         card_html(
-            "spot", "Spot diagram", spot_subtitle, figures.draw_spot_diagram(fast_trace), "span-2"
+            "spot",
+            "Spot diagram",
+            spot_subtitle,
+            figures.draw_spot_diagram(state, fast_trace),
+            "span-2",
         ),
         card_html(
             "through_focus",
@@ -155,7 +169,7 @@ def build_report_html(model: OpticalModel) -> str:
             "field",
             "Field curvature",
             "Best focus against field angle",
-            figures.draw_field_curvature(curvature, state.field_angle),
+            figures.draw_field_curvature(curvature, selected.angle_deg),
             "span-3",
         ),
     ]

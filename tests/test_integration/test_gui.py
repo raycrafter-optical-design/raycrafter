@@ -32,7 +32,7 @@ def test_window_adds_pairs_and_deletes_lenses(application):
     assert len(window.side_view.lens_graphics) == 2
 
     window.make_plossl(0)
-    window.angle_slider.setValue(50)  # 5 degrees
+    window.model.state.selected_field.angle_deg = 5.0
     window.recompute_and_redraw()
     window.update_slow_plots()
     window.mtf_tabs.setCurrentIndex(1)  # ray fan tab
@@ -171,6 +171,47 @@ def test_placing_hovering_and_dragging_a_paraxial_lens(application):
     window.close()
 
 
+def test_field_window_adds_edits_and_removes_fields_live(application):
+    window = MainWindow()
+    window.show()
+    window.add_field_button.click()
+    editor = window.field_editor
+    assert editor.isVisible() and editor.field_list.count() == 1
+    assert not editor.remove_button.isEnabled()  # the only field cannot be removed
+
+    # "+" adds a copy of the selected field and selects it; edits go to that field at once.
+    editor.add_button.click()
+    assert editor.field_list.count() == 2 and window.model.state.selected_field_index == 1
+    editor.value_boxes["angle_deg"].setValue(4.0)
+    editor.value_boxes["wavelength_nm"].setValue(450.0)
+    assert window.model.state.fields[1].angle_deg == 4.0
+    assert window.model.state.fields[0].angle_deg == 0.0
+    assert window.update_timer.isActive()  # the window redraws without waiting for "OK"
+
+    window.recompute_and_redraw()
+    assert len(window.side_view.ray_curves) == len(window.spot_panel.field_scatters) == 2
+
+    # A colour of the user's own; "From wavelength" goes back to the automatic one.
+    editor.set_colour("#ff00ff")
+    assert window.model.state.selected_field.display_colour() == "#ff00ff"
+    editor.auto_colour_button.click()
+    assert window.model.state.selected_field.colour is None
+
+    # Picking the first field in the list fills the form with its values.
+    editor.field_list.setCurrentRow(0)
+    assert window.model.state.selected_field_index == 0
+    assert editor.value_boxes["angle_deg"].value() == 0.0
+
+    # "-" removes the selected fields.
+    editor.field_list.item(1).setSelected(True)
+    editor.field_list.item(0).setSelected(False)
+    editor.remove_button.click()
+    assert len(window.model.state.fields) == 1 and editor.field_list.count() == 1
+    window.recompute_and_redraw()
+    assert len(window.side_view.ray_curves) == 1
+    window.close()
+
+
 def test_range_slider_handles_follow_the_mouse_and_cannot_cross(application):
     slider = RangeSlider(0, 100)
     slider.resize(220, 30)
@@ -219,7 +260,7 @@ def test_drags_defer_the_slow_work_until_release(application):
     fade = window.mtf_panel.graphicsEffect()
     assert not fade.isEnabled()
 
-    window.model.state.beam_diameter = 20.0  # as if the beam slider were being dragged
+    window.model.state.selected_field.diameter_mm = 20.0  # as if edited during a drag
     window.side_view.lens_drag_active = True  # (any drag will do)
     window.recompute_and_redraw()
     assert "f/20.0" in window.status_label.text()  # stale value kept, not recomputed

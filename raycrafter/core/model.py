@@ -16,11 +16,13 @@ Example
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
 from raycrafter.core import analysis, optic_builder
 from raycrafter.core.prescription import prescription_from_zmx_text, surface_sag
-from raycrafter.core.state import AXIS_START_Z, OpticalState, PlacedLens
+from raycrafter.core.state import AXIS_START_Z, BeamField, OpticalState, PlacedLens
 from raycrafter.lenscatalog import thorlabs
 from raycrafter.lenscatalog.catalog import CatalogEntry
 
@@ -48,8 +50,9 @@ class OpticalModel:
     Attributes
     ----------
     state : OpticalState
-        The lenses, beam and image plane. Front ends may set the beam properties and
-        ``image_z`` directly; lens positions should be changed through the methods here.
+        The lenses, fields (beams) and image plane. Front ends may set a field's properties
+        and ``image_z`` directly; lenses, and which fields exist, should be changed through
+        the methods here.
     catalog : dict
         Part number -> CatalogEntry.
     """
@@ -381,15 +384,56 @@ class OpticalModel:
         for index in self.group_indices(lens_index):
             self.state.lenses[index].group_id = None
 
+    # ---------------------------------------------------------------- fields
+
+    def add_field(self) -> BeamField:
+        """Add a field: a copy of the selected one, which then becomes the selected field.
+
+        Starting from a copy means a new field is already sensible for the bench, and the
+        user changes only what should differ. It gets the colour of its wavelength, even if
+        the copied field had a colour of its own, so the two can be told apart once edited.
+
+        Returns
+        -------
+        BeamField
+            The new field (the last in ``state.fields``).
+        """
+        new_field = replace(self.state.selected_field, colour=None)
+        self.state.fields.append(new_field)
+        self.state.selected_field_index = len(self.state.fields) - 1
+        return new_field
+
+    def remove_fields(self, field_indices: list[int]) -> None:
+        """Remove the given fields, always keeping at least one.
+
+        If every field is listed, the first field is kept. The selection moves to the field
+        just before the first one removed (or to the first field).
+        """
+        fields = self.state.fields
+        to_remove = sorted(set(field_indices))
+        if len(to_remove) >= len(fields):
+            to_remove = to_remove[1:]  # keep the first field
+        if not to_remove:
+            return
+        for index in reversed(to_remove):
+            del fields[index]
+        self.state.selected_field_index = min(max(to_remove[0] - 1, 0), len(fields) - 1)
+
+    def select_field(self, field_index: int) -> None:
+        """Make this field the one that autofocus and the single-field analyses use."""
+        if not 0 <= field_index < len(self.state.fields):
+            raise IndexError(f"There is no field {field_index}")
+        self.state.selected_field_index = field_index
+
     # ---------------------------------------------------------------- optics
 
     def autofocus(self) -> float:
-        """Move the image plane to the z with the smallest RMS spot radius, and return it."""
+        """Move the image plane to the smallest RMS spot of the selected field, and return its z."""
         self.state.image_z = analysis.find_best_focus_z(self.state)
         return self.state.image_z
 
     def trace_fast(self) -> analysis.FastTrace:
-        """Spots, side-view rays and first-order summary (see ``analysis.trace_fast``)."""
+        """Every field's spot and rays, and the first-order summary (``analysis.trace_fast``)."""
         return analysis.trace_fast(self.state)
 
     def compute_f_number(self) -> analysis.FNumberResult | None:
@@ -405,7 +449,7 @@ class OpticalModel:
         return analysis.compute_ray_fan(self.state)
 
     def compute_mtf(self) -> analysis.MtfResult:
-        """FFT MTF at the current beam angle (see ``analysis.compute_mtf``)."""
+        """FFT MTF of the selected field (see ``analysis.compute_mtf``)."""
         return analysis.compute_mtf(self.state)
 
     def compute_field_curvature(self) -> analysis.FieldCurvatureResult:

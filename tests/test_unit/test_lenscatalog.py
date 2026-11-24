@@ -52,9 +52,9 @@ def one_lens_per_family(lenses) -> list[str]:
     return sorted(first_of_family.values())
 
 
-def test_bench_rebuilds_each_kind_of_lens_like_optiland_imports_it(lenses, monkeypatch):
+def test_bench_rebuilds_each_kind_of_lens_like_optiland_imports_it(lenses):
     """Our prescription reading and system building must give the same EFL as Optiland's own
-    ZMX import, at the lens's design wavelength. (At our 555 nm, IR-designed lenses differ
+    ZMX import, at the lens's design wavelength. (At the default 555 nm, IR-designed lenses differ
     from their catalogue focal length by a few percent because of dispersion.)
     """
     for part_number in one_lens_per_family(lenses):
@@ -64,10 +64,10 @@ def test_bench_rebuilds_each_kind_of_lens_like_optiland_imports_it(lenses, monke
             zmx_path.write_text(lenses[part_number].zmx_text, encoding="utf-8")
             imported = load_zemax_file(str(zmx_path))
         design_wavelength_um = imported.wavelengths.primary_wavelength.value
-        monkeypatch.setattr(optic_builder, "WAVELENGTH_UM", design_wavelength_um)
 
         model = OpticalModel(catalog=lenses, add_default_lens=False)
         model.add_lens(part_number)
+        model.state.selected_field.wavelength_nm = design_wavelength_um * 1000.0
         rebuilt_efl = float(optic_builder.build_optic(model.state).paraxial.f2())
 
         assert rebuilt_efl == pytest.approx(float(imported.paraxial.f2()), rel=1e-4), part_number
