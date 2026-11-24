@@ -410,3 +410,62 @@ def test_about_box_shows_the_project_link(application):
     assert "RayCrafter" in about.text_label.text()
     assert PROJECT_URL in about.text_label.text()
     about.close()
+
+
+def call_agent_tool_from_another_thread(application, client, tool_name, arguments):
+    """Make an agent tool call from a thread, as the MCP server does, while Qt runs events."""
+    import threading
+    import time
+
+    outcome = {}
+
+    def call():
+        try:
+            outcome["result"] = client.call(tool_name, arguments)
+        except Exception as error:  # handed back to the test
+            outcome["error"] = error
+
+    thread = threading.Thread(target=call)
+    thread.start()
+    while thread.is_alive():
+        application.processEvents()
+        time.sleep(0.005)
+    thread.join()
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["result"]
+
+
+def test_an_agent_edits_the_open_window_and_it_redraws(application, tmp_path):
+    from raycrafter.gui.agent_link import AgentLink
+    from raycrafter.mcp_server.link import LinkClient
+
+    window = MainWindow()
+    window.show()
+    endpoint_path = tmp_path / "agent_link.json"
+    agent_link = AgentLink(window, endpoint_path)
+    agent_link.start()
+    try:
+        client = LinkClient(endpoint_path)
+        assert len(window.side_view.lens_graphics) == 1
+
+        design = call_agent_tool_from_another_thread(
+            application, client, "add_lens", {"part_number": "AC254-050-A"}
+        )
+        assert len(design["lenses"]) == 2
+        assert len(window.model.state.lenses) == 2
+        assert len(window.side_view.lens_graphics) == 2  # the picture followed the model
+
+        summary = call_agent_tool_from_another_thread(application, client, "get_summary", {})
+        assert summary["effective_focal_length_mm"] is not None
+
+        with pytest.raises(ValueError, match="There is no lens 9"):
+            call_agent_tool_from_another_thread(
+                application, client, "delete_lens", {"lens_index": 9}
+            )
+        with pytest.raises(ValueError, match="Unknown tool"):
+            call_agent_tool_from_another_thread(application, client, "__import__", {})
+    finally:
+        agent_link.stop()
+        window.close()
+    assert not endpoint_path.exists()

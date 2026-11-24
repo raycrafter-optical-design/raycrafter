@@ -238,3 +238,12 @@ loading and saving are not restricted, and undo/redo is not offered (Rob's choic
 **Why:** `fastmcp` was the alternative: a bigger dependency we do not need. Keeping the tools
 free of the MCP library lets the same tools later drive the model inside the GUI. The package
 is not called `mcp` so it cannot be confused with the library.
+
+## 2026-11-24: Agents reach the open window through a local HTTP link (#28)
+**Decision:** The GUI runs a localhost-only HTTP server (stdlib) and writes its port and a random
+token to `~/.raycrafter/agent_link.json` (mode 600). `raycrafter-mcp` tries the window on every
+tool call and falls back to its own headless model if none answers; results say which
+(`connected_to`). Calls run on the Qt thread via a signal. On by default; `--no-agent-link` turns it off.
+**Why:** The Claude app starts the MCP server itself over stdio, so it is a different process from
+the window. Having the window host MCP over HTTP was rejected: the desktop app launches local
+servers rather than connecting to running ones. The fallback keeps the server useful with no window.

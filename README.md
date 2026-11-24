@@ -33,8 +33,13 @@ Or, with [uv](https://docs.astral.sh/uv/): `uvx raycrafter`.
 ## Use it from an AI agent
 
 RayCrafter includes an [MCP](https://modelcontextprotocol.io) server, so an AI agent such as
-Claude can search for lenses, build and edit a design, and read back the optics. At present the
-server has its own design and no window; it does not control a running RayCrafter GUI (#26).
+Claude can search for lenses, build and edit a design, and read back the optics.
+
+If a RayCrafter window is open, the agent controls that window: you watch its changes happen,
+and you can also move lenses yourself and ask the agent about the result. (The window listens
+only on your own computer, and writes a private file in `~/.raycrafter` so the server can find
+it. Start with `raycrafter --no-agent-link` to turn this off.) If no window is open, the server
+works on a design of its own, with no picture. Every result says which one it came from.
 
 **1. Install the MCP extra.**
 

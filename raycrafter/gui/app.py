@@ -26,7 +26,7 @@ def main() -> None:
     print("Loading the rest of the interface...", flush=True)
     from raycrafter.gui.main_window import MainWindow
 
-    app = QApplication(sys.argv)
+    app = QApplication(sys.argv)  # Qt ignores the options it does not know, e.g. --no-agent-link
     app.setApplicationName("RayCrafter")
     force_light_colour_scheme(app)
     app.setWindowIcon(make_app_icon())
@@ -37,6 +37,15 @@ def main() -> None:
     with announce_numba_compilation():
         window = MainWindow()
     window.show()
+
+    # An AI agent can drive this window through the MCP server (raycrafter-mcp), unless the
+    # user opts out. Done last, so the endpoint file only appears once the window is ready.
+    if "--no-agent-link" not in sys.argv:
+        from raycrafter.gui.agent_link import AgentLink
+
+        agent_link = AgentLink(window)
+        agent_link.start()
+        app.aboutToQuit.connect(agent_link.stop)
     print("Ready.", flush=True)
     sys.exit(app.exec())
 

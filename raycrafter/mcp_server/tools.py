@@ -31,6 +31,39 @@ PLOT_KINDS = (
     "field_curvature",
 )
 
+# The DesignTools methods that are offered to agents, in the order they are listed.
+READ_ONLY_TOOL_NAMES = [
+    "get_design",
+    "search_lenses",
+    "get_lens",
+    "get_summary",
+    "get_mtf",
+    "get_ray_fan",
+    "get_through_focus",
+    "get_field_curvature",
+    "get_plot",
+]
+EDITING_TOOL_NAMES = [  # these change the design, so a window must redraw after them
+    "add_lens",
+    "insert_lens",
+    "add_paraxial_lens",
+    "move_lens",
+    "flip_lens",
+    "delete_lens",
+    "make_plossl",
+    "split_plossl",
+    "set_field",
+    "add_field",
+    "remove_fields",
+    "select_field",
+    "set_image_z",
+    "autofocus",
+    "new_design",
+    "load_zmx",
+    "save_zmx",
+]
+TOOL_NAMES = READ_ONLY_TOOL_NAMES + EDITING_TOOL_NAMES
+
 
 def _number(value: float, digits: int = 4) -> float | None:
     """A float rounded for sending, with NaN and infinity turned into None (not valid JSON)."""
