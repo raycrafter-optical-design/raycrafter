@@ -76,17 +76,30 @@ raycrafter/
   below are what stand between them and `main`.
 - Use GitHub issues for substantial bugs, features and design questions, so there is a public
   record of what was done and why. Reference the issue in commits and PRs.
+- **Known problems.** For now, while the project is young, a feature is done when it does
+  what its issue asks, even if not all of its ramifications are resolved. Each significant
+  ramification left unsolved (e.g. something a file format cannot store, or an analysis that
+  ignores a new setting) gets its own issue with the `known problem` label. The feature's
+  issue is then closed with a comment linking to those known problems. This lets us move
+  forward quickly. We will review this choice as the project develops: later we may be
+  stricter and keep a feature's issue open until all its ramifications are resolved.
 - Before committing, run `uv run pre-commit run --all-files` and `uv run pytest`.
 - Agents may create or comment on issues, push `dev` and feature branches, and open pull
   requests into `dev`.
 - Small changes on `main` may be committed and pushed without asking. Merging `dev` into
   `main`, tagging and releasing need explicit approval from Rob.
 - Versions come from git tags via setuptools-scm, using semantic versioning. Pushing a
-  `vX.Y.Z` tag publishes to PyPI.
+  `vX.Y.Z` tag publishes to PyPI. Always verify your proposed new version number with the
+  human managing the project.
 - Stop and ask at natural check-points rather than finishing large pieces of work in one go.
 - Expect that people may have changed files you recently worked on or are working on now.
   Re-read a file before modifying it; otherwise you risk reverting a human developer's saved
   changes.
+- When it is time for a new release, you will first conduct an adversarial code review of
+  work down between now and the last release. The main task of the review will be to find
+  bugs that may have been introduced. However, you should also verify that the changes made
+  are in keeping with the design plan of the software. Once any fixes have been applied
+  after the review ends, it is OK to increment the version and deploy the new release.
 
 
 # Environment
