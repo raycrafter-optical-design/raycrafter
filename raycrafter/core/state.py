@@ -36,6 +36,9 @@ class PlacedLens:
         Lenses that share an id form a Plossl pair and move together.
     is_negative : bool
         True for a diverging lens (negative focal length). These cannot form a Plossl pair.
+    paraxial_focal_length_mm : float or None
+        Set only for a paraxial lens: an ideal thin lens of this focal length, with no
+        surfaces (``surfaces`` is empty) and zero thickness. It cannot be flipped or paired.
     """
 
     part_number: str
@@ -45,6 +48,12 @@ class PlacedLens:
     flipped: bool = False
     group_id: int | None = None
     is_negative: bool = False
+    paraxial_focal_length_mm: float | None = None
+
+    @property
+    def is_paraxial(self) -> bool:
+        """True for an ideal thin (paraxial) lens rather than a catalogue lens."""
+        return self.paraxial_focal_length_mm is not None
 
     def surfaces_in_use(self) -> list[LensSurface]:
         """The surfaces in the current orientation."""
@@ -70,7 +79,7 @@ class PlacedLens:
 
     @property
     def thickness(self) -> float:
-        """Front-vertex to back-vertex distance (mm)."""
+        """Front-vertex to back-vertex distance (mm); zero for a paraxial lens."""
         return lens_thickness(self.surfaces)
 
     @property

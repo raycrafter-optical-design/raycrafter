@@ -1,7 +1,7 @@
 """Filtering and grouping catalogue lenses for the lens picker.
 
-This is the logic behind the GUI's "Add lens" dialog, kept free of Qt so it can be tested on
-its own and reused by other front ends. ``LensFilter`` decides which lenses are shown;
+This is the logic behind the GUI's "Add catalogue lens" dialog, kept free of Qt so it can be
+tested on its own and reused by other front ends. ``LensFilter`` decides which lenses are shown;
 ``group_for_tree`` arranges them as category -> clear diameter -> lenses.
 
 Example

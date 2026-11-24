@@ -32,7 +32,7 @@ from raycrafter.core.plot_geometry import (
     rays_from_axis_start,
     spot_view_half_width_um,
 )
-from raycrafter.core.state import OpticalState
+from raycrafter.core.state import OpticalState, PlacedLens
 
 # Keep text as text in the SVG, so the page's own font is used and stays crisp.
 rcParams["svg.fonttype"] = "none"
@@ -88,6 +88,21 @@ def figure_to_inline_svg(figure: Figure) -> str:
     return root_tag + svg_text[root_tag_end:]
 
 
+def draw_paraxial_lens(axes, lens: PlacedLens) -> None:
+    """A paraxial lens: a thick vertical line with an arrowhead at each end.
+
+    The arrowheads point outwards for a positive lens and inwards for a negative one, the
+    usual symbols for a converging and a diverging thin lens.
+    """
+    half_height = lens.semi_aperture
+    axes.plot([lens.z, lens.z], [-half_height, half_height], color=palette.LENS, lw=2.2, zorder=4)
+    top_marker, bottom_marker = ("v", "^") if lens.is_negative else ("^", "v")
+    for marker, height in ((top_marker, half_height), (bottom_marker, -half_height)):
+        axes.plot(
+            lens.z, height, marker=marker, markersize=8, color=palette.PARAXIAL_ARROW, zorder=5
+        )
+
+
 def draw_ray_diagram(state: OpticalState, fast_trace: FastTrace) -> str:
     """The side view: lenses, rays and the image plane."""
     figure, axes = new_axes(
@@ -103,6 +118,9 @@ def draw_ray_diagram(state: OpticalState, fast_trace: FastTrace) -> str:
     # Lenses: a filled glass body between the first and last surface, every surface outlined.
     for lens in state.lenses:
         colour = palette.PLOSSL if lens.group_id is not None else palette.LENS
+        if lens.is_paraxial:
+            draw_paraxial_lens(axes, lens)
+            continue
         edge_y, surface_arcs_z = lens_surface_arcs(lens, point_count=80)
         front_z, back_z = surface_arcs_z[0], surface_arcs_z[-1]
 

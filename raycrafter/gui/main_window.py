@@ -1,7 +1,9 @@
 """The RayCrafter main window: side view on top, controls and analysis plots below.
 
-- "Add lens" opens the lens picker (``raycrafter.gui.lens_picker``). After Insert, a ghost
-  of the chosen lens follows the pointer along the axis; a click places it, Escape cancels.
+- "Add catalogue lens" opens the lens picker (``raycrafter.gui.lens_picker``). After Insert,
+  a ghost of the chosen lens follows the pointer along the axis; a click places it, Escape
+  cancels. "Add paraxial lens" does the same for an ideal thin lens of the focal length in
+  the box beside it.
 - Hover a lens and it turns a darker shade; that is the lens the actions apply to. Drag a
   lens to slide it along the axis; drag it past a neighbour's centre to swap them. Drag the
   green line to move the image plane (not while "Lock focus" is on).
@@ -41,6 +43,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -49,6 +52,7 @@ from raycrafter import palette
 from raycrafter.core.analysis import FastTrace, airy_radius
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
+from raycrafter.core.state import PlacedLens
 from raycrafter.gui.analysis_panels import (
     FieldCurvaturePanel,
     MtfPanel,
@@ -68,7 +72,10 @@ VERGENCE_LIMIT_DIOPTRES = 1.0  # the vergence slider spans +/- this (as for an f
 DEFAULT_BEAM_DIAMETER_MM = 10  # what "Reset beam" restores
 BEAM_DIAMETER_RANGE_MM = (1, 40)
 BEAM_ANGLE_LIMIT_TENTHS = 100  # the angle slider works in tenths of a degree: +/-10 deg
-CONTROL_PANEL_WIDTH_PX = 300
+DEFAULT_PARAXIAL_FOCAL_LENGTH_MM = 100
+PARAXIAL_FOCAL_LENGTH_RANGE_MM = (-2000, 2000)
+FOCAL_LENGTH_BOX_WIDTH_PX = 82  # room for "-2000 mm" and the arrows, leaving the rest to buttons
+CONTROL_PANEL_WIDTH_PX = 385
 HINT_MIN_HEIGHT_PX = 52  # height reserved for the help text at the foot of the control panel
 
 
@@ -158,7 +165,16 @@ class MainWindow(QMainWindow):
     def _build_control_panel(self) -> QFrame:
         """The framed panel of buttons and sliders."""
         state = self.model.state
-        self.add_button = QPushButton("Add lens")
+        self.add_catalogue_lens_button = QPushButton("Add catalogue lens")
+        self.add_paraxial_lens_button = QPushButton("Add paraxial lens")
+        self.paraxial_focal_length_box = QSpinBox()
+        self.paraxial_focal_length_box.setRange(*PARAXIAL_FOCAL_LENGTH_RANGE_MM)
+        self.paraxial_focal_length_box.setValue(DEFAULT_PARAXIAL_FOCAL_LENGTH_MM)
+        self.paraxial_focal_length_box.setSuffix(" mm")
+        self.paraxial_focal_length_box.setMaximumWidth(FOCAL_LENGTH_BOX_WIDTH_PX)
+        self.paraxial_focal_length_box.setToolTip(
+            "Focal length of the next paraxial (ideal thin) lens; negative for a diverging lens"
+        )
         self.autofocus_button = QPushButton("Autofocus")
         self.reset_beam_button = QPushButton("Reset beam")
         self.save_zmx_button = QPushButton("Save ZMX")
@@ -196,20 +212,28 @@ class MainWindow(QMainWindow):
         hint_label.setMinimumHeight(HINT_MIN_HEIGHT_PX)
         hint_label.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
 
+        # Top row: the two ways of adding a lens; the paraxial one has its focal length beside it.
+        add_lens_row = QHBoxLayout()
+        add_lens_row.setSpacing(6)
+        for button in (self.add_catalogue_lens_button, self.add_paraxial_lens_button):
+            button.setStyleSheet("padding: 6px 6px;")  # narrower than usual, so the row fits
+            add_lens_row.addWidget(button)
+        add_lens_row.addWidget(self.paraxial_focal_length_box)
+
         controls = QGridLayout()
         controls.setSpacing(8)
-        controls.addWidget(self.add_button, 0, 0)
-        controls.addWidget(self.autofocus_button, 0, 1)
-        controls.addWidget(self.diameter_label, 1, 0, 1, 2)
-        controls.addWidget(self.diameter_slider, 2, 0, 1, 2)
-        controls.addWidget(self.angle_label, 3, 0, 1, 2)
-        controls.addWidget(self.angle_slider, 4, 0, 1, 2)
-        controls.addWidget(self.vergence_label, 5, 0, 1, 2)
-        controls.addWidget(self.vergence_slider, 6, 0, 1, 2)
-        controls.addWidget(self.reset_beam_button, 7, 0)
-        controls.addWidget(self.save_zmx_button, 7, 1)
-        controls.addWidget(self.report_button, 8, 0, 1, 2)
-        controls.addWidget(self.lock_focus_checkbox, 9, 0, 1, 2)
+        controls.addLayout(add_lens_row, 0, 0, 1, 2)
+        controls.addWidget(self.autofocus_button, 1, 0)
+        controls.addWidget(self.lock_focus_checkbox, 1, 1)
+        controls.addWidget(self.diameter_label, 2, 0, 1, 2)
+        controls.addWidget(self.diameter_slider, 3, 0, 1, 2)
+        controls.addWidget(self.angle_label, 4, 0, 1, 2)
+        controls.addWidget(self.angle_slider, 5, 0, 1, 2)
+        controls.addWidget(self.vergence_label, 6, 0, 1, 2)
+        controls.addWidget(self.vergence_slider, 7, 0, 1, 2)
+        controls.addWidget(self.reset_beam_button, 8, 0)
+        controls.addWidget(self.save_zmx_button, 8, 1)
+        controls.addWidget(self.report_button, 9, 0, 1, 2)
         controls.setRowStretch(10, 1)  # spare space goes above the hint, which sits at the foot
         controls.addWidget(hint_label, 11, 0, 1, 2, Qt.AlignmentFlag.AlignBottom)
         controls.setContentsMargins(14, 14, 14, 14)
@@ -233,7 +257,12 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         """Wire the buttons, sliders, side view and keyboard shortcuts to their handlers."""
-        self.add_button.clicked.connect(self.open_lens_picker)
+        self.add_catalogue_lens_button.clicked.connect(self.open_lens_picker)
+        self.add_paraxial_lens_button.clicked.connect(self.start_paraxial_lens_placement)
+        # A focal length of zero is not a lens, so the button is off while the box shows 0.
+        self.paraxial_focal_length_box.valueChanged.connect(
+            lambda focal_length_mm: self.add_paraxial_lens_button.setEnabled(focal_length_mm != 0)
+        )
         self.autofocus_button.clicked.connect(self.run_autofocus)
         self.diameter_slider.valueChanged.connect(self.set_beam_diameter)
         self.angle_slider.valueChanged.connect(self.set_field_angle)
@@ -283,9 +312,19 @@ class MainWindow(QMainWindow):
         part_number = self.lens_picker.selected_part_number()
         if part_number is None:
             return
-        self.side_view.start_placement(self.model.make_lens(part_number))
+        self.start_lens_placement(self.model.make_lens(part_number))
+
+    def start_paraxial_lens_placement(self) -> None:
+        """Let the user place a paraxial lens with the focal length shown beside the button."""
+        focal_length_mm = float(self.paraxial_focal_length_box.value())
+        if focal_length_mm != 0.0:
+            self.start_lens_placement(self.model.make_paraxial_lens(focal_length_mm))
+
+    def start_lens_placement(self, new_lens: PlacedLens) -> None:
+        """Make a new lens follow the pointer along the axis until a click places it."""
+        self.side_view.start_placement(new_lens)
         self.statusBar().showMessage(
-            f"Click on the axis to place {part_number}. Esc or right-click to cancel."
+            f"Click on the axis to place {new_lens.part_number}. Esc or right-click to cancel."
         )
 
     def on_placement_finished(self, placed: bool) -> None:
@@ -331,11 +370,12 @@ class MainWindow(QMainWindow):
 
         A tab in an entry's text puts the keyboard shortcut in a right-hand column.
         """
-        in_pair = self.model.state.lenses[lens_index].group_id is not None
+        lens = self.model.state.lenses[lens_index]
+        in_pair = lens.group_id is not None
         menu = QMenu(self)
 
         flip_action = menu.addAction("Flip\tF")
-        flip_action.setEnabled(not in_pair)
+        flip_action.setEnabled(not in_pair and not lens.is_paraxial)
         flip_action.triggered.connect(lambda: self.flip_lens(lens_index))
 
         delete_action = menu.addAction("Delete\tDel")

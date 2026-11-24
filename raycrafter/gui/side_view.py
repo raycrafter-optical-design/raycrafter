@@ -8,6 +8,9 @@ is dragged, then emits ``changed`` so the main window recomputes and redraws.
 To insert a lens, the main window calls ``start_placement``: a dashed ghost of the lens then
 follows the pointer along the axis, snapped to the nearest gap it fits in (red where it fits
 nowhere). A left click puts it on the bench; Escape or a right click cancels.
+
+A paraxial (ideal thin) lens is drawn as a line with arrowheads. It has no thickness, so it
+can be hovered and dragged a few pixels either side of its line.
 """
 
 from __future__ import annotations
@@ -52,6 +55,9 @@ IMAGE_HOVER_TOLERANCE_PX = 6  # a pointer this close to the image line counts as
 LENS_FILL_ALPHA = 70  # fill opacity (0-255) of a lens on the bench
 GHOST_FILL_ALPHA = 35  # fill opacity of a lens being placed
 GHOST_Z_VALUE = 80  # the ghost is drawn above the lenses on the bench
+PARAXIAL_LINE_WIDTH_PX = 3  # a paraxial lens is drawn as a line this thick
+PARAXIAL_ARROW_SIZE_PX = 11  # size of the arrowheads at each end of a paraxial lens
+PARAXIAL_GRAB_HALF_WIDTH_PX = 5  # a paraxial lens can be hovered and dragged this far either side
 
 
 class LensNameTag(pg.TextItem):
@@ -76,21 +82,34 @@ class LensNameTag(pg.TextItem):
 
 
 class LensShape:
-    """The pyqtgraph items that draw a lens: a filled body and its outline.
+    """The pyqtgraph items that draw a lens.
+
+    A catalogue lens is a filled glass body with its outline. A paraxial lens is a thick
+    vertical line with an arrowhead at each end: pointing outwards for a positive lens and
+    inwards for a negative one.
 
     On its own this is the ghost of a lens being placed; ``LensGraphics`` adds dragging for
     the lenses on the bench.
     """
 
-    def __init__(self, plot_item: pg.PlotItem) -> None:
+    def __init__(self, plot_item: pg.PlotItem, paraxial: bool = False) -> None:
         self.plot_item = plot_item
-
-        # The front and back outlines drive the fill; the outline curve draws the full shape.
-        self.front_curve = pg.PlotCurveItem()
-        self.back_curve = pg.PlotCurveItem()
-        self.fill = pg.FillBetweenItem(self.front_curve, self.back_curve)
+        self.paraxial = paraxial
         self.outline = pg.PlotCurveItem(connect="finite")
-        self.items: list = [self.fill, self.outline]
+
+        if paraxial:
+            self.arrowheads = pg.ScatterPlotItem(
+                size=PARAXIAL_ARROW_SIZE_PX,
+                pen=pg.mkPen(None),
+                brush=pg.mkBrush(palette.PARAXIAL_ARROW),
+            )
+            self.items: list = [self.outline, self.arrowheads]
+        else:
+            # The front and back outlines drive the fill; the outline curve draws the shape.
+            self.front_curve = pg.PlotCurveItem()
+            self.back_curve = pg.PlotCurveItem()
+            self.fill = pg.FillBetweenItem(self.front_curve, self.back_curve)
+            self.items = [self.fill, self.outline]
         for item in self.items:
             plot_item.addItem(item)
 
@@ -118,6 +137,11 @@ class LensShape:
 
         A dashed outline and fainter fill mark the ghost of a lens that is being placed.
         """
+        line_style = Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine
+        if self.paraxial:
+            self._draw_paraxial(lens, colour, line_style)
+            return
+
         edge_y, surface_arcs_z = lens_surface_arcs(lens)
 
         # The glass body runs from the first surface to the last; internal cemented surfaces
@@ -133,17 +157,34 @@ class LensShape:
         )
         self.outline.setData(outline_z, outline_y)
 
-        line_style = Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine
         self.outline.setPen(pg.mkPen(colour, width=1.8, style=line_style))
         fill_alpha = GHOST_FILL_ALPHA if dashed else LENS_FILL_ALPHA
         self.fill.setBrush(pg.mkBrush(colour_with_alpha(colour, fill_alpha)))
 
+    def _draw_paraxial(self, lens: PlacedLens, colour: str, line_style: Qt.PenStyle) -> None:
+        """A vertical line the height of the lens, with an arrowhead at the top and bottom."""
+        half_height = lens.semi_aperture
+        self.outline.setData([lens.z, lens.z], [-half_height, half_height])
+        self.outline.setPen(pg.mkPen(colour, width=PARAXIAL_LINE_WIDTH_PX, style=line_style))
+
+        # pyqtgraph's "t1" is a triangle pointing up and "t" one pointing down.
+        top_symbol, bottom_symbol = ("t", "t1") if lens.is_negative else ("t1", "t")
+        self.arrowheads.setData(
+            x=[lens.z, lens.z], y=[half_height, -half_height], symbol=[top_symbol, bottom_symbol]
+        )
+
 
 class LensGraphics(LensShape):
-    """A lens on the bench: its shape plus an invisible region that lets it be dragged."""
+    """A lens on the bench: its shape plus an invisible region that lets it be dragged.
 
-    def __init__(self, plot_item: pg.PlotItem) -> None:
-        super().__init__(plot_item)
+    The region spans the lens from front to back vertex. A paraxial lens has no thickness,
+    so its region is widened by ``grab_margin_mm`` on each side to give the pointer
+    something to hold.
+    """
+
+    def __init__(self, plot_item: pg.PlotItem, paraxial: bool = False) -> None:
+        super().__init__(plot_item, paraxial)
+        self.grab_margin_mm = 0.0
 
         # The region is invisible; it only provides whole-lens dragging along z. pyqtgraph
         # derives a hover brush from the normal one, and with a transparent brush that came
@@ -161,9 +202,21 @@ class LensGraphics(LensShape):
     def update(self, lens: PlacedLens, colour: str) -> None:
         """Redraw the lens and move its drag region to match."""
         self.draw(lens, colour)
+        if self.paraxial:
+            self.grab_margin_mm = paraxial_grab_margin_mm(self.plot_item)
         self.region.blockSignals(True)
-        self.region.setRegion((lens.z, lens.back_z))
+        self.region.setRegion((lens.z - self.grab_margin_mm, lens.back_z + self.grab_margin_mm))
         self.region.blockSignals(False)
+
+    def requested_front_z(self) -> float:
+        """Where the user has dragged the lens's front vertex to (mm)."""
+        return float(self.region.getRegion()[0]) + self.grab_margin_mm
+
+
+def paraxial_grab_margin_mm(plot_item: pg.PlotItem) -> float:
+    """How far either side of a paraxial lens (mm) the pointer can be and still hold it."""
+    mm_per_pixel = plot_item.vb.viewPixelSize()[0]
+    return PARAXIAL_GRAB_HALF_WIDTH_PX * mm_per_pixel
 
 
 @dataclass
@@ -316,8 +369,8 @@ class SideView(pg.PlotWidget):
         self.hovered_index = None
 
         side = self.getPlotItem()
-        for _ in self.model.state.lenses:
-            graphics = LensGraphics(side)
+        for lens in self.model.state.lenses:
+            graphics = LensGraphics(side, paraxial=lens.is_paraxial)
             # The signal passes the region as an argument; swallow it and bind our own object.
             graphics.region.sigRegionChanged.connect(
                 lambda _region, graphics=graphics: self.on_lens_dragged(graphics)
@@ -416,11 +469,17 @@ class SideView(pg.PlotWidget):
     # ------------------------------------------------------------- hover and colours
 
     def lens_index_at(self, view_point: QPointF) -> int | None:
-        """Index of the (frontmost) lens whose outline contains the point, or None."""
+        """Index of the (frontmost) lens whose outline contains the point, or None.
+
+        A paraxial lens is a line with no thickness, so it counts as under the pointer a few
+        pixels either side.
+        """
+        grab_margin_mm = paraxial_grab_margin_mm(self.getPlotItem())
         found_index = None
         for index, lens in enumerate(self.model.state.lenses):
+            margin_mm = grab_margin_mm if lens.is_paraxial else 0.0
             if (
-                lens.z <= view_point.x() <= lens.back_z
+                lens.z - margin_mm <= view_point.x() <= lens.back_z + margin_mm
                 and abs(view_point.y()) <= lens.semi_aperture
             ):
                 found_index = index
@@ -544,7 +603,7 @@ class SideView(pg.PlotWidget):
         dragged meanwhile, so a click near one places the new lens rather than moving it.
         """
         self.cancel_placement()  # in case a previous placement is still going on
-        ghost = LensShape(self.getPlotItem())
+        ghost = LensShape(self.getPlotItem(), paraxial=new_lens.is_paraxial)
         ghost.set_z_value(GHOST_Z_VALUE)
         ghost.set_visible(False)  # shown once the pointer is over the plot
         self.placement = Placement(lens=new_lens, ghost=ghost)
@@ -642,7 +701,7 @@ class SideView(pg.PlotWidget):
         """A lens was dragged: move it (with its Plossl partner), or swap it with a neighbour."""
         self.lens_drag_active = True
         index = self.lens_graphics.index(graphics)
-        new_order = self.model.move_lens(index, float(graphics.region.getRegion()[0]))
+        new_order = self.model.move_lens(index, graphics.requested_front_z())
         if new_order is not None:
             # The lens list was reordered; reorder the graphics (and the hover marker) to match,
             # so the item being dragged keeps showing the lens it belongs to.

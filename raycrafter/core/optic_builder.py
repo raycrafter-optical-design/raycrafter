@@ -52,11 +52,11 @@ def build_optic(
 ) -> Optic:
     """Create a fresh Optiland system from the bench state.
 
-    Lenses are chained left to right. The last surface of each lens is followed by air up
-    to the next lens (or the image plane). Each lens surface has the lens's clear aperture,
-    which blocks rays outside the rim. The first surface is where the entrance pupil (the
-    beam) is defined. With no lenses a flat air surface takes that role, so the beam still
-    reaches the image.
+    Lenses are chained left to right; a paraxial lens is a single Optiland paraxial surface.
+    The last surface of each lens is followed by air up to the next lens (or the image
+    plane). Each lens surface has the lens's clear aperture, which blocks rays outside the
+    rim. The first surface is where the entrance pupil (the beam) is defined. With no lenses
+    a flat air surface takes that role, so the beam still reaches the image.
 
     Parameters
     ----------
@@ -82,6 +82,20 @@ def build_optic(
             is_last_lens = lens_number == len(state.lenses) - 1
             next_front_z = state.image_z if is_last_lens else state.lenses[lens_number + 1].z
             gap_after_lens = max(next_front_z - lens.back_z, 0.0)
+
+            if lens.is_paraxial:
+                # An ideal thin lens is one flat Optiland "paraxial" surface that bends every
+                # ray as a perfect lens of focal length f would.
+                optic.surfaces.add(
+                    index=surface_index,
+                    surface_type="paraxial",
+                    f=lens.paraxial_focal_length_mm,
+                    thickness=gap_after_lens,
+                    is_stop=(surface_index == 1),
+                    aperture=RadialAperture(r_max=lens.semi_aperture),
+                )
+                surface_index += 1
+                continue
 
             surfaces = lens.surfaces_in_use()
             for surface_number, surface in enumerate(surfaces):

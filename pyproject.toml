@@ -138,5 +138,5 @@ commands =
 [tool.codespell]
 skip = '.git,*.json'
 check-hidden = true
-# ACN is a Thorlabs part-number prefix (negative achromats), not a typo.
-ignore-words-list = 'acn'
+# Not typos: ACN is a Thorlabs part-number prefix (negative achromats); PARM is a Zemax keyword.
+ignore-words-list = 'acn,parm'

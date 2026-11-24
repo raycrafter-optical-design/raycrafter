@@ -137,6 +137,40 @@ def test_placing_a_lens_with_the_ghost(application):
     window.close()
 
 
+def test_placing_hovering_and_dragging_a_paraxial_lens(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    side_view = window.side_view
+
+    # The focal length box sets the new lens; a click on the axis places it.
+    window.paraxial_focal_length_box.setValue(-80)
+    window.add_paraxial_lens_button.click()
+    assert side_view.placement.lens.paraxial_focal_length_mm == -80.0
+    side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, 40.0)))
+    paraxial_lens = window.model.state.lenses[0]
+    assert paraxial_lens.is_paraxial and paraxial_lens.z == pytest.approx(40.0, abs=1.0)
+
+    # A zero-thickness lens can still be hovered a couple of pixels off its line ...
+    window.recompute_and_redraw()
+    pixel_mm = side_view.getPlotItem().vb.viewPixelSize()[0]
+    near_line = QPointF(paraxial_lens.z + 2 * pixel_mm, 0.0)
+    assert side_view.lens_index_at(near_line) == 0
+    assert not window.build_lens_menu(0).actions()[0].isEnabled()  # Flip is greyed out
+
+    # ... and dragged: the drag region is wider than the lens, centred on it.
+    graphics = side_view.lens_graphics[0]
+    region_start, region_end = graphics.region.getRegion()
+    assert region_start < paraxial_lens.z < region_end
+    graphics.region.setRegion((region_start + 10.0, region_end + 10.0))
+    assert paraxial_lens.z == pytest.approx(region_start + 10.0 + graphics.grab_margin_mm)
+
+    # A focal length of zero is not a lens, so the button is switched off.
+    window.paraxial_focal_length_box.setValue(0)
+    assert not window.add_paraxial_lens_button.isEnabled()
+    window.close()
+
+
 def test_range_slider_handles_follow_the_mouse_and_cannot_cross(application):
     slider = RangeSlider(0, 100)
     slider.resize(220, 30)

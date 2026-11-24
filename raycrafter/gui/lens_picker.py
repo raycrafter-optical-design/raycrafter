@@ -1,4 +1,4 @@
-"""The "Add lens" dialog: browse and filter the catalogue, then pick one lens to insert.
+"""The "Add catalogue lens" dialog: browse and filter the catalogue, then pick one lens to insert.
 
 The lenses are shown as a tree: category -> clear diameter -> lenses, positive lenses
 before negative ones and shortest focal length first. The part-number search box above
@@ -64,7 +64,7 @@ class LensPickerDialog(QDialog):
 
     def __init__(self, catalog: dict[str, CatalogEntry], parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Add lens")
+        self.setWindowTitle("Add catalogue lens")
         self.resize(*DIALOG_SIZE_PX)
         self.entries = list(catalog.values())
         self.lens_filter = LensFilter(coating=None)  # all coatings, like the drop-down's default

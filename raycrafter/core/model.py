@@ -31,6 +31,7 @@ IMAGE_CLEARANCE_MM = 50.0  # a new lens pushes the image plane at least this far
 FIRST_LENS_MIN_Z = AXIS_START_Z + 20.0  # lenses cannot be dragged closer to the axis start
 PLOSSL_GAP_MM = 1.0  # closest distance between the two facing surfaces of a Plossl pair
 PLOSSL_SEARCH_WIDTHS = 2.0  # a Plossl partner must be within this many lens thicknesses
+PARAXIAL_SEMI_APERTURE_MM = 25.4  # paraxial lenses are the size of a 2-inch optic
 
 
 class OpticalModel:
@@ -76,6 +77,29 @@ class OpticalModel:
             semi_aperture=entry.semi_aperture,
             z=front_z,
             is_negative=entry.is_negative,
+        )
+
+    @staticmethod
+    def make_paraxial_lens(focal_length_mm: float, z: float = INITIAL_LENS_Z) -> PlacedLens:
+        """An ideal thin lens of the given focal length at ``z``, not yet on the bench.
+
+        A paraxial lens focuses perfectly (no aberrations) and has zero thickness. Its clear
+        aperture is PARAXIAL_SEMI_APERTURE_MM. Put it on the bench with ``insert_lens``.
+
+        Raises
+        ------
+        ValueError
+            If the focal length is zero.
+        """
+        if focal_length_mm == 0.0:
+            raise ValueError("A paraxial lens needs a non-zero focal length")
+        return PlacedLens(
+            part_number=f"Paraxial f={focal_length_mm:+g} mm",
+            surfaces=[],
+            semi_aperture=PARAXIAL_SEMI_APERTURE_MM,
+            z=z,
+            is_negative=focal_length_mm < 0,
+            paraxial_focal_length_mm=focal_length_mm,
         )
 
     def add_lens(self, part_number: str) -> PlacedLens:
@@ -173,9 +197,13 @@ class OpticalModel:
         del self.state.lenses[lens_index]
 
     def flip_lens(self, lens_index: int) -> None:
-        """Turn one lens around. Lenses in a Plossl pair cannot be flipped on their own."""
+        """Turn one lens around.
+
+        Lenses in a Plossl pair cannot be flipped on their own, and a paraxial lens is the
+        same both ways round, so neither changes.
+        """
         lens = self.state.lenses[lens_index]
-        if lens.group_id is None:
+        if lens.group_id is None and not lens.is_paraxial:
             lens.flipped = not lens.flipped
 
     # ---------------------------------------------------------------- moving
@@ -282,11 +310,12 @@ class OpticalModel:
 
         The partner must be an immediate neighbour, be the same part, and not already be
         grouped; the gap between the two must be at most PLOSSL_SEARCH_WIDTHS lens
-        thicknesses. Only positive lenses can form a Plossl pair.
+        thicknesses. Only positive catalogue lenses can form a Plossl pair (a Plossl is made
+        of doublets, so paraxial lenses are excluded).
         """
         lenses = self.state.lenses
         lens = lenses[lens_index]
-        if lens.group_id is not None or lens.is_negative:
+        if lens.group_id is not None or lens.is_negative or lens.is_paraxial:
             return None
         for other_index in (lens_index - 1, lens_index + 1):
             if not 0 <= other_index < len(lenses):
