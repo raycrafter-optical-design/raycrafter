@@ -4,7 +4,7 @@ import warnings
 
 import numpy as np
 import pytest
-from optiland.fileio import save_zemax_file
+from optiland.fileio import load_zemax_file, save_zemax_file
 from optiland.optic import Optic
 
 from raycrafter.core import OpticalModel
@@ -90,6 +90,120 @@ def test_vergence_counts_the_air_before_the_first_lens(tmp_path):
 
     loaded = load_zmx(zmx_path, OpticalModel().catalog)
     assert loaded.state.selected_field.vergence_dioptres == pytest.approx(-1000.0 / 150.0)
+    # The 5 mm entrance pupil is at the stop; the beam has widened by 150/100 at the lens.
+    assert loaded.state.selected_field.diameter_mm == pytest.approx(7.5)
+
+
+# A small Zemax file written by hand, in the style of a laser scanning system: the stop (a
+# scan mirror) is in air 40 mm in front of a biconvex N-BK7 singlet, then the image.
+# SURFACES_AFTER_LENS is replaced by the surfaces each test wants between lens and image.
+SCANNER_ZMX = """VERS 260127 957 1055371 01055371
+MODE SEQ
+UNIT MM X W X CM MR CPMM LU
+ENPD 4
+GCAT SCHOTT
+FTYP 0 0 3 1 0 0 0
+XFLN 0 0 0
+YFLN 0 4 8
+WAVM 1 0.55 1
+PWAV 1
+SURF 0
+  TYPE STANDARD
+  CURV 0.0
+  DISZ INFINITY
+SURF 1
+  COMM scan mirror
+  STOP
+  TYPE STANDARD
+  CURV 0.0
+  DISZ 40
+SURF 2
+  TYPE STANDARD
+  CURV 0.02
+  DISZ 5
+  GLAS N-BK7 0 0 1.5 40 0 0 0 0 0 0
+  FLAP 0 12.7 0
+SURF 3
+  TYPE STANDARD
+  CURV -0.02
+  DISZ 30
+  FLAP 0 12.7 0
+SURFACES_AFTER_LENS
+SURF IMAGE_NUMBER
+  TYPE STANDARD
+  CURV 0.0
+  DISZ 0
+"""
+
+
+def write_scanner_zmx(tmp_path, surfaces_after_lens: list[str] = ()) -> str:
+    """Write SCANNER_ZMX with the given surface blocks (text after "SURF n") after the lens."""
+    blocks = [
+        f"SURF {number}\n{block.strip(chr(10))}"
+        for number, block in enumerate(surfaces_after_lens, start=4)
+    ]
+    text = SCANNER_ZMX.replace("SURFACES_AFTER_LENS", "\n".join(blocks))
+    text = text.replace("IMAGE_NUMBER", str(4 + len(blocks))).replace("\n\n", "\n")
+    zmx_path = tmp_path / "scanner.zmx"
+    zmx_path.write_text(text, encoding="utf-8")
+    return str(zmx_path)
+
+
+def test_fields_are_aimed_through_a_stop_in_front_of_the_first_lens(tmp_path):
+    zmx_path = write_scanner_zmx(tmp_path)
+    loaded = load_zmx(zmx_path, OpticalModel().catalog)
+    fields = loaded.state.fields
+    assert [field.angle_deg for field in fields] == [0.0, 4.0, 8.0]
+    expected_offsets = [40.0 * np.tan(np.radians(field.angle_deg)) for field in fields]
+    assert [field.offset_mm for field in fields] == pytest.approx(expected_offsets)
+    assert len({field.colour for field in fields}) == 3  # each angle its own colour
+
+    # Each beam lands where Optiland, tracing the file itself, puts it, with the same spot.
+    model = OpticalModel()
+    model.state = loaded.state
+    spots = model.trace_fast().spots
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        optic = load_zemax_file(zmx_path)
+    for field, spot in zip(fields, spots):
+        relative_field = field.angle_deg / 8.0
+        optic.trace_generic(0.0, relative_field, 0.0, 0.0, 0.55)
+        chief_ray_y = float(np.asarray(optic.surfaces.y)[-1][0])
+        assert spot.position_y[0] == pytest.approx(chief_ray_y, abs=1e-9)  # ray 0: the centre
+
+        optic.trace(0.0, relative_field, 0.55, 6, "hexapolar")
+        x, y = np.asarray(optic.surfaces.x)[-1], np.asarray(optic.surfaces.y)[-1]
+        rms_radius = np.sqrt(np.mean((x - x.mean()) ** 2 + (y - y.mean()) ** 2))
+        assert spot.rms_radius == pytest.approx(rms_radius, rel=1e-6)
+
+
+def test_apertures_in_the_file_are_read_reported_or_respected(tmp_path):
+    zmx_path = write_scanner_zmx(
+        tmp_path,
+        [
+            # A baffle in air that blocks the 8 degree beam, which reaches 8 mm off axis here.
+            "  COMM baffle\n  TYPE STANDARD\n  CURV 0.0\n  DISZ 10\n  CLAP 0 5 0",
+            # A glass cube with a 12 x 16 mm rectangular aperture (which Optiland ignores).
+            "  TYPE STANDARD\n  CURV 0.0\n  DISZ 10\n  GLAS N-BK7 0 0 1.5 40 0 0 0 0 0 0\n"
+            "  SQAP 6 8 0",
+            "  TYPE STANDARD\n  CURV 0.0\n  DISZ 10\n  SQAP 6 8 0",
+            # A paraxial lens drawn 2 mm across, with no aperture: Zemax blocks nothing there.
+            '  TYPE PARAXIAL\n  CURV 0.0\n  PARM 1 50\n  PARM 2 1\n  DISZ 50\n  DIAM 1 1 0 0 1 ""',
+        ],
+    )
+    loaded = load_zmx(zmx_path, OpticalModel().catalog)
+    _singlet, cube, paraxial = loaded.state.lenses
+    notes = "\n".join(loaded.notes)
+
+    assert cube.semi_aperture == pytest.approx(6.0) and not cube.is_negative
+    assert "12 x 16 mm rectangular aperture" in notes
+    assert "no clear aperture" not in notes
+
+    assert paraxial.semi_aperture > 1.0
+    assert "widened from the file's 2 mm" in notes
+
+    assert 'Surface 4 ("baffle") has a 10 mm round aperture in air' in notes
+    assert "it blocks some of the file's rays" in notes
 
 
 def test_a_conic_surface_is_refused(mixed_bench, tmp_path):
