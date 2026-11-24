@@ -142,6 +142,9 @@ class SideView(pg.PlotWidget):
         self.lens_graphics: list[LensGraphics] = []  # one entry per lens in the model
         self.hovered_index: int | None = None  # lens under the pointer
         self.image_line_locked = False  # True while "Lock focus" sets the image plane
+        self.lens_drag_active = (
+            False  # True from the first drag movement until the mouse is released
+        )
 
         style_plot(self, x_label="z (mm)", y_label="y (mm)")
         side = self.getPlotItem()
@@ -240,6 +243,7 @@ class SideView(pg.PlotWidget):
             graphics.region.sigRegionChanged.connect(
                 lambda _region, graphics=graphics: self.on_lens_dragged(graphics)
             )
+            graphics.region.sigRegionChangeFinished.connect(self.on_lens_drag_finished)
             self.lens_graphics.append(graphics)
 
     def update_view(self, paths: RayPaths) -> None:
@@ -372,7 +376,9 @@ class SideView(pg.PlotWidget):
         The tag's box is a shade darker than the lens outline. It is hidden when no lens is
         hovered.
         """
-        if self.hovered_index is None:
+        # The tag is not drawn while a lens is being dragged: it would flicker as the hover
+        # state changes under the moving lens. It reappears when the drag ends.
+        if self.hovered_index is None or self.lens_drag_active:
             self.name_tag.hide()
             return
 
@@ -451,6 +457,7 @@ class SideView(pg.PlotWidget):
 
     def on_lens_dragged(self, graphics: LensGraphics) -> None:
         """A lens was dragged: move it (with its Plossl partner), or swap it with a neighbour."""
+        self.lens_drag_active = True
         index = self.lens_graphics.index(graphics)
         new_order = self.model.move_lens(index, float(graphics.region.getRegion()[0]))
         if new_order is not None:
@@ -459,6 +466,11 @@ class SideView(pg.PlotWidget):
             self.lens_graphics = [self.lens_graphics[old_index] for old_index in new_order]
             self.hovered_index = new_order.index(index)
         self.changed.emit()
+
+    def on_lens_drag_finished(self) -> None:
+        """The mouse was released after dragging a lens: bring the name tag back."""
+        self.lens_drag_active = False
+        self.place_name_tag()
 
     def on_image_dragged(self) -> None:
         """The image line was dragged: keep it behind the last lens and inside the view."""
