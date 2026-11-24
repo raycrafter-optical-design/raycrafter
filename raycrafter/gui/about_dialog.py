@@ -9,6 +9,7 @@ import raycrafter
 from raycrafter.gui.style import make_app_icon
 
 PROJECT_URL = "https://github.com/raycrafter-optical-design/raycrafter"
+DOCS_URL = "https://raycrafter-optical-design.github.io/raycrafter-docs/index.html"
 ICON_SIZE_PX = 96
 
 
