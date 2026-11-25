@@ -7,11 +7,12 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QPoint, QPointF, Qt  # noqa: E402
-from PyQt6.QtGui import QDesktopServices  # noqa: E402
+from PyQt6.QtGui import QDesktopServices, QWheelEvent  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
 
 from raycrafter.gui.about_dialog import DOCS_URL, PROJECT_URL, AboutDialog  # noqa: E402
+from raycrafter.gui.analysis_panels import MtfPanel  # noqa: E402
 from raycrafter.gui.lens_picker import ALL_COATINGS, LensPickerDialog  # noqa: E402
 from raycrafter.gui.main_window import MainWindow  # noqa: E402
 from raycrafter.gui.range_slider import RangeSlider  # noqa: E402
@@ -469,3 +470,36 @@ def test_an_agent_edits_the_open_window_and_it_redraws(application, tmp_path):
         agent_link.stop()
         window.close()
     assert not endpoint_path.exists()
+
+
+def test_trackpad_scrolling_does_not_move_the_plots(application):
+    """A two-finger swipe over a plot must leave it still.
+
+    Plots do not zoom or pan, but a QGraphicsView still scrolls on the wheel. Its scroll range
+    is only a few pixels, so the picture used to drift about 10 px. This is the bug.
+    """
+    panel = MtfPanel()
+    panel.resize(500, 350)
+    panel.show()
+    application.processEvents()
+
+    centre = QPointF(panel.viewport().rect().center())
+    global_centre = panel.viewport().mapToGlobal(centre.toPoint()).toPointF()
+    for delta_x, delta_y in [(0, -10), (0, 10), (-10, 0), (10, 0), (0, -30)]:
+        swipe = QWheelEvent(
+            centre,
+            global_centre,
+            QPoint(0, 0),
+            QPoint(delta_x, delta_y),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.ScrollUpdate,
+            False,
+        )
+        QApplication.sendEvent(panel.viewport(), swipe)
+        application.processEvents()
+
+    assert panel.horizontalScrollBar().value() == 0
+    assert panel.verticalScrollBar().value() == 0
+    assert panel.mapToScene(0, 0) == QPointF(0, 0)
+    panel.close()
