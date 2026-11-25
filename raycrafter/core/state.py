@@ -3,12 +3,13 @@
 All z positions are absolute positions along the optical axis, in mm. The beams come from
 the left (negative z). These classes hold data only; editing is done by ``OpticalModel``
 (``raycrafter.core.model``) and optics by ``raycrafter.core.optic_builder`` and
-``raycrafter.core.analysis``.
+``raycrafter.core.analysis``. ``state_to_dict`` and ``state_from_dict`` copy a state between
+processes (a script and the RayCrafter window).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 from raycrafter.core.prescription import LensSurface, flipped_prescription, lens_thickness
 from raycrafter.palette import wavelength_colour
@@ -172,3 +173,29 @@ class OpticalState:
         This is the front vertex of the first lens, or the start of the axis with no lenses.
         """
         return self.lenses[0].z if self.lenses else AXIS_START_Z
+
+
+def state_to_dict(state: OpticalState) -> dict:
+    """The whole state as nested dictionaries and lists, ready to send as JSON.
+
+    A flat surface has an infinite radius. Python's ``json`` module writes and reads that as
+    ``Infinity``, which is enough for RayCrafter talking to itself (``state_from_dict``).
+    """
+    return asdict(state)
+
+
+def state_from_dict(data: dict) -> OpticalState:
+    """Rebuild an ``OpticalState`` from ``state_to_dict`` output."""
+    lenses = [
+        PlacedLens(
+            **{
+                **lens_data,
+                "surfaces": [LensSurface(**surface) for surface in lens_data["surfaces"]],
+            }
+        )
+        for lens_data in data["lenses"]
+    ]
+    fields = [BeamField(**field_data) for field_data in data["fields"]]
+    return OpticalState(
+        **{**data, "lenses": lenses, "fields": fields},
+    )

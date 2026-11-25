@@ -5,7 +5,8 @@ import json
 import pytest
 
 from raycrafter.core.model import OpticalModel
-from raycrafter.mcp_server.tools import PLOT_KINDS, DesignTools
+from raycrafter.mcp_server.tools import DesignTools
+from raycrafter.report.figures import PLOT_KINDS
 
 
 @pytest.fixture
@@ -124,3 +125,25 @@ def test_every_plot_is_a_png(tools, kind):
 def test_unknown_plot_names_the_choices(tools):
     with pytest.raises(ValueError, match="ray_diagram"):
         tools.get_plot("pie_chart")
+
+
+def test_placing_and_moving_say_which_index_the_lens_has(tools):
+    assert tools.add_lens("LA1509-A")["new_lens_index"] == 1
+    assert tools.insert_lens("LA1509-A", front_z_mm=30.0)["new_lens_index"] == 0
+    assert tools.move_lens(0, front_z_mm=1000.0)["moved_lens_index"] == 1  # swapped
+
+
+def test_a_paraxial_lens_with_no_position_goes_after_the_last_lens(tools):
+    design = tools.add_paraxial_lens(focal_length_mm=50.0)
+    first, paraxial = design["lenses"]
+    assert design["new_lens_index"] == 1
+    assert paraxial["front_z_mm"] > first["back_z_mm"]
+
+
+def test_set_field_colour(tools):
+    tools.set_field(0, colour="#ff8800")
+    assert tools.model.state.fields[0].colour == "#ff8800"
+    tools.set_field(0, colour="wavelength")
+    assert tools.model.state.fields[0].colour is None
+    with pytest.raises(ValueError, match="hex colour"):
+        tools.set_field(0, colour="red")

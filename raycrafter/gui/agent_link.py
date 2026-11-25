@@ -1,4 +1,7 @@
-"""Lets an AI agent, through the MCP server, control the design shown in the window.
+"""Lets an AI agent (through the MCP server) or a Python script control the window's design.
+
+Scripts connect with ``raycrafter.api.Bench.connect()``; they use the same calls as agents,
+plus ``LINK_ONLY_TOOL_NAMES``.
 
 ``AgentLink`` runs a ``LinkServer`` (``raycrafter.mcp_server.link``) that receives tool calls on
 a background thread. Qt widgets and the model may only be touched from the GUI thread, so each
@@ -15,7 +18,12 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QLabel
 
 from raycrafter.mcp_server.link import LinkServer
-from raycrafter.mcp_server.tools import EDITING_TOOL_NAMES, TOOL_NAMES, DesignTools
+from raycrafter.mcp_server.tools import (
+    EDITING_TOOL_NAMES,
+    LINK_ONLY_TOOL_NAMES,
+    TOOL_NAMES,
+    DesignTools,
+)
 
 REQUEST_TIMEOUT_S = 100.0  # shorter than the client's wait, so the client gets a clear answer
 STATUS_MESSAGE_MS = 3000
@@ -67,7 +75,7 @@ class AgentLink(QObject):
 
     def _handle_on_server_thread(self, tool_name: str, arguments: dict) -> object:
         """Hand a call to the GUI thread and wait for its result (runs on a server thread)."""
-        if tool_name not in TOOL_NAMES:
+        if tool_name not in TOOL_NAMES + LINK_ONLY_TOOL_NAMES:
             raise ValueError(f"Unknown tool {tool_name!r}")
         request = _Request(tool_name, arguments)
         self._request_received.emit(request)
@@ -87,7 +95,10 @@ class AgentLink(QObject):
             request.result = tool(**request.arguments)
             if request.tool_name in EDITING_TOOL_NAMES:
                 self.window.show_new_design()
-            self.window.statusBar().showMessage(f"Agent: {request.tool_name}", STATUS_MESSAGE_MS)
+            if request.tool_name in TOOL_NAMES:  # not for a script quietly copying the design
+                self.window.statusBar().showMessage(
+                    f"Agent: {request.tool_name}", STATUS_MESSAGE_MS
+                )
         except Exception as error:  # reported to the agent; the window carries on
             request.error = error
         finally:

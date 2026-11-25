@@ -460,6 +460,10 @@ def test_an_agent_edits_the_open_window_and_it_redraws(application, tmp_path):
         summary = call_agent_tool_from_another_thread(application, client, "get_summary", {})
         assert summary["effective_focal_length_mm"] is not None
 
+        # The call the Python API (Bench.connect) uses to copy the design is answered too.
+        state = call_agent_tool_from_another_thread(application, client, "get_state", {})
+        assert [lens["part_number"] for lens in state["lenses"]][1] == "AC254-050-A"
+
         with pytest.raises(ValueError, match="There is no lens 9"):
             call_agent_tool_from_another_thread(
                 application, client, "delete_lens", {"lens_index": 9}

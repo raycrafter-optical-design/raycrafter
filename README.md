@@ -46,6 +46,22 @@ uvx --from "raycrafter[mcp] @ git+https://github.com/raycrafter-optical-design/r
 `pip install raycrafter`.
 
 
+## Use it from Python
+
+```python
+from raycrafter import Bench
+
+bench = Bench(empty=True)  # or Bench.connect() to drive the open window
+bench.add_lens("AC254-100-A")
+bench.add_lens("AC254-050-A", front_z_mm=150)
+bench.autofocus()
+print(bench.summary())
+bench.plot("spot_diagram").savefig("spot.png")
+```
+
+Every method is documented, with examples, in `raycrafter/api.py`.
+
+
 ## Use it from an AI agent
 
 RayCrafter includes an [MCP](https://modelcontextprotocol.io) server, so an AI agent such as

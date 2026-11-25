@@ -3,6 +3,8 @@
 Plain hex strings, with no Qt or matplotlib dependency.
 """
 
+import re
+
 import numpy as np
 
 LENS = "#3b7dd8"  # blue
@@ -38,6 +40,11 @@ FIELD_COLOURS = [
     "#5c3d2e",  # brown
     "#495057",  # grey
 ]
+
+
+def is_hex_colour(text: str) -> bool:
+    """True for a colour written as ``#rrggbb`` (case does not matter), e.g. ``"#3b7dd8"``."""
+    return re.fullmatch(r"#[0-9a-fA-F]{6}", text) is not None
 
 
 def field_colour(field_number: int) -> str:

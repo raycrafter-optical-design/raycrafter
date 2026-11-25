@@ -2,7 +2,8 @@
 
 This is the logic behind the GUI's "Add catalogue lens" dialog, kept free of Qt so it can be
 tested on its own and reused by other front ends. ``LensFilter`` decides which lenses are shown;
-``group_for_tree`` arranges them as category -> clear diameter -> lenses.
+``group_for_tree`` arranges them as category -> clear diameter -> lenses. ``search_catalog`` is
+the simpler keyword-and-range search used by scripts and AI agents.
 
 Example
 -------
@@ -77,6 +78,68 @@ class LensFilter:
     def apply(self, entries: Iterable[CatalogEntry]) -> list[CatalogEntry]:
         """The entries that should be shown, in their original order."""
         return [entry for entry in entries if self.matches(entry)]
+
+
+def search_catalog(
+    entries: Iterable[CatalogEntry],
+    query: str = "",
+    min_focal_length_mm: float | None = None,
+    max_focal_length_mm: float | None = None,
+    min_diameter_mm: float | None = None,
+    category: str | None = None,
+) -> list[CatalogEntry]:
+    """The lenses that pass every given filter, shortest |focal length| first.
+
+    This is the search offered to scripts and AI agents (the picker uses ``LensFilter``).
+
+    Parameters
+    ----------
+    entries : iterable of CatalogEntry
+        The lenses to search, e.g. ``thorlabs.load_lenses().values()``.
+    query : str
+        Text that must appear in the part number, family or coating (case does not matter).
+    min_focal_length_mm, max_focal_length_mm : float, optional
+        Limits on the *signed* focal length: a diverging lens has a negative one.
+    min_diameter_mm : float, optional
+        Smallest acceptable clear diameter.
+    category : str, optional
+        One of ``catalog.CATEGORY_ORDER``, e.g. ``"Achromats"`` (case does not matter).
+
+    Returns
+    -------
+    list of CatalogEntry
+        Sorted by |focal length|, then part number.
+
+    Example
+    -------
+    >>> from raycrafter.lenscatalog import thorlabs
+    >>> found = search_catalog(
+    ...     thorlabs.load_lenses().values(),
+    ...     "AC254-100",
+    ...     min_focal_length_mm=99,
+    ...     max_focal_length_mm=101,
+    ... )
+    >>> sorted(entry.part_number for entry in found)
+    ['AC254-100-A', 'AC254-100-AB', 'AC254-100-B', 'AC254-100-C']
+    """
+    needle = query.lower()
+    matches = []
+    for entry in entries:
+        text = f"{entry.part_number} {entry.family} {entry.coating}".lower()
+        if needle not in text:
+            continue
+        if min_focal_length_mm is not None and entry.focal_length < min_focal_length_mm:
+            continue
+        if max_focal_length_mm is not None and entry.focal_length > max_focal_length_mm:
+            continue
+        if min_diameter_mm is not None and entry.clear_diameter_mm < min_diameter_mm:
+            continue
+        if category is not None and entry.category.lower() != category.lower():
+            continue
+        matches.append(entry)
+
+    matches.sort(key=lambda entry: (abs(entry.focal_length), entry.part_number))
+    return matches
 
 
 def available_coatings(entries: Iterable[CatalogEntry]) -> list[str]:
