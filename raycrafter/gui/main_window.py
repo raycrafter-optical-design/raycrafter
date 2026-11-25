@@ -65,6 +65,7 @@ from raycrafter.gui.analysis_panels import (
     ThroughFocusPanel,
     make_tabs,
 )
+from raycrafter.gui.bench_viewer import BenchViewer
 from raycrafter.gui.field_editor import FieldEditor
 from raycrafter.gui.lens_picker import LensPickerDialog
 from raycrafter.gui.side_view import MIN_IMAGE_GAP_MM, SideView
@@ -99,6 +100,7 @@ class MainWindow(QMainWindow):
         self.model = model if model is not None else OpticalModel()
         self.lens_picker: LensPickerDialog | None = None  # made on first use, then kept
         self.field_editor: FieldEditor | None = None  # made on first use, then kept
+        self.bench_viewer: BenchViewer | None = None  # made on first use, then kept
         self.f_number_readout: str | None = None  # last f-number text, kept during a drag
         self._build_widgets()
         self._build_menus()
@@ -186,6 +188,10 @@ class MainWindow(QMainWindow):
         self.add_field_button = QPushButton("Add field")
         self.add_field_button.setToolTip("Open the field window to add, remove and edit beams")
         self.report_button = QPushButton("Generate report")
+        self.view_bench_button = QPushButton("View bench")
+        self.view_bench_button.setToolTip(
+            "List the lenses and fields with the numbers scripts and AI agents use for them"
+        )
         self.lock_focus_checkbox = QCheckBox("Lock focus")  # off by default
         self.lock_focus_checkbox.setToolTip(
             "Keep the image plane at best focus as lenses or the beams change, "
@@ -225,6 +231,7 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.add_field_button)
         controls.addLayout(autofocus_row)
         controls.addWidget(self.report_button)
+        controls.addWidget(self.view_bench_button)
         controls.addStretch(1)  # spare space goes above the hint, which sits at the foot
         controls.addWidget(hint_label)
         controls.setContentsMargins(14, 14, 14, 14)
@@ -288,6 +295,7 @@ class MainWindow(QMainWindow):
         self.autofocus_button.clicked.connect(self.run_autofocus)
         self.add_field_button.clicked.connect(self.open_field_editor)
         self.report_button.clicked.connect(self.generate_report)
+        self.view_bench_button.clicked.connect(self.open_bench_viewer)
         self.lock_focus_checkbox.toggled.connect(self.on_lock_focus_toggled)
 
         self.side_view.changed.connect(self.request_update)
@@ -437,6 +445,32 @@ class MainWindow(QMainWindow):
         self.field_editor.show()
         self.field_editor.raise_()
         self.field_editor.activateWindow()
+
+    def open_bench_viewer(self) -> None:
+        """Show the bench viewer (made on first use) and bring it to the front."""
+        if self.bench_viewer is None:
+            self.bench_viewer = BenchViewer(self.model, parent=self)
+            self.bench_viewer.highlight_requested.connect(self.side_view.set_highlight)
+            self.bench_viewer.delete_lens_requested.connect(self.delete_lens)
+            self.bench_viewer.delete_fields_requested.connect(self.delete_fields)
+        self.bench_viewer.show()
+        self.refresh_bench_viewer()  # once shown: a hidden viewer is not kept up to date
+        self.bench_viewer.raise_()
+        self.bench_viewer.activateWindow()
+
+    def refresh_bench_viewer(self) -> None:
+        """Bring the bench viewer up to date, if it is open."""
+        if self.bench_viewer is not None and self.bench_viewer.isVisible():
+            self.bench_viewer.refresh(
+                self.side_view.highlighted_lens_index, self.side_view.highlighted_field_index
+            )
+
+    def delete_fields(self, field_indices: list[int]) -> None:
+        """Remove fields (the bench viewer's Delete); at least one always remains."""
+        self.model.remove_fields(field_indices)
+        if self.field_editor is not None:
+            self.field_editor.refresh()
+        self.request_update()
 
     # ------------------------------------------------------------------ files
 
@@ -597,6 +631,7 @@ class MainWindow(QMainWindow):
             # mouse; a design dragged beyond the view is brought into view on release.
             self.side_view.fit_to_design()
         self.side_view.update_view(fast_trace.paths)
+        self.refresh_bench_viewer()
         self.spot_panel.show_result(fast_trace, state.fields)
         self.through_focus_panel.show_result(through_focus)
         draw_ms = (time.perf_counter() - start) * 1000

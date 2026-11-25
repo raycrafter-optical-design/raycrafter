@@ -232,6 +232,67 @@ def test_field_window_adds_edits_and_removes_fields_live(application):
     window.close()
 
 
+def test_bench_viewer_lists_highlights_follows_and_deletes(application):
+    from raycrafter import palette
+    from raycrafter.gui.side_view import HIGHLIGHTED_RAY_WIDTH_PX
+
+    window = MainWindow()
+    window.model.add_lens("LA1509-A")
+    window.model.add_field()
+    window.side_view.rebuild_lens_graphics()
+    window.show()
+    window.recompute_and_redraw()
+    window.view_bench_button.click()
+    viewer = window.bench_viewer
+    assert viewer.isVisible()
+
+    # One row per lens and field, numbered as the Python API numbers them.
+    lens_rows = [viewer.lens_section.child(row) for row in range(viewer.lens_section.childCount())]
+    assert [(row.text(0), row.text(1)) for row in lens_rows] == [
+        ("0", "ACT508-200-A"),
+        ("1", "LA1509-A"),
+    ]
+    assert viewer.field_section.childCount() == 2
+    assert viewer.image_row.text(2) == f"{window.model.state.image_z:.1f}"
+
+    # Clicking a lens row highlights the lens; clicking a field row thickens its rays.
+    viewer.tree.setCurrentItem(lens_rows[1])
+    assert window.side_view.highlighted_lens_index == 1
+    assert window.side_view.lens_colour(1) == palette.LENS_HOVER
+    viewer.tree.setCurrentItem(viewer.field_section.child(1))
+    assert window.side_view.highlighted_field_index == 1
+    assert window.side_view.ray_curves[1].opts["pen"].widthF() == HIGHLIGHTED_RAY_WIDTH_PX
+
+    # Moving a lens updates its position in the list.
+    viewer.tree.setCurrentItem(lens_rows[1])
+    window.model.move_lens(1, window.model.state.lenses[1].z + 20.0)
+    window.recompute_and_redraw()
+    assert lens_rows[1].text(2).startswith(f"{window.model.state.lenses[1].z:.1f}")
+    assert lens_rows[1].isSelected()  # the selection survives the update
+
+    # The last field cannot be deleted; a lens and other fields can.
+    viewer.tree.setCurrentItem(viewer.field_section.child(0))
+    viewer.field_section.child(1).setSelected(True)
+    assert not viewer.delete_button.isEnabled()
+    viewer.field_section.child(1).setSelected(False)
+    viewer.delete_button.click()
+    window.recompute_and_redraw()
+    assert len(window.model.state.fields) == 1 and viewer.field_section.childCount() == 1
+
+    viewer.tree.setCurrentItem(viewer.lens_section.child(0))
+    QTest.keyClick(viewer.tree, Qt.Key.Key_Delete)
+    window.recompute_and_redraw()
+    assert [lens.part_number for lens in window.model.state.lenses] == ["LA1509-A"]
+    assert viewer.lens_section.childCount() == 1
+
+    # Closing the viewer removes the highlight.
+    viewer.tree.setCurrentItem(viewer.lens_section.child(0))
+    assert window.side_view.highlighted_lens_index == 0
+    viewer.close()
+    assert window.side_view.highlighted_lens_index is None
+    window.close()
+
+
 def test_field_window_shows_values_outside_its_usual_ranges(application):
     """A -20 D beam (an object 50 mm away, from a ZMX file) was shown, and edited, as -10 D."""
     window = MainWindow()
