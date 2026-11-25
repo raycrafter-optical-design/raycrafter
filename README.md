@@ -29,6 +29,22 @@ raycrafter
 
 Or, with [uv](https://docs.astral.sh/uv/): `uvx raycrafter`.
 
+To run the current development version from the `main` branch on GitHub, use uv directly
+(no clone or install step needed):
+
+```
+uvx --from git+https://github.com/raycrafter-optical-design/raycrafter@main raycrafter
+```
+
+The MCP server from `main` can be run the same way (see below):
+
+```
+uvx --from "raycrafter[mcp] @ git+https://github.com/raycrafter-optical-design/raycrafter@main" raycrafter-mcp
+```
+
+`main` may contain changes not yet in the PyPI release, so behaviour may differ from
+`pip install raycrafter`.
+
 
 ## Use it from an AI agent
 
