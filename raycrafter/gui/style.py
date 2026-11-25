@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QPointF, QRectF, Qt
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, Qt
 from PyQt6.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import QApplication
 
@@ -176,8 +176,24 @@ def join_with_gaps(x_segments: list, y_segments: list) -> tuple[np.ndarray, np.n
     return np.concatenate(x_parts), np.concatenate(y_parts)
 
 
+class WheelIgnorer(QObject):
+    """Event filter that swallows mouse-wheel and trackpad scroll events.
+
+    A plot is a QGraphicsView, which scrolls its contents on a wheel event even though its
+    scrollbars are hidden. The scroll range is a few pixels, so a two-finger swipe over a plot
+    visibly shifts the whole picture. Plots do not zoom or pan, so the wheel does nothing here.
+    """
+
+    def eventFilter(self, watched_object: QObject, event: QEvent) -> bool:
+        """Return True for wheel events, so Qt never scrolls the plot; pass other events on."""
+        return event.type() == QEvent.Type.Wheel
+
+
 def style_plot(widget: pg.PlotWidget, x_label: str = "", y_label: str = "") -> None:
-    """Give a plot widget the shared look: no mouse interaction, light grid, labelled axes."""
+    """Give a plot widget the shared look: no mouse interaction, light grid, labelled axes.
+
+    The wheel is also switched off, so a trackpad swipe cannot move the plot.
+    """
     widget.setStyleSheet(
         f"QGraphicsView {{ border: 1px solid {palette.CANVAS_BORDER}; border-radius: 4px; }}"
     )
@@ -189,6 +205,9 @@ def style_plot(widget: pg.PlotWidget, x_label: str = "", y_label: str = "") -> N
     plot.showGrid(x=True, y=True, alpha=0.15)
     plot.setLabel("bottom", x_label)
     plot.setLabel("left", y_label)
+    # Wheel events are sent to the viewport, so the filter goes there. It is parented to the
+    # viewport so that it lives as long as the plot does.
+    widget.viewport().installEventFilter(WheelIgnorer(widget.viewport()))
 
 
 def scaled_font(font, scale: float):

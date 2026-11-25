@@ -59,6 +59,7 @@ LENS_FILL_ALPHA = 70  # fill opacity (0-255) of a lens on the bench
 GHOST_FILL_ALPHA = 35  # fill opacity of a lens being placed
 GHOST_Z_VALUE = 80  # the ghost is drawn above the lenses on the bench
 RAY_WIDTH_PX = 1.3
+HIGHLIGHTED_RAY_WIDTH_PX = 3.0  # the rays of the field selected in the bench viewer
 PARAXIAL_LINE_WIDTH_PX = 3  # a paraxial lens is drawn as a line this thick
 PARAXIAL_ARROW_SIZE_PX = 11  # size of the arrowheads at each end of a paraxial lens
 PARAXIAL_GRAB_HALF_WIDTH_PX = 5  # a paraxial lens can be hovered and dragged this far either side
@@ -276,6 +277,9 @@ class SideView(pg.PlotWidget):
         self.model = model
         self.lens_graphics: list[LensGraphics] = []  # one entry per lens in the model
         self.hovered_index: int | None = None  # lens under the pointer
+        # The lens and field picked in the bench viewer, drawn highlighted (see set_highlight).
+        self.highlighted_lens_index: int | None = None
+        self.highlighted_field_index: int | None = None
         self.image_line_locked = False  # True while "Lock focus" sets the image plane
         self.lens_drag_active = (
             False  # True from the first drag movement until the mouse is released
@@ -396,6 +400,7 @@ class SideView(pg.PlotWidget):
             graphics.remove()
         self.lens_graphics = []
         self.hovered_index = None
+        self.highlighted_lens_index = None  # the lens list changed, so the index may be wrong
 
         side = self.getPlotItem()
         for lens in self.model.state.lenses:
@@ -416,11 +421,15 @@ class SideView(pg.PlotWidget):
             The side-view rays of each field, in the order of the model's fields.
         """
         fields = self.model.state.fields
+        if len(fields) != len(self.ray_curves):
+            # Fields were added or removed, so the highlighted index may be another field now.
+            self.highlighted_field_index = None
         self._match_ray_curve_count(len(field_paths))
-        for paths, beam, curve in zip(field_paths, fields, self.ray_curves):
+        for paths, curve in zip(field_paths, self.ray_curves):
             rays = ray_polylines(paths)
             ray_z, ray_y = join_with_gaps([z for z, _ in rays], [y for _, y in rays])
-            curve.setData(ray_z, ray_y, pen=pg.mkPen(beam.display_colour(), width=RAY_WIDTH_PX))
+            curve.setData(ray_z, ray_y)
+        self.restyle_ray_curves()
 
         # Move the draggable image line without re-triggering its own change signal.
         self.image_line.blockSignals(True)
@@ -429,6 +438,21 @@ class SideView(pg.PlotWidget):
         self.place_image_label()
 
         self.refresh_lens_colours()
+
+    def restyle_ray_curves(self) -> None:
+        """Draw each field's rays in its colour, thicker (and on top) if it is highlighted."""
+        for index, (beam, curve) in enumerate(zip(self.model.state.fields, self.ray_curves)):
+            highlighted = index == self.highlighted_field_index
+            width = HIGHLIGHTED_RAY_WIDTH_PX if highlighted else RAY_WIDTH_PX
+            curve.setPen(pg.mkPen(beam.display_colour(), width=width))
+            curve.setZValue(1 if highlighted else 0)
+
+    def set_highlight(self, lens_index: int | None, field_index: int | None) -> None:
+        """Highlight a lens (drawn as if hovered) and a field (thicker rays); None for neither."""
+        self.highlighted_lens_index = lens_index
+        self.highlighted_field_index = field_index
+        self.refresh_lens_colours()
+        self.restyle_ray_curves()
 
     def _match_ray_curve_count(self, field_count: int) -> None:
         """Add or remove ray curves so there is one per field."""
@@ -534,13 +558,15 @@ class SideView(pg.PlotWidget):
         return found_index
 
     def lens_colour(self, index: int) -> str:
-        """Blue (purple in a Plossl pair), darker when it, or its pair, is under the pointer."""
+        """Blue (purple in a Plossl pair); darker when it, or its pair, is under the pointer or
+        highlighted in the bench viewer."""
         in_pair = self.model.state.lenses[index].group_id is not None
         # A Plossl pair moves as one, so it is highlighted as one.
-        hovered_group = []
-        if self.hovered_index is not None:
-            hovered_group = self.model.group_indices(self.hovered_index)
-        if index in hovered_group:
+        darkened = []
+        for marked_index in (self.hovered_index, self.highlighted_lens_index):
+            if marked_index is not None and marked_index < len(self.model.state.lenses):
+                darkened += self.model.group_indices(marked_index)
+        if index in darkened:
             return palette.PLOSSL_HOVER if in_pair else palette.LENS_HOVER
         return palette.PLOSSL if in_pair else palette.LENS
 
@@ -765,6 +791,8 @@ class SideView(pg.PlotWidget):
             # so the item being dragged keeps showing the lens it belongs to.
             self.lens_graphics = [self.lens_graphics[old_index] for old_index in new_order]
             self.hovered_index = new_order.index(index)
+            if self.highlighted_lens_index is not None:
+                self.highlighted_lens_index = new_order.index(self.highlighted_lens_index)
         self.changed.emit()
 
     def on_lens_drag_finished(self) -> None:

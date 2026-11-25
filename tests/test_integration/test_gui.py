@@ -7,11 +7,12 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QPoint, QPointF, Qt  # noqa: E402
-from PyQt6.QtGui import QDesktopServices  # noqa: E402
+from PyQt6.QtGui import QDesktopServices, QWheelEvent  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
 
 from raycrafter.gui.about_dialog import DOCS_URL, PROJECT_URL, AboutDialog  # noqa: E402
+from raycrafter.gui.analysis_panels import MtfPanel  # noqa: E402
 from raycrafter.gui.lens_picker import ALL_COATINGS, LensPickerDialog  # noqa: E402
 from raycrafter.gui.main_window import MainWindow  # noqa: E402
 from raycrafter.gui.range_slider import RangeSlider  # noqa: E402
@@ -228,6 +229,67 @@ def test_field_window_adds_edits_and_removes_fields_live(application):
     assert len(window.model.state.fields) == 1 and editor.field_list.count() == 1
     window.recompute_and_redraw()
     assert len(window.side_view.ray_curves) == 1
+    window.close()
+
+
+def test_bench_viewer_lists_highlights_follows_and_deletes(application):
+    from raycrafter import palette
+    from raycrafter.gui.side_view import HIGHLIGHTED_RAY_WIDTH_PX
+
+    window = MainWindow()
+    window.model.add_lens("LA1509-A")
+    window.model.add_field()
+    window.side_view.rebuild_lens_graphics()
+    window.show()
+    window.recompute_and_redraw()
+    window.view_bench_button.click()
+    viewer = window.bench_viewer
+    assert viewer.isVisible()
+
+    # One row per lens and field, numbered as the Python API numbers them.
+    lens_rows = [viewer.lens_section.child(row) for row in range(viewer.lens_section.childCount())]
+    assert [(row.text(0), row.text(1)) for row in lens_rows] == [
+        ("0", "ACT508-200-A"),
+        ("1", "LA1509-A"),
+    ]
+    assert viewer.field_section.childCount() == 2
+    assert viewer.image_row.text(2) == f"{window.model.state.image_z:.1f}"
+
+    # Clicking a lens row highlights the lens; clicking a field row thickens its rays.
+    viewer.tree.setCurrentItem(lens_rows[1])
+    assert window.side_view.highlighted_lens_index == 1
+    assert window.side_view.lens_colour(1) == palette.LENS_HOVER
+    viewer.tree.setCurrentItem(viewer.field_section.child(1))
+    assert window.side_view.highlighted_field_index == 1
+    assert window.side_view.ray_curves[1].opts["pen"].widthF() == HIGHLIGHTED_RAY_WIDTH_PX
+
+    # Moving a lens updates its position in the list.
+    viewer.tree.setCurrentItem(lens_rows[1])
+    window.model.move_lens(1, window.model.state.lenses[1].z + 20.0)
+    window.recompute_and_redraw()
+    assert lens_rows[1].text(2).startswith(f"{window.model.state.lenses[1].z:.1f}")
+    assert lens_rows[1].isSelected()  # the selection survives the update
+
+    # The last field cannot be deleted; a lens and other fields can.
+    viewer.tree.setCurrentItem(viewer.field_section.child(0))
+    viewer.field_section.child(1).setSelected(True)
+    assert not viewer.delete_button.isEnabled()
+    viewer.field_section.child(1).setSelected(False)
+    viewer.delete_button.click()
+    window.recompute_and_redraw()
+    assert len(window.model.state.fields) == 1 and viewer.field_section.childCount() == 1
+
+    viewer.tree.setCurrentItem(viewer.lens_section.child(0))
+    QTest.keyClick(viewer.tree, Qt.Key.Key_Delete)
+    window.recompute_and_redraw()
+    assert [lens.part_number for lens in window.model.state.lenses] == ["LA1509-A"]
+    assert viewer.lens_section.childCount() == 1
+
+    # Closing the viewer removes the highlight.
+    viewer.tree.setCurrentItem(viewer.lens_section.child(0))
+    assert window.side_view.highlighted_lens_index == 0
+    viewer.close()
+    assert window.side_view.highlighted_lens_index is None
     window.close()
 
 
@@ -459,6 +521,10 @@ def test_an_agent_edits_the_open_window_and_it_redraws(application, tmp_path):
         summary = call_agent_tool_from_another_thread(application, client, "get_summary", {})
         assert summary["effective_focal_length_mm"] is not None
 
+        # The call the Python API (Bench.connect) uses to copy the design is answered too.
+        state = call_agent_tool_from_another_thread(application, client, "get_state", {})
+        assert [lens["part_number"] for lens in state["lenses"]][1] == "AC254-050-A"
+
         with pytest.raises(ValueError, match="There is no lens 9"):
             call_agent_tool_from_another_thread(
                 application, client, "delete_lens", {"lens_index": 9}
@@ -469,3 +535,36 @@ def test_an_agent_edits_the_open_window_and_it_redraws(application, tmp_path):
         agent_link.stop()
         window.close()
     assert not endpoint_path.exists()
+
+
+def test_trackpad_scrolling_does_not_move_the_plots(application):
+    """A two-finger swipe over a plot must leave it still.
+
+    Plots do not zoom or pan, but a QGraphicsView still scrolls on the wheel. Its scroll range
+    is only a few pixels, so the picture used to drift about 10 px. This is the bug.
+    """
+    panel = MtfPanel()
+    panel.resize(500, 350)
+    panel.show()
+    application.processEvents()
+
+    centre = QPointF(panel.viewport().rect().center())
+    global_centre = panel.viewport().mapToGlobal(centre.toPoint()).toPointF()
+    for delta_x, delta_y in [(0, -10), (0, 10), (-10, 0), (10, 0), (0, -30)]:
+        swipe = QWheelEvent(
+            centre,
+            global_centre,
+            QPoint(0, 0),
+            QPoint(delta_x, delta_y),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.ScrollUpdate,
+            False,
+        )
+        QApplication.sendEvent(panel.viewport(), swipe)
+        application.processEvents()
+
+    assert panel.horizontalScrollBar().value() == 0
+    assert panel.verticalScrollBar().value() == 0
+    assert panel.mapToScene(0, 0) == QPointF(0, 0)
+    panel.close()

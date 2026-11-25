@@ -29,6 +29,38 @@ raycrafter
 
 Or, with [uv](https://docs.astral.sh/uv/): `uvx raycrafter`.
 
+To run the current development version from the `main` branch on GitHub, use uv directly
+(no clone or install step needed):
+
+```
+uvx --from git+https://github.com/raycrafter-optical-design/raycrafter@main raycrafter
+```
+
+The MCP server from `main` can be run the same way (see below):
+
+```
+uvx --from "raycrafter[mcp] @ git+https://github.com/raycrafter-optical-design/raycrafter@main" raycrafter-mcp
+```
+
+`main` may contain changes not yet in the PyPI release, so behaviour may differ from
+`pip install raycrafter`.
+
+
+## Use it from Python
+
+```python
+from raycrafter import Bench
+
+bench = Bench(empty=True)  # or Bench.connect() to drive the open window
+bench.add_lens("AC254-100-A")
+bench.add_lens("AC254-050-A", front_z_mm=150)
+bench.autofocus()
+print(bench.summary())
+bench.plot("spot_diagram").savefig("spot.png")
+```
+
+Every method is documented, with examples, in `raycrafter/api.py`.
+
 
 ## Use it from an AI agent
 

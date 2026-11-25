@@ -15,21 +15,17 @@ from __future__ import annotations
 import numpy as np
 
 from raycrafter.core import analysis
-from raycrafter.core.model import OpticalModel
+from raycrafter.core.model import INITIAL_LENS_Z, LENS_GAP_MM, OpticalModel
+from raycrafter.core.state import PlacedLens, state_to_dict
 from raycrafter.core.zmx_import import ZmxImportError
 from raycrafter.lenscatalog.catalog import CatalogEntry
+from raycrafter.lenscatalog.selection import search_catalog
+from raycrafter.palette import is_hex_colour
 from raycrafter.report import figures
 
 MAX_CURVE_POINTS = 25  # curves sent to the agent are thinned to about this many points
 DEFAULT_SEARCH_LIMIT = 20
-PLOT_KINDS = (
-    "ray_diagram",
-    "spot_diagram",
-    "through_focus",
-    "mtf",
-    "ray_fan",
-    "field_curvature",
-)
+WAVELENGTH_COLOUR = "wavelength"  # set_field(colour=...) value meaning "colour of its wavelength"
 
 # The DesignTools methods that are offered to agents, in the order they are listed.
 READ_ONLY_TOOL_NAMES = [
@@ -63,6 +59,10 @@ EDITING_TOOL_NAMES = [  # these change the design, so a window must redraw after
     "save_zmx",
 ]
 TOOL_NAMES = READ_ONLY_TOOL_NAMES + EDITING_TOOL_NAMES
+
+# Calls the window's link answers that are not offered to agents: the Python API
+# (``raycrafter.api.Bench``) uses them to run analyses on a copy of the window's design.
+LINK_ONLY_TOOL_NAMES = ["get_state"]
 
 
 def _number(value: float, digits: int = 4) -> float | None:
@@ -146,23 +146,14 @@ class DesignTools:
         ``query`` is matched (case-insensitively) against the part number, family and coating.
         Focal lengths are signed: a diverging lens has a negative one.
         """
-        needle = query.lower()
-        matches: list[CatalogEntry] = []
-        for entry in self.model.catalog.values():
-            text = f"{entry.part_number} {entry.family} {entry.coating}".lower()
-            if needle not in text:
-                continue
-            if min_focal_length_mm is not None and entry.focal_length < min_focal_length_mm:
-                continue
-            if max_focal_length_mm is not None and entry.focal_length > max_focal_length_mm:
-                continue
-            if min_diameter_mm is not None and entry.clear_diameter_mm < min_diameter_mm:
-                continue
-            if category is not None and entry.category.lower() != category.lower():
-                continue
-            matches.append(entry)
-
-        matches.sort(key=lambda entry: (abs(entry.focal_length), entry.part_number))
+        matches = search_catalog(
+            self.model.catalog.values(),
+            query,
+            min_focal_length_mm,
+            max_focal_length_mm,
+            min_diameter_mm,
+            category,
+        )
         return {
             "total_matches": len(matches),
             "lenses": [self._lens_summary(entry) for entry in matches[: max(limit, 0)]],
@@ -258,68 +249,61 @@ class DesignTools:
     def get_plot(self, kind: str) -> bytes:
         """A PNG picture of one analysis: the same plot as the GUI and the HTML report.
 
-        ``kind`` is one of PLOT_KINDS. MTF, ray fan and through-focus show the selected field.
+        ``kind`` is one of ``figures.PLOT_KINDS``. MTF, ray fan and through-focus show the
+        selected field.
         """
-        if kind not in PLOT_KINDS:
-            raise ValueError(f"Unknown plot {kind!r}; choose one of: {', '.join(PLOT_KINDS)}")
+        return figures.figure_to_png_bytes(figures.draw_named_plot(self.model.state, kind))
 
-        if kind in ("ray_diagram", "spot_diagram", "through_focus"):
-            fast_trace = self.model.trace_fast()
-        if kind == "ray_diagram":
-            figure = figures.draw_ray_diagram(self.model.state, fast_trace)
-        elif kind == "spot_diagram":
-            figure = figures.draw_spot_diagram(self.model.state, fast_trace)
-        elif kind == "through_focus":
-            figure = figures.draw_through_focus(self.model.compute_through_focus(fast_trace))
-        elif kind == "mtf":
-            figure = figures.draw_mtf(self.model.compute_mtf())
-        elif kind == "ray_fan":
-            figure = figures.draw_ray_fan(self.model.compute_ray_fan())
-        else:
-            angle_deg = self.model.state.selected_field.angle_deg
-            figure = figures.draw_field_curvature(self.model.compute_field_curvature(), angle_deg)
-        return figures.figure_to_png_bytes(figure)
+    def get_state(self) -> dict:
+        """The complete design, every surface included, as ``state_to_dict`` gives it.
+
+        Not offered to agents (``get_design`` is the readable summary); the Python API uses
+        it to copy a window's design.
+        """
+        return state_to_dict(self.model.state)
 
     # ------------------------------------------------------------------ editing lenses
 
     def add_lens(self, part_number: str) -> dict:
-        """Place a catalogue lens just after the last lens (the image plane moves if needed)."""
+        """Place a catalogue lens just after the last lens (the image plane moves if needed).
+
+        The result includes ``new_lens_index``.
+        """
         self._catalog_entry(part_number)
         self.model.add_lens(part_number)
-        return self.get_design()
+        return {**self.get_design(), "new_lens_index": len(self.model.state.lenses) - 1}
 
     def insert_lens(self, part_number: str, front_z_mm: float) -> dict:
         """Place a catalogue lens with its front vertex as near ``front_z_mm`` as fits.
 
-        Lenses never overlap, so the lens goes into the nearest gap it fits in.
+        Lenses never overlap, so the lens goes into the nearest gap it fits in. The result
+        includes ``new_lens_index``.
         """
         new_lens = self.model.make_lens(self._catalog_entry(part_number).part_number)
-        free_z = self.model.free_front_z(new_lens.thickness, front_z_mm)
-        if free_z is None:
-            raise ValueError(f"{part_number} does not fit anywhere on the bench")
-        new_lens.z = free_z
-        self.model.insert_lens(new_lens)
-        return self.get_design()
+        return self._place(new_lens, front_z_mm, f"{part_number} does not fit anywhere")
 
-    def add_paraxial_lens(self, focal_length_mm: float, front_z_mm: float) -> dict:
-        """Place an ideal, aberration-free thin lens (clear diameter 2 inches)."""
+    def add_paraxial_lens(self, focal_length_mm: float, front_z_mm: float | None = None) -> dict:
+        """Place an ideal, aberration-free thin lens (clear diameter 2 inches).
+
+        With no ``front_z_mm`` it goes just after the last lens, as ``add_lens`` does. The
+        result includes ``new_lens_index``.
+        """
         new_lens = self.model.make_paraxial_lens(focal_length_mm)
-        free_z = self.model.free_front_z(new_lens.thickness, front_z_mm)
-        if free_z is None:
-            raise ValueError("A paraxial lens does not fit anywhere on the bench")
-        new_lens.z = free_z
-        self.model.insert_lens(new_lens)
-        return self.get_design()
+        if front_z_mm is None:
+            lenses = self.model.state.lenses
+            front_z_mm = lenses[-1].back_z + LENS_GAP_MM if lenses else INITIAL_LENS_Z
+        return self._place(new_lens, front_z_mm, "A paraxial lens does not fit anywhere")
 
     def move_lens(self, lens_index: int, front_z_mm: float) -> dict:
         """Move a lens (and its Plossl partner) towards ``front_z_mm``.
 
         The lens stops at its neighbours; dragging it past the middle of a neighbour swaps
-        their order.
+        their order. The result includes ``moved_lens_index``, the lens's index afterwards.
         """
         self._check_lens_index(lens_index)
-        self.model.move_lens(lens_index, front_z_mm)
-        return self.get_design()
+        new_order = self.model.move_lens(lens_index, front_z_mm)
+        moved_lens_index = lens_index if new_order is None else new_order.index(lens_index)
+        return {**self.get_design(), "moved_lens_index": moved_lens_index}
 
     def flip_lens(self, lens_index: int) -> dict:
         """Turn a lens round. Has no effect on paraxial lenses or lenses in a Plossl pair."""
@@ -360,13 +344,22 @@ class DesignTools:
         vergence_dioptres: float | None = None,
         offset_mm: float | None = None,
         wavelength_nm: float | None = None,
+        colour: str | None = None,
     ) -> dict:
-        """Change any of a field's properties; the ones left out stay as they are."""
+        """Change any of a field's properties; the ones left out stay as they are.
+
+        ``colour`` is a hex colour such as ``"#ff8800"``, or ``"wavelength"`` to draw the field
+        in the colour of its wavelength (the default).
+        """
         self._check_field_index(field_index)
         if diameter_mm is not None and diameter_mm <= 0:
             raise ValueError("diameter_mm must be positive")
         if wavelength_nm is not None and wavelength_nm <= 0:
             raise ValueError("wavelength_nm must be positive")
+        if colour is not None and colour != WAVELENGTH_COLOUR and not is_hex_colour(colour):
+            raise ValueError(
+                f"colour must be a hex colour such as '#ff8800', or {WAVELENGTH_COLOUR!r}"
+            )
 
         beam = self.model.state.fields[field_index]
         if diameter_mm is not None:
@@ -379,6 +372,8 @@ class DesignTools:
             beam.offset_mm = offset_mm
         if wavelength_nm is not None:
             beam.wavelength_nm = wavelength_nm
+        if colour is not None:
+            beam.colour = None if colour == WAVELENGTH_COLOUR else colour
         return self.get_design()
 
     def add_field(self) -> dict:
@@ -442,6 +437,15 @@ class DesignTools:
         return {"saved_to": file_path}
 
     # ------------------------------------------------------------------ helpers
+
+    def _place(self, new_lens: PlacedLens, front_z_mm: float, no_room_message: str) -> dict:
+        """Put a lens not yet on the bench into the free position nearest ``front_z_mm``."""
+        free_z = self.model.free_front_z(new_lens.thickness, front_z_mm)
+        if free_z is None:
+            raise ValueError(f"{no_room_message} on the bench")
+        new_lens.z = free_z
+        new_lens_index = self.model.insert_lens(new_lens)
+        return {**self.get_design(), "new_lens_index": new_lens_index}
 
     def _catalog_entry(self, part_number: str) -> CatalogEntry:
         """The catalogue entry for a part number, or a ValueError that suggests a search."""

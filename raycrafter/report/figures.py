@@ -2,7 +2,8 @@
 
 Each ``draw_*`` function takes analysis results from ``raycrafter.core`` and returns a
 matplotlib ``Figure`` with the same picture as the matching GUI panel, in the same colours
-(``raycrafter.palette``). ``figure_to_inline_svg`` and ``figure_to_png_bytes`` turn a figure
+(``raycrafter.palette``). ``draw_named_plot`` runs the analysis and draws it in one go, for a
+plot chosen by name. ``figure_to_inline_svg`` and ``figure_to_png_bytes`` turn a figure
 into something that can be embedded in the report or sent to an agent.
 """
 
@@ -16,6 +17,7 @@ from matplotlib import rcParams
 from matplotlib.figure import Figure
 
 from raycrafter import palette
+from raycrafter.core import analysis
 from raycrafter.core.analysis import (
     FIELD_CURVATURE_MAX_ANGLE,
     FastTrace,
@@ -315,3 +317,45 @@ def draw_field_curvature(curvature: FieldCurvatureResult, current_angle: float) 
     axes.set_ylim(0, FIELD_CURVATURE_MAX_ANGLE * 1.02)
     axes.legend(frameon=False, fontsize=9, labelcolor=palette.TEXT)
     return figure
+
+
+# The plots that can be asked for by name (by scripts and AI agents), as in the GUI's panels.
+PLOT_KINDS = (
+    "ray_diagram",
+    "spot_diagram",
+    "through_focus",
+    "mtf",
+    "ray_fan",
+    "field_curvature",
+)
+
+
+def draw_named_plot(state: OpticalState, kind: str) -> Figure:
+    """Run the analysis behind one of PLOT_KINDS on ``state`` and draw it.
+
+    MTF, ray fan, through-focus and field curvature show the selected field; the ray and
+    spot diagrams show every field.
+
+    Raises
+    ------
+    ValueError
+        If ``kind`` is not one of PLOT_KINDS.
+    """
+    if kind not in PLOT_KINDS:
+        raise ValueError(f"Unknown plot {kind!r}; choose one of: {', '.join(PLOT_KINDS)}")
+
+    if kind in ("ray_diagram", "spot_diagram", "through_focus"):
+        fast_trace = analysis.trace_fast(state)
+    if kind == "ray_diagram":
+        return draw_ray_diagram(state, fast_trace)
+    if kind == "spot_diagram":
+        return draw_spot_diagram(state, fast_trace)
+    if kind == "through_focus":
+        return draw_through_focus(analysis.compute_through_focus(state, fast_trace))
+    if kind == "mtf":
+        return draw_mtf(analysis.compute_mtf(state))
+    if kind == "ray_fan":
+        return draw_ray_fan(analysis.compute_ray_fan(state))
+    return draw_field_curvature(
+        analysis.compute_field_curvature(state), state.selected_field.angle_deg
+    )
