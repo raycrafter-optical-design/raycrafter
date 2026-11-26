@@ -11,6 +11,8 @@ named "Imported lens N".
 Some things a Zemax file can describe have no place in RayCrafter yet. Aspheres, mirrors,
 tilts and decentres make the import fail with ``ZmxImportError``. Others are simplified,
 and each simplification is reported in ``ZmxImport.notes`` so the user can be told.
+Because the import is lossy, the file's exact bytes are kept with the design
+(``OpticalState.imported_from``) and saved in its project file, so it can be imported again.
 
 Fields: Zemax gives all fields one entrance pupil and object, and pairs every field angle
 with every wavelength. Each field angle becomes a RayCrafter field at the primary
@@ -33,18 +35,25 @@ import re
 import warnings
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 
 import numpy as np
 from optiland.fileio import load_zemax_file
 
 from raycrafter import palette
-from raycrafter.core.optic_builder import build_optic
+from raycrafter.core.optic_builder import is_diverging
 from raycrafter.core.prescription import (
     LensSurface,
     flipped_prescription,
     prescription_from_zmx_text,
 )
-from raycrafter.core.state import BeamField, OpticalState, PlacedLens
+from raycrafter.core.state import (
+    BeamField,
+    ImportedSource,
+    OpticalState,
+    PlacedLens,
+    raycrafter_version,
+)
 from raycrafter.lenscatalog.catalog import CatalogEntry
 
 FIRST_SURFACE_Z = 100.0  # mm; a Zemax file has no axis start, so its surface 1 is put here
@@ -119,10 +128,24 @@ def load_zmx(file_path: str, catalog: dict[str, CatalogEntry]) -> ZmxImport:
         _note_lenses_that_block_more_than_zemax(grouping, ray_extent, notes)
         _note_apertures_in_air(grouping.air_apertures, ray_extent, notes)
 
-        state = OpticalState(lenses=grouping.lenses, image_z=grouping.image_z, fields=fields)
-        for lens in state.lenses:
+        for lens in grouping.lenses:
             if not lens.is_paraxial and lens.part_number.startswith("Imported"):
-                lens.is_negative = _is_diverging(lens)
+                lens.is_negative = is_diverging(lens)
+
+    # The file itself is kept with the design (see ImportedSource).
+    imported_from = ImportedSource.from_bytes(
+        file_format="zmx",
+        file_name=Path(file_path).name,
+        content=Path(file_path).read_bytes(),
+        imported_by=raycrafter_version(),
+        notes=notes,
+    )
+    state = OpticalState(
+        lenses=grouping.lenses,
+        image_z=grouping.image_z,
+        fields=fields,
+        imported_from=imported_from,
+    )
     return ZmxImport(state, notes)
 
 
@@ -450,17 +473,6 @@ def _imported_lens(
         semi_aperture=min(known_apertures) if known_apertures else _drawn_semi_aperture(extras),
         z=front_z,
     )
-
-
-def _is_diverging(lens: PlacedLens) -> bool:
-    """True if the lens on its own has a negative focal length.
-
-    A block with no power (a flat plate or a beam-splitter cube) is not diverging, although
-    Optiland gives its focal length as minus infinity.
-    """
-    alone = OpticalState(lenses=[lens], image_z=lens.back_z + 10.0)
-    focal_length_mm = float(build_optic(alone).paraxial.f2())
-    return bool(np.isfinite(focal_length_mm) and focal_length_mm < 0)
 
 
 # ------------------------------------------------------------------ catalogue matching

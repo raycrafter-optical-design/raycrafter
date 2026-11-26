@@ -9,8 +9,11 @@ processes (a script and the RayCrafter window).
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from dataclasses import asdict, dataclass, field
 
+import raycrafter
 from raycrafter.core.prescription import LensSurface, flipped_prescription, lens_thickness
 from raycrafter.palette import wavelength_colour
 
@@ -149,6 +152,68 @@ class BeamField:
         return self.colour if self.colour is not None else wavelength_colour(self.wavelength_nm)
 
 
+def raycrafter_version() -> str:
+    """This program and its version, e.g. ``"RayCrafter 0.0.3"``, as recorded in files."""
+    return f"RayCrafter {getattr(raycrafter, '__version__', 'unknown')}"
+
+
+@dataclass(frozen=True)
+class ImportedSource:
+    """The file a design was imported from, kept as a record of where it came from.
+
+    Importing is lossy and the importer keeps improving, so the original file is kept with
+    the design (and in its project file): the design can then be imported again later, and
+    import problems can be reproduced. It is never loaded in place of the design. Once the
+    bench has been edited it no longer describes it.
+
+    Attributes
+    ----------
+    file_format : str
+        The kind of file, e.g. ``"zmx"``.
+    file_name : str
+        The file's name when it was imported, without its folder.
+    content_base64 : str
+        The file's exact bytes, base64-encoded (ZMX files may be UTF-16), so that the state
+        stays plain JSON-ready data.
+    sha256 : str
+        Hex SHA-256 of the bytes, to check the copy is intact.
+    imported_by : str
+        The RayCrafter version that imported it, e.g. ``"RayCrafter 0.0.3"``.
+    notes : tuple of str
+        The notes on what the import simplified, as the user was shown them.
+    """
+
+    file_format: str
+    file_name: str
+    content_base64: str
+    sha256: str
+    imported_by: str
+    notes: tuple[str, ...] = ()
+
+    @classmethod
+    def from_bytes(
+        cls,
+        file_format: str,
+        file_name: str,
+        content: bytes,
+        imported_by: str,
+        notes: list[str] | tuple[str, ...] = (),
+    ) -> ImportedSource:
+        """Make the record from the file's bytes, encoding them and computing the hash."""
+        return cls(
+            file_format=file_format,
+            file_name=file_name,
+            content_base64=base64.b64encode(content).decode("ascii"),
+            sha256=hashlib.sha256(content).hexdigest(),
+            imported_by=imported_by,
+            notes=tuple(notes),
+        )
+
+    def content(self) -> bytes:
+        """The file's original bytes."""
+        return base64.b64decode(self.content_base64)
+
+
 @dataclass
 class OpticalState:
     """Everything the user can change: the lenses, the beams and the image plane.
@@ -166,6 +231,8 @@ class OpticalState:
         fan, field curvature, f-number) use. The spot diagram and side view show every field.
     image_z : float
         z of the image plane, in mm.
+    imported_from : ImportedSource or None
+        The file the design was imported from, if it was; editing leaves it unchanged.
     """
 
     lenses: list[PlacedLens] = field(default_factory=list)
@@ -173,6 +240,7 @@ class OpticalState:
     fields: list[BeamField] = field(default_factory=lambda: [BeamField()])
     selected_field_index: int = 0
     image_z: float = 310.0
+    imported_from: ImportedSource | None = None
 
     @property
     def selected_field(self) -> BeamField:
@@ -221,6 +289,12 @@ def state_from_dict(data: dict) -> OpticalState:
         for lens_data in data["lenses"]
     ]
     fields = [BeamField(**field_data) for field_data in data["fields"]]
+    source_data = data.get("imported_from")
+    imported_from = (
+        None
+        if source_data is None
+        else ImportedSource(**{**source_data, "notes": tuple(source_data["notes"])})
+    )
     return OpticalState(
-        **{**data, "lenses": lenses, "fields": fields},
+        **{**data, "lenses": lenses, "fields": fields, "imported_from": imported_from},
     )
