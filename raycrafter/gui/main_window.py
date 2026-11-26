@@ -8,7 +8,8 @@
   lens to slide it along the axis; drag it past a neighbour's centre to swap them. Drag the
   green line to move the image plane (not while "Lock focus" is on or the gap to it is
   locked). Click one of the gap dimensions below the lenses to type that distance;
-  right-click it to lock or unlock it. Lenses joined by locked gaps move as one. The fields
+  right-click it to lock or unlock it, or to collimate the output or focus by setting it
+  (``raycrafter.gui.gap_optimiser``). Lenses joined by locked gaps move as one. The fields
   are defined at the source plane ("source"), which by default moves with the first lens;
   right-click its caption to unlock it, then drag it or type its gap.
 - Right-click a lens for Flip (F), Delete (Del or Backspace), the replace actions
@@ -80,6 +81,7 @@ from raycrafter.gui.analysis_panels import (
 from raycrafter.gui.bench_viewer import BenchViewer
 from raycrafter.gui.field_editor import FieldEditor
 from raycrafter.gui.file_actions import FileActions
+from raycrafter.gui.gap_optimiser import GapOptimiser
 from raycrafter.gui.lens_picker import LensPickerDialog
 from raycrafter.gui.lens_replacement import LensReplacer
 from raycrafter.gui.side_view import SideView
@@ -128,6 +130,7 @@ class MainWindow(QMainWindow):
         self.next_redraw_counts_as_saved = False  # see show_replaced_design
         self.files = FileActions(self)  # the File menu
         self.replacer = LensReplacer(self)  # the lens menu's replace actions
+        self.gap_optimiser = GapOptimiser(self)  # the gap menu's optimise actions
         self._build_widgets()
         self._build_menus()
         self._connect_signals()
@@ -569,7 +572,7 @@ class MainWindow(QMainWindow):
         self.build_gap_menu(lens_index).exec(global_position)
 
     def build_gap_menu(self, lens_index: int) -> QMenu:
-        """The context menu for the gap behind one lens: Lock gap, or Unlock gap.
+        """The context menu for the gap behind one lens: Lock or Unlock gap, and optimise it.
 
         ``lens_index`` is SOURCE_GAP_INDEX for the gap from the source plane to the first lens.
 
@@ -590,6 +593,9 @@ class MainWindow(QMainWindow):
             action = menu.addAction("Lock gap")
             action.setEnabled(not (gap.to_image and self.lock_focus_checkbox.isChecked()))
         action.triggered.connect(lambda: self.set_gap_locked(lens_index, not gap.locked))
+        if not gap.to_image:  # autofocus is what optimises the gap to the image plane
+            menu.addSeparator()
+            self.gap_optimiser.add_menu_entries(menu, lens_index)
         return menu
 
     def set_gap_locked(self, lens_index: int, locked: bool) -> None:

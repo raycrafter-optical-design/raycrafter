@@ -30,6 +30,7 @@ import numpy as np
 from raycrafter.core import (
     analysis,
     assemblies,
+    gap_optimisation,
     gaps,
     optic_builder,
     project_file,
@@ -419,6 +420,27 @@ class OpticalModel:
     def set_gap_locked(self, lens_index: int, locked: bool) -> None:
         """Lock or unlock the gap behind a lens (see ``gaps.set_gap_locked``)."""
         gaps.set_gap_locked(self.state, lens_index, locked)
+
+    def optimise_gap(self, lens_index: int, goal: str) -> gap_optimisation.GapOptimisation:
+        """Find the best gap behind a lens for a goal, without changing the bench.
+
+        ``lens_index`` is ``gaps.SOURCE_GAP_INDEX`` for the gap from the source plane;
+        ``goal`` is ``gap_optimisation.COLLIMATE`` or ``FOCUS``. See
+        ``gap_optimisation.optimise_gap``; apply the result with ``apply_gap_optimisation``.
+        """
+        smallest_source_gap_mm = FIRST_LENS_MIN_Z - self.state.source_z
+        return gap_optimisation.optimise_gap(self.state, lens_index, goal, smallest_source_gap_mm)
+
+    def apply_gap_optimisation(
+        self, result: gap_optimisation.GapOptimisation, lock: bool = False
+    ) -> None:
+        """Set the gap ``optimise_gap`` found and, if ``lock``, lock it."""
+        gap_optimisation.apply_gap(self.state, result.lens_index, result.goal, result.gap_after_mm)
+        if lock:
+            if result.lens_index == gaps.SOURCE_GAP_INDEX:
+                self.set_source_gap_locked(True)
+            else:
+                self.set_gap_locked(result.lens_index, True)
 
     # ---------------------------------------------------------------- the source plane
 

@@ -13,10 +13,12 @@ dioptres (1/m), wavelengths in nm.
 from __future__ import annotations
 
 import math
+from dataclasses import asdict
 
 import numpy as np
 
 from raycrafter.core import analysis
+from raycrafter.core.gaps import SOURCE_GAP_INDEX
 from raycrafter.core.model import INITIAL_LENS_Z, LENS_GAP_MM, OpticalModel
 from raycrafter.core.project_file import ProjectFileError
 from raycrafter.core.state import PlacedLens, state_to_dict
@@ -68,6 +70,7 @@ EDITING_TOOL_NAMES = [  # these change the design, so a window must redraw after
     "select_field",
     "set_image_z",
     "autofocus",
+    "optimise_gap",
     "new_design",
     "save_project",
     "load_project",
@@ -629,6 +632,32 @@ class DesignTools:
             raise ValueError("There are no lenses to focus")
         self.model.autofocus()
         return self.get_design()
+
+    def optimise_gap(
+        self, lens_index: int, goal: str, apply: bool = True, lock: bool = False
+    ) -> dict:
+        """Find (and by default set) the gap behind a lens that best meets a goal.
+
+        ``goal`` is "collimate" (the rays leaving the last lens are parallel; merit is their
+        RMS angle in µrad; later lenses and the image plane move together) or "focus" (the
+        smallest RMS spot on the image plane, which stays put; merit in µm). Real rays of the
+        selected field are used. ``lens_index`` -1 means the gap from the source plane. The
+        gap must be unlocked and not the gap to the image plane (use autofocus for that).
+        Gaps that clip rays are never chosen. The result's ``optimisation`` gives the gap
+        and merit before and after, and ``at_bound`` (true if the best gap is at an end of
+        the allowed range, so there may be no real solution). With ``apply`` false the bench
+        is not changed; with ``lock`` true the gap is locked afterwards.
+        """
+        if lens_index != SOURCE_GAP_INDEX:
+            self._check_lens_index(lens_index)
+        result = self.model.optimise_gap(lens_index, goal)
+        if apply:
+            self.model.apply_gap_optimisation(result, lock=bool(lock))
+        optimisation = {
+            name: _number(value) if isinstance(value, float) else value
+            for name, value in asdict(result).items()
+        }
+        return {**self.get_design(), "optimisation": optimisation}
 
     # ------------------------------------------------------------------ files
 

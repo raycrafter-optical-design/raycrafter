@@ -978,7 +978,10 @@ def test_the_source_plane_is_unlocked_from_its_caption_then_dragged_and_typed(ap
     assert all(not gap.from_source for gap in side_view.gap_dimensions.gaps)
 
     menu = window.build_gap_menu(SOURCE_GAP_INDEX)
-    assert [action.text() for action in menu.actions()] == ["Unlock gap"]
+    texts = [action.text() for action in menu.actions() if not action.isSeparator()]
+    assert texts == ["Unlock gap", "Collimate output…", "Focus on image plane…"]
+    optimise_actions = [action for action in menu.actions()[1:] if not action.isSeparator()]
+    assert not any(action.isEnabled() for action in optimise_actions)  # locked: unlock first
     menu.actions()[0].trigger()
     application.processEvents()
     assert side_view.source_line.movable
@@ -1065,4 +1068,41 @@ def test_replacing_one_lens_of_a_plossl_pair_asks_first(application, monkeypatch
     window.replacer.replace_with_catalogue_lens(1, same_focal_length=False)
     assert [lens.part_number for lens in window.model.state.lenses] == ["AC508-150-A"] * 2
     assert window.model.in_plossl_pair(0)
+    window.close()
+
+
+def test_collimating_from_the_gap_menu(application, monkeypatch):
+    """Issue #38: the gap menu finds the gap that collimates the output, and locks it."""
+    window = MainWindow()
+    model = window.model
+    model.delete_lens(0)
+    for focal_length_mm, front_z in ((100.0, 100.0), (50.0, 180.0)):
+        model.insert_lens(model.make_paraxial_lens(focal_length_mm, front_z))
+    model.state.image_z = 400.0
+    window.show_new_design()
+
+    texts = [action.text() for action in window.build_gap_menu(0).actions()]
+    assert "Collimate output…" in texts and "Focus on image plane…" in texts
+    image_gap_texts = [action.text() for action in window.build_gap_menu(1).actions()]
+    assert "Collimate output…" not in image_gap_texts  # autofocus does the image gap
+
+    window.lock_focus_checkbox.setChecked(True)
+    focus_action = next(
+        action
+        for action in window.build_gap_menu(0).actions()
+        if action.text() == "Focus on image plane…"
+    )
+    assert not focus_action.isEnabled() and "Lock focus" in focus_action.toolTip()
+    window.lock_focus_checkbox.setChecked(False)
+
+    shown = []
+    monkeypatch.setattr(
+        window.gap_optimiser,
+        "ask_to_apply",
+        lambda result: shown.append(window.gap_optimiser.describe(result)) or True,
+    )
+    window.gap_optimiser.optimise(0, "collimate")
+    assert model.air_gaps()[0].width_mm == pytest.approx(150.0, abs=1e-3)
+    assert model.air_gaps()[0].locked
+    assert "80.000 mm  →  150.000 mm" in shown[0]
     window.close()
