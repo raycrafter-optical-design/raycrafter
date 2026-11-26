@@ -42,6 +42,18 @@ entry to "Retired".
 - **Remove when:** a release fixes it; add a physics check against a known value.
 
 
+### Looking a glass up by name is slow
+- **Where:** `raycrafter/core/optic_builder.py`, `glass` (and `_load_glass`).
+- **Problem (0.6.3):** `Material(name)` searches the glass database and reads the glass's YAML
+  file every time, about 4 ms for each glass surface. We load each glass once and pass the
+  object to `surfaces.add`. A shared material's index cache then grows with every new set of
+  wavelengths, and there is no public way to empty it, so we clear the private `_n_cache` and
+  `_k_cache`.
+- **Upstream status:** no issue filed yet.
+- **Remove when:** a release caches the lookup itself, so that giving a name costs no more
+  than giving the object.
+
+
 ## Retired
 
 Nothing yet.

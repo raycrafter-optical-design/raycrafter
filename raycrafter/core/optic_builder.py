@@ -1,7 +1,8 @@
 """Build an Optiland ``Optic`` from the bench state, and export it as a Zemax file.
 
 A fresh Optiland system is built from ``OpticalState`` for every update, rather than
-editing a long-lived one (see log.md, "rebuild the Optiland system on every change").
+editing a long-lived one (see log.md, "rebuild the Optiland system on every change"). The
+glasses are the exception: each is loaded once and shared by every system (see ``glass``).
 
 Most analyses launch each field's rays themselves (``raycrafter.core.ray_launch``), so the
 system they use (``build_optic``) has its object at infinity and Optiland's own fields and
@@ -18,16 +19,47 @@ surfaces, giving wrong results or NaN where a sphere does not reach that far (is
 
 from __future__ import annotations
 
+import functools
 import warnings
 
 import numpy as np
 from optiland.fileio import save_zemax_file
+from optiland.materials import Material
 from optiland.materials.warnings import OptilandMaterialWarning
 from optiland.optic import Optic
 from optiland.physical_apertures import RadialAperture
 
 from raycrafter.core import ray_launch
 from raycrafter.core.state import AXIS_START_Z, BeamField, OpticalState, PlacedLens
+
+MAX_REMEMBERED_INDICES = 100  # sets of wavelengths a shared glass remembers (see ``glass``)
+
+
+def glass(name: str) -> Material:
+    """Optiland's material for a glass, loaded the first time it is asked for, then reused.
+
+    Given a glass by name, Optiland searches its database and reads a file, which takes about
+    4 ms for each glass surface: nearly all the time of a rebuild. The glass itself does not
+    change once loaded, so every system can share it.
+    """
+    material = _load_glass(name)
+    # A material also remembers its index for every set of wavelengths it has been asked for.
+    # Now that it outlives its system, that would grow for as long as wavelengths are being
+    # changed, so it is emptied now and then. Optiland has no public method for this.
+    if len(material._n_cache) > MAX_REMEMBERED_INDICES:
+        material._n_cache.clear()
+        material._k_cache.clear()
+    return material
+
+
+@functools.cache
+def _load_glass(name: str) -> Material:
+    """Look a glass up in Optiland's database (once for each name; see ``glass``)."""
+    with warnings.catch_warnings():
+        # Some glass names (e.g. SF10) are in several of Optiland's catalogues. It warns and
+        # picks Schott's, which is the right one for the Thorlabs lenses.
+        warnings.simplefilter("ignore", OptilandMaterialWarning)
+        return Material(name)
 
 
 def object_distance_mm(beam_vergence: float) -> float:
@@ -172,12 +204,8 @@ def _add_lens_and_image_surfaces(optic: Optic, state: OpticalState) -> None:
             )
             # Optiland uses air when no material is given ("material=None" is rejected).
             if surface.material_after != "air" and not is_last_surface:
-                surface_settings["material"] = surface.material_after
-            with warnings.catch_warnings():
-                # Some glass names (e.g. SF10) are in several of Optiland's catalogues. It
-                # warns and picks Schott's, which is the right one for the Thorlabs lenses.
-                warnings.simplefilter("ignore", OptilandMaterialWarning)
-                optic.surfaces.add(**surface_settings)
+                surface_settings["material"] = glass(surface.material_after)
+            optic.surfaces.add(**surface_settings)
             surface_index += 1
     optic.surfaces.add(index=surface_index)
 

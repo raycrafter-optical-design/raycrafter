@@ -27,7 +27,13 @@ from optiland.rays import RealRays
 from scipy.optimize import minimize_scalar
 
 from raycrafter.core.optic_builder import build_optic, build_optic_for_beam
-from raycrafter.core.ray_launch import beam_at_first_lens, launch_rays, pupil_points, trace_rays
+from raycrafter.core.ray_launch import (
+    beam_at_first_lens,
+    join_rays,
+    launch_rays,
+    pupil_points,
+    trace_rays,
+)
 from raycrafter.core.state import BeamField, OpticalState
 
 SPOT_RINGS = 6  # hexapolar rings for the spot diagram (127 rays)
@@ -190,9 +196,13 @@ def transmitted(rays) -> np.ndarray:
     return (np.asarray(rays.i, dtype=float) > 0) & finite
 
 
-def spot_from_rays(rays, wavelength_um: float) -> SpotResult:
-    """Build a SpotResult from the transmitted Optiland rays traced to the image plane."""
-    keep = transmitted(rays)
+def spot_from_rays(rays, wavelength_um: float, which: slice = slice(None)) -> SpotResult:
+    """Build a SpotResult from the transmitted Optiland rays traced to the image plane.
+
+    ``which`` picks the spot's rays out of a trace that holds others too.
+    """
+    keep = np.zeros(np.size(rays.x), dtype=bool)
+    keep[which] = transmitted(rays)[which]
     if not keep.any():
         no_rays = np.empty(0)
         return SpotResult(
@@ -274,23 +284,21 @@ def _trace_spot(state: OpticalState, optic: Optic, beam: BeamField) -> SpotResul
     return spot_from_rays(rays, beam.wavelength_um)
 
 
-def _trace_ray_paths(state: OpticalState, optic: Optic, beam: BeamField) -> RayPaths:
-    """Trace a meridional fan of one field for the side view; return absolute z, y of each ray.
+def _ray_paths(state: OpticalState, optic: Optic, which: slice) -> RayPaths:
+    """Absolute z, y along the rays ``which`` of the most recent trace, for the side view.
 
     Row 0 of Optiland's per-surface arrays is the (object) surface at infinity, which leaves
     the rays where they were launched, at the start of the axis; row 1 is the first lens
     surface. A ray blocked by a lens rim is drawn up to the plane of that surface's rim,
     where it would hit the lens mount, and no further.
     """
-    _trace_field(state, optic, beam, "line_y", SIDE_VIEW_RAYS)
-
     # Optiland keeps the per-surface ray positions of the most recent trace on its surfaces.
-    z_local = np.array(optic.surfaces.z, dtype=float)
-    y_local = np.array(optic.surfaces.y, dtype=float)
-    slope_local = np.asarray(optic.surfaces.M, dtype=float) / np.asarray(
-        optic.surfaces.N, dtype=float
+    z_local = np.array(optic.surfaces.z[:, which], dtype=float)
+    y_local = np.array(optic.surfaces.y[:, which], dtype=float)
+    slope_local = np.asarray(optic.surfaces.M[:, which], dtype=float) / np.asarray(
+        optic.surfaces.N[:, which], dtype=float
     )
-    intensity = np.asarray(optic.surfaces.intensity, dtype=float)
+    intensity = np.asarray(optic.surfaces.intensity[:, which], dtype=float)
 
     # Optiland stops a blocked ray where it meets the surface's mathematical continuation
     # beyond the rim (and gives NaN if the sphere does not reach that far). Instead, end it
@@ -342,17 +350,28 @@ def _system_summary(state: OpticalState, optic: Optic) -> SystemSummary | None:
 
 
 def trace_fast(state: OpticalState) -> FastTrace:
-    """Trace what the GUI redraws on every change, building the Optiland system only once.
+    """Trace what the GUI redraws on every change: one system build and one trace.
 
-    Each field gets a hexapolar spot and a fan of rays for the side view. Each fan's
-    per-surface positions are read straight after it is traced, before the next trace
-    replaces them.
+    Each field gets a hexapolar spot and a fan of rays for the side view. All of them are
+    traced together (see ``ray_launch.join_rays``), then shared out again by field.
     """
     optic = build_optic(state)
+    spot_x, spot_y = pupil_points("hexapolar", SPOT_RINGS)
+    fan_x, fan_y = pupil_points("line_y", SIDE_VIEW_RAYS)
+    # Each field's rays are its spot's followed by its fan's.
+    pupil_x, pupil_y = np.concatenate([spot_x, fan_x]), np.concatenate([spot_y, fan_y])
+    rays = trace_rays(
+        optic,
+        join_rays([launch_rays(state, beam, optic, pupil_x, pupil_y) for beam in state.fields]),
+    )
+
     spots, paths = [], []
-    for beam in state.fields:
-        spots.append(_trace_spot(state, optic, beam))
-        paths.append(_trace_ray_paths(state, optic, beam))
+    for field_number, beam in enumerate(state.fields):
+        first_ray = field_number * pupil_x.size
+        spot_rays = slice(first_ray, first_ray + spot_x.size)
+        fan_rays = slice(spot_rays.stop, first_ray + pupil_x.size)
+        spots.append(spot_from_rays(rays, beam.wavelength_um, spot_rays))
+        paths.append(_ray_paths(state, optic, fan_rays))
     return FastTrace(spots, paths, _system_summary(state, optic), state.selected_field_index)
 
 

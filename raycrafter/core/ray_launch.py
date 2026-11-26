@@ -3,9 +3,9 @@
 Optiland can generate rays itself from an object, an entrance pupil and a list of field
 angles, but all of those belong to the whole system. Our fields each have their own
 diameter, angle, vergence, offset and wavelength, so instead we build the Optiland system
-once and launch every field's rays ourselves. This is also fast: a trace costs well under a
-millisecond, a system build about 8 ms. The MTF is the exception: it needs Optiland's own
-pupil model (see ``optic_builder.build_optic_for_beam``).
+once and launch every field's rays ourselves. This is also fast: all the fields can be traced
+together (see ``join_rays``). The MTF is the exception: it needs Optiland's own pupil model
+(see ``optic_builder.build_optic_for_beam``).
 
 Every ray starts at the start of the axis (``AXIS_START_Z``), so the side view can draw it
 from there. Its height and slope are worked out from where it crosses the beam's reference
@@ -148,11 +148,31 @@ def beam_at_first_lens(state: OpticalState, beam: BeamField) -> BeamField:
     )
 
 
+def join_rays(bundles: list[RealRays]) -> RealRays:
+    """One set of rays holding all those of ``bundles``, in order, so one trace does for all.
+
+    A trace costs much the same for a few rays as for hundreds, so tracing the bundles
+    together is far faster than one at a time. Each ray keeps its own wavelength.
+    """
+    names = ("x", "y", "z", "L", "M", "N", "i", "w")
+    joined = {name: np.concatenate([getattr(rays, name) for rays in bundles]) for name in names}
+    return RealRays(
+        x=joined["x"],
+        y=joined["y"],
+        z=joined["z"],
+        L=joined["L"],
+        M=joined["M"],
+        N=joined["N"],
+        intensity=joined["i"],
+        wavelength=joined["w"],
+    )
+
+
 def trace_rays(optic: Optic, rays: RealRays) -> RealRays:
     """Trace launched rays through the system to the image plane, and return them.
 
     Optiland keeps the per-surface positions of the most recent trace on its surfaces (read
-    by ``analysis._trace_ray_paths``), so read those before tracing anything else.
+    by ``analysis._ray_paths``), so read those before tracing anything else.
     """
     optic.surfaces.trace(rays)
     return rays
