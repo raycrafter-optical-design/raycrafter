@@ -34,7 +34,8 @@ Conventions
   plain records that do not change when the design does. To change the design, call a
   ``Bench`` method.
 - One field is *selected*. Autofocus works on it, and so do the single-field analyses
-  (through-focus, MTF, ray fan, field curvature) unless you pass ``field_index``.
+  (through-focus, MTF, ray fan, field curvature, distortion) unless you pass
+  ``field_index``.
 
 Example
 -------
@@ -72,6 +73,7 @@ from matplotlib.figure import Figure
 
 from raycrafter.assembly_methods import AssemblyMethods
 from raycrafter.core import analysis, gaps
+from raycrafter.core.distortion import GRID_POINTS, DistortionResult, compute_distortion
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.state import BeamField, ObjectPoint, OpticalState, state_from_dict
 from raycrafter.design_files import DesignFileMethods
@@ -753,6 +755,44 @@ class Bench(DesignFileMethods, AssemblyMethods, GapMethods, FieldMethods):
         """
         return analysis.compute_field_curvature(self._state(field_index))
 
+    def distortion(
+        self,
+        field_index: int | None = None,
+        reference: str = "chief_ray",
+        grid_points: int = GRID_POINTS,
+    ) -> DistortionResult:
+        """Grid distortion of a finite object, at one field's wavelength (default: selected).
+
+        A square grid of object points, its corners as far from the axis as the farthest
+        object point, is compared with a scaled copy of itself on the image plane (see
+        ``raycrafter.core.distortion``). The result has the ``magnification``, the grid
+        (``object_x``, ``image_x``, ``ideal_x`` and the same for y, in mm),
+        ``grid_distortion_percent``, ``max_distortion_percent``, and
+        ``height_distortion_percent`` against object ``heights``. With beams, or no object
+        point off the axis, the arrays are empty and ``unavailable_reason`` says why.
+
+        Parameters
+        ----------
+        field_index : int, optional
+            Whose wavelength (and NA, for centroids) to use.
+        reference : str
+            ``"chief_ray"`` or ``"centroid"``: how each image point is located.
+        grid_points : int
+            Object points along each side of the grid.
+
+        Raises
+        ------
+        ValueError
+            If ``reference`` or ``grid_points`` is not allowed.
+
+        Example
+        -------
+        >>> bench = Bench()
+        >>> bench.distortion().unavailable_reason  # a beam has no object grid
+        'Needs a finite object (object points)'
+        """
+        return compute_distortion(self._state(field_index), reference, grid_points)
+
     def plot(self, kind: str, field_index: int | None = None) -> Figure:
         """Draw one analysis as a matplotlib ``Figure``, as the GUI and the report show it.
 
@@ -760,7 +800,8 @@ class Bench(DesignFileMethods, AssemblyMethods, GapMethods, FieldMethods):
         ----------
         kind : str
             One of ``"ray_diagram"``, ``"spot_diagram"``, ``"through_focus"``, ``"mtf"``,
-            ``"ray_fan"``, ``"field_curvature"`` (``PLOT_KINDS``).
+            ``"ray_fan"``, ``"field_curvature"``, ``"grid_distortion"``, ``"distortion"``
+            (``PLOT_KINDS``).
         field_index : int, optional
             The field for the single-field plots; the selected one if left out.
 

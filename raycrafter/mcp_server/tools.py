@@ -43,6 +43,7 @@ READ_ONLY_TOOL_NAMES = [
     "get_ray_fan",
     "get_through_focus",
     "get_field_curvature",
+    "get_distortion",
     "get_plot",
     "list_user_parts",
 ]
@@ -329,6 +330,26 @@ class DesignTools:
             "tangential_shift_mm": _thinned(result.tangential_shift, indices, 3),
             "sagittal_shift_mm": _thinned(result.sagittal_shift, indices, 3),
             "note": "null means too few rays got through to find a focus.",
+        }
+
+    def get_distortion(self, reference: str = "chief_ray") -> dict:
+        """Distortion (%) of a finite object against object height, and the largest value.
+
+        reference is "chief_ray" or "centroid" (how each image point is located). Positive is
+        pincushion, negative barrel. Needs object points (set_finite_object), at least one off
+        the axis; the farthest sets the field of view.
+        """
+        result = self.model.compute_distortion(reference)
+        indices = _thinning_indices(len(result.heights))
+        return {
+            "field_index": self.model.state.selected_field_index,
+            "reference": result.reference,
+            "magnification": _number(result.magnification),
+            "max_distortion_percent": _number(result.max_distortion_percent),
+            "object_height_mm": _thinned(result.heights, indices),
+            "distortion_percent": _thinned(result.height_distortion_percent, indices),
+            "blocked_grid_points": result.blocked_point_count,
+            "note": result.unavailable_reason or "null means the light of that point was blocked.",
         }
 
     def get_plot(self, kind: str) -> bytes:

@@ -1,12 +1,12 @@
 """Build a self-contained HTML report of the current lens system.
 
 The report has the ray diagram across the top, a 3D view of the design that can be turned
-round (``raycrafter.report.viewer_3d``), and the five analysis plots below them (spot
-diagram, through-focus, MTF, ray fan, field curvature), with a row of summary tiles. Every
-plot has a "?" button that opens a note explaining how to read it. Plots are inline SVG and
-the style sheet and scripts (in ``assets``) are copied into the page, so the result is a
-single HTML file that can be shared, and needs no other files or internet connection. The
-app shows it as a page that updates itself (``raycrafter.report.live_report``).
+round (``raycrafter.report.viewer_3d``), and the analysis plots below them (spot diagram,
+through-focus, MTF, ray fan, field curvature and, for a finite object, two of distortion),
+with a row of summary tiles. Every plot has a "?" button that opens a note explaining how to
+read it. Plots are inline SVG and the style sheet and scripts (in ``assets``) are copied into
+the page, so the result is a single HTML file that can be shared, and needs no other files or
+internet connection. The app shows it as a page that updates itself (``raycrafter.report.live_report``).
 
 Example
 -------
@@ -21,9 +21,10 @@ import html
 from datetime import datetime
 
 from raycrafter.core.analysis import airy_radius
-from raycrafter.core.fields import chief_ray_angle_deg
+from raycrafter.core.fields import chief_ray_angle_deg, field_height_mm
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import (
+    distortion_title,
     f_number_text,
     field_name,
     field_position_text,
@@ -139,6 +140,7 @@ def build_report_html(model: OpticalModel) -> str:
     mtf = model.compute_mtf()
     ray_fan = model.compute_ray_fan()
     curvature = model.compute_field_curvature()
+    distortion = model.compute_distortion()
 
     spot = fast_trace.spot
     summary = fast_trace.summary
@@ -236,6 +238,27 @@ def build_report_html(model: OpticalModel) -> str:
             "span-3",
         ),
     ]
+
+    # Only a finite object with a field of view has a grid to distort.
+    if distortion.has_grid:
+        cards += [
+            card_html(
+                "grid_distortion",
+                "Grid distortion",
+                "Where a square grid of object points is imaged",
+                figures.figure_to_inline_svg(figures.draw_distortion_grid(distortion)),
+                "span-3",
+            ),
+            card_html(
+                "distortion",
+                "Distortion",
+                distortion_title(distortion),
+                figures.figure_to_inline_svg(
+                    figures.draw_distortion_curve(distortion, field_height_mm(selected))
+                ),
+                "span-3",
+            ),
+        ]
 
     explanation_data = {
         key: {"title": title, "paragraphs": paragraphs}

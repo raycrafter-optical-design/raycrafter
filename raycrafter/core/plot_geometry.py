@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 
 from raycrafter.core.analysis import FNumberResult, RayPaths, SpotResult, airy_radius
+from raycrafter.core.distortion import DistortionResult
 from raycrafter.core.prescription import surface_sag
 from raycrafter.core.state import AXIS_START_Z, AnyField, BeamField, OpticalState, PlacedLens
 
@@ -19,6 +20,9 @@ IMAGE_EDGE_GAP_MM = 5.0  # the image plane is kept at least this far inside the 
 AXIS_Z_ROOM_FRACTION = 0.1  # a design too long for the default is shown with 10% spare axis
 AXIS_Y_ROOM_FRACTION = 0.15  # space above the tallest lens, as a fraction of its semi-aperture
 MIN_SPOT_HALF_WIDTH_UM = 5.0  # the spot plot never zooms in beyond +/-5 um
+# The distortion curve never zooms in beyond this, so a perfect system shows a line on zero
+# rather than numerical noise.
+MIN_DISTORTION_LIMIT_PERCENT = 0.1
 
 
 def axis_ranges(state: OpticalState) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -178,6 +182,51 @@ def f_number_text(result: FNumberResult) -> str:
     if result.beam_is_clipped:
         text += f" (beam clipped to {result.transmitted_beam_diameter:.1f} mm)"
     return text
+
+
+def grid_polylines(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Every row and column of a grid of points, as one line broken by NaN between them.
+
+    Parameters
+    ----------
+    x, y : numpy.ndarray
+        The points' coordinates, each of shape (rows, columns).
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        x and y along the line; drawing code should leave gaps at NaN (which also leaves out
+        missing points).
+    """
+    lines = []
+    for coordinate in (x, y):
+        pieces = []
+        for line in (*coordinate, *coordinate.T):
+            pieces += [line, [np.nan]]
+        lines.append(np.concatenate(pieces) if pieces else np.empty(0))
+    return lines[0], lines[1]
+
+
+def distortion_title(result: DistortionResult) -> str:
+    """The grid plot's title: the largest distortion, or why there is none to show."""
+    if not result.has_grid:
+        return result.unavailable_reason
+    largest = result.max_distortion_percent
+    if not np.isfinite(largest):
+        return "No image: light blocked"
+    # "+ 0.0" turns a rounded -0.000 into 0.000.
+    title = f"Max distortion {round(largest, 3) + 0.0:+.3f}%"
+    if result.blocked_point_count:
+        title += " (some points blocked)"
+    return title
+
+
+def distortion_limit_percent(result: DistortionResult) -> float:
+    """Half-width (%) of the zero-centred plot of distortion against object height."""
+    largest = largest_magnitude(
+        result.height_distortion_percent, floor=MIN_DISTORTION_LIMIT_PERCENT
+    )
+    return largest * 1.1
 
 
 def ray_fan_limit_um(largest_error_mm: float) -> float:

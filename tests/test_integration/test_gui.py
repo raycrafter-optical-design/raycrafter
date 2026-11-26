@@ -2,6 +2,7 @@
 
 import os
 
+import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -11,6 +12,7 @@ from PyQt6.QtGui import QDesktopServices, QWheelEvent  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QFileDialog, QListView, QMessageBox  # noqa: E402
 
+from raycrafter.core.examples import basic_microscope  # noqa: E402
 from raycrafter.gui import report_actions  # noqa: E402
 from raycrafter.gui.about_dialog import DOCS_URL, PROJECT_URL, AboutDialog  # noqa: E402
 from raycrafter.gui.analysis_panels import MtfPanel  # noqa: E402
@@ -1345,3 +1347,29 @@ def test_generate_report_opens_one_page_that_follows_the_design(application, mon
     assert window.reports.server is None
     with pytest.raises(RuntimeError, match="not running"):
         server.url
+
+
+def test_the_distortion_tab_is_computed_when_shown_and_follows_the_design(application):
+    window = MainWindow()
+    window.model.state = basic_microscope()
+    window.show_replaced_design()
+    window.update_slow_plots()
+    panel = window.distortion_panel
+    assert panel.image_curve.getData()[0] is None  # not computed while another tab shows
+
+    window.field_tabs.setCurrentWidget(panel)
+    assert "Max distortion" in panel.grid_plot.getPlotItem().titleLabel.text
+    image_x, image_y = panel.image_curve.getData()
+    assert np.nanmax(np.abs(image_y)) == pytest.approx(20.0 * 0.5 / np.sqrt(2.0))
+
+    panel.centroid_checkbox.setChecked(True)
+    assert panel.reference == "centroid"
+    panel.height_button.setChecked(True)
+    assert panel.stack.currentWidget() is panel.height_plot
+    assert panel.height_curve.getData()[1][-1] == pytest.approx(0.5)
+
+    # With beams there is nothing to show, and the title says why.
+    window.model.set_finite_object(False)
+    window.update_slow_plots()
+    assert "finite object" in panel.grid_plot.getPlotItem().titleLabel.text
+    assert panel.height_curve.getData()[0] is None or panel.height_curve.getData()[0].size == 0

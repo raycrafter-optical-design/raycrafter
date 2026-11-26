@@ -37,6 +37,7 @@ def test_every_result_is_valid_json(tools):
         tools.get_ray_fan(),
         tools.get_through_focus(),
         tools.get_field_curvature(),
+        tools.get_distortion(),
         tools.search_lenses("AC254", limit=3),
     ]
     for result in results:

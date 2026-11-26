@@ -10,8 +10,8 @@
 
 RayCrafter is an early proof of principle for a lens-level optical design tool. You place
 off-the-shelf lenses on an optical axis, drag them around, and see the spot diagram,
-through-focus curve, MTF, ray fan and field curvature update as you go. The ray tracing is
-done by [Optiland](https://github.com/optiland/optiland).
+through-focus curve, MTF, ray fan, field curvature and distortion update as you go. The ray
+tracing is done by [Optiland](https://github.com/optiland/optiland).
 
 - **Lenses:** the Thorlabs spherical lenses, achromats, air-spaced doublets, triplets and
   matched pairs, plus ideal (paraxial) lenses.

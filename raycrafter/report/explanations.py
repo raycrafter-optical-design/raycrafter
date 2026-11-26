@@ -70,4 +70,29 @@ EXPLANATIONS = {
             "horizontal line, when present, marks the selected field's angle.",
         ],
     ),
+    "grid_distortion": (
+        "Grid distortion",
+        [
+            "How a square grid on the object comes out in the image, seen face-on. The <b>dashed grey "
+            "grid</b> is a perfectly scaled copy of the object grid; the <b>blue grid</b> shows where "
+            "its points really land. The corners of the grid are as far from the axis as the "
+            "farthest object point.",
+            "Blue corners outside the grey ones is <i>pincushion</i> distortion; inside them is "
+            "<i>barrel</i> distortion. Distortion moves image points without blurring them.",
+            "The grey grid is scaled by the magnification measured next to the axis on the image "
+            "plane. Each image point is that of the chief ray (the ray aimed at the centre of the "
+            "first lens). A missing point means its chief ray is blocked.",
+        ],
+    ),
+    "distortion": (
+        "Distortion against object height",
+        [
+            "The vertical axis is the height of an object point above the axis; the horizontal axis is "
+            "how much further from the axis its image lands than it would without distortion, in "
+            "percent.",
+            "Positive values are <b>pincushion</b> distortion, negative values <b>barrel</b> distortion. "
+            "A system free of distortion gives a line on zero. The dashed horizontal line marks the "
+            "selected field's height.",
+        ],
+    ),
 }

@@ -23,6 +23,13 @@ def source_to_lens_mm(state: OpticalState) -> float:
     return state.first_surface_z() - state.source_z
 
 
+def field_height_mm(light: AnyField) -> float:
+    """How far from the axis (mm) an object point is; 0 for a beam, which has no height."""
+    if isinstance(light, BeamField):
+        return 0.0
+    return float(np.hypot(light.height_x_mm, light.height_y_mm))
+
+
 def chief_ray_angle_deg(state: OpticalState, light: AnyField) -> float:
     """The angle (degrees) of a field's chief ray to the axis, in front of the first lens.
 
@@ -36,7 +43,7 @@ def chief_ray_angle_deg(state: OpticalState, light: AnyField) -> float:
     distance_mm = source_to_lens_mm(state)
     if distance_mm <= 0.0:
         return 0.0
-    height_mm = float(np.hypot(light.height_x_mm, light.height_y_mm))
+    height_mm = field_height_mm(light)
     angle_deg = float(np.degrees(np.arctan2(height_mm, distance_mm)))
     return -angle_deg if light.height_y_mm > 0.0 else angle_deg
 

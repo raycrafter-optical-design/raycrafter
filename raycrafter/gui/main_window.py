@@ -34,9 +34,9 @@ spot, through-focus plot and status bar are recomputed on every change (coalesce
 burst of drag events costs one recompute). Everything else waits until nothing is being
 dragged (a lens or the image plane):
 
-- The MTF, ray fan and field curvature are faded while a drag goes on, then recomputed
-  once the mouse is released (or SLOW_PLOT_DELAY_MS after a change that is not a drag),
-  and only for the tab that is showing.
+- The MTF, ray fan, field curvature and distortion are faded while a drag goes on, then
+  recomputed once the mouse is released (or SLOW_PLOT_DELAY_MS after a change that is not a
+  drag), and only for the tabs that are showing.
 - The f-number needs an extra trace, so during a drag the status bar keeps showing the
   last value, and it is recomputed on release.
 - The 3D view, if open, is redrawn along with the slower plots.
@@ -71,7 +71,7 @@ from PyQt6.QtWidgets import (
 
 from raycrafter import palette
 from raycrafter.core.analysis import FastTrace, airy_radius
-from raycrafter.core.fields import chief_ray_angle_deg
+from raycrafter.core.fields import chief_ray_angle_deg, field_height_mm
 from raycrafter.core.gaps import MIN_IMAGE_GAP_MM, SOURCE_GAP_INDEX
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import (
@@ -84,6 +84,7 @@ from raycrafter.core.plot_geometry import (
 from raycrafter.core.state import PlacedLens
 from raycrafter.gui.about_dialog import DOCS_URL, AboutDialog
 from raycrafter.gui.analysis_panels import (
+    DistortionPanel,
     FieldCurvaturePanel,
     MtfPanel,
     RayFanPanel,
@@ -109,7 +110,7 @@ if TYPE_CHECKING:
 # which is any use here, and Qt has no setting to stop it. A zero-width space after the name
 # looks the same but is not recognised, so the menu holds only RayCrafter's own items.
 EDIT_MENU_TITLE = "Edit\u200b" if sys.platform == "darwin" else "Edit"
-SLOW_PLOT_DELAY_MS = 120  # MTF, ray fan and field curvature wait this long after the last change
+SLOW_PLOT_DELAY_MS = 120  # the slower plots wait this long after the last change
 STALE_PLOT_OPACITY = 0.4  # the slower plots are this faded while a drag makes them out of date
 DEFAULT_PARAXIAL_FOCAL_LENGTH_MM = 100
 PARAXIAL_FOCAL_LENGTH_RANGE_MM = (-2000, 2000)
@@ -185,24 +186,27 @@ class MainWindow(QMainWindow):
         self.mtf_panel = MtfPanel()
         self.ray_fan_panel = RayFanPanel()
         self.field_curvature_panel = FieldCurvaturePanel()
+        self.distortion_panel = DistortionPanel()
 
         # The slower plots fade while a drag leaves them out of date. The effect is switched
         # off (not set to full opacity) when they are current, so it costs nothing then.
         self.slow_plot_fades: list[QGraphicsOpacityEffect] = []
-        for panel in (self.mtf_panel, self.ray_fan_panel, self.field_curvature_panel):
+        slow_plots = (self.mtf_panel, self.ray_fan_panel, self.field_curvature_panel)
+        for panel in (*slow_plots, *self.distortion_panel.plots):
             fade = QGraphicsOpacityEffect(panel)
             fade.setOpacity(STALE_PLOT_OPACITY)
             fade.setEnabled(False)
             panel.setGraphicsEffect(fade)
             self.slow_plot_fades.append(fade)
 
-        # Three tab widgets of equal width. Field curvature gets a one-tab widget so that all
-        # three plots line up.
+        # Three tab widgets of equal width.
         self.spot_tabs = make_tabs(
             [("Spot", self.spot_panel), ("Through-focus", self.through_focus_panel)]
         )
         self.mtf_tabs = make_tabs([("MTF", self.mtf_panel), ("Ray fan", self.ray_fan_panel)])
-        self.field_tabs = make_tabs([("Field curvature", self.field_curvature_panel)])
+        self.field_tabs = make_tabs(
+            [("Field curvature", self.field_curvature_panel), ("Distortion", self.distortion_panel)]
+        )
 
         bottom_row = QHBoxLayout()
         self.control_panel = self._build_control_panel()
@@ -404,6 +408,8 @@ class MainWindow(QMainWindow):
 
         # Only the visible tab of each pair is computed, so switching tab must trigger a redraw.
         self.mtf_tabs.currentChanged.connect(lambda _index: self.update_mtf_tab())
+        self.field_tabs.currentChanged.connect(lambda _index: self.update_field_tab())
+        self.distortion_panel.reference_changed.connect(self.update_field_tab)
 
     # --------------------------------------------------------------- controls
 
@@ -900,7 +906,7 @@ class MainWindow(QMainWindow):
         return self.side_view.is_dragging()
 
     def set_slow_plots_faded(self, faded: bool) -> None:
-        """Fade the MTF, ray fan and field curvature (out of date), or show them normally."""
+        """Fade the slower plots (out of date), or show them normally."""
         for fade in self.slow_plot_fades:
             fade.setEnabled(faded)
 
@@ -911,11 +917,7 @@ class MainWindow(QMainWindow):
         self.reports.design_settled()
         self.refresh_3d_view()
         self.update_mtf_tab()
-        state = self.model.state
-        self.field_curvature_panel.show_result(
-            self.model.compute_field_curvature(),
-            chief_ray_angle_deg(state, state.selected_field),
-        )
+        self.update_field_tab()
         self.set_slow_plots_faded(False)
 
     def update_mtf_tab(self) -> None:
@@ -925,3 +927,17 @@ class MainWindow(QMainWindow):
             self.mtf_panel.show_result(self.model.compute_mtf(), field_position)
         else:
             self.ray_fan_panel.show_result(self.model.compute_ray_fan(), field_position)
+
+    def update_field_tab(self) -> None:
+        """Compute whichever of field curvature and distortion is showing, as for the MTF."""
+        state = self.model.state
+        selected = state.selected_field
+        if self.field_tabs.currentWidget() is self.field_curvature_panel:
+            self.field_curvature_panel.show_result(
+                self.model.compute_field_curvature(), chief_ray_angle_deg(state, selected)
+            )
+        else:
+            self.distortion_panel.show_result(
+                self.model.compute_distortion(self.distortion_panel.reference),
+                field_height_mm(selected),
+            )

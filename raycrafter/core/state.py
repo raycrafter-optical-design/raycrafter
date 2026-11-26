@@ -298,7 +298,8 @@ class OpticalState:
         object at the source plane. There is always at least one, and all are of one kind.
     selected_field_index : int
         The field that autofocus and the single-field analyses (through-focus, MTF, ray
-        fan, field curvature, f-number) use. The spot diagram and side view show every field.
+        fan, field curvature, distortion, f-number) use. The spot diagram and side view show
+        every field.
     image_z : float
         z of the image plane, in mm.
     image_gap_locked : bool

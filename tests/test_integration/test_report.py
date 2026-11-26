@@ -6,6 +6,8 @@ import re
 
 import pytest
 
+from raycrafter.core import OpticalModel
+from raycrafter.core.examples import basic_microscope
 from raycrafter.core.state import state_to_dict
 from raycrafter.report import build_report_html, viewer_3d
 from raycrafter.report.report_process import ReportProcess
@@ -25,6 +27,15 @@ def test_report_includes_a_paraxial_lens(focused_model):
     page = build_report_html(focused_model)
     assert page.count("<svg") == 6
     assert "Paraxial f=-150 mm" in page
+
+
+def test_a_finite_object_report_adds_the_two_distortion_plots():
+    model = OpticalModel(add_default_lens=False)
+    model.state = basic_microscope()
+    page = build_report_html(model)
+    assert page.count("<svg") == 8
+    assert 'data-key="grid_distortion"' in page and 'data-key="distortion"' in page
+    assert "Max distortion +0.000%" in page
 
 
 def script_data(page: str, script_start: str) -> dict:

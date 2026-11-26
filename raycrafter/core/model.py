@@ -41,6 +41,7 @@ import numpy as np
 from raycrafter.core import (
     analysis,
     assemblies,
+    distortion,
     examples,
     fields,
     gap_optimisation,
@@ -413,6 +414,10 @@ class OpticalModel:
     def compute_field_curvature(self) -> analysis.FieldCurvatureResult:
         """Best focus against field angle (see ``analysis.compute_field_curvature``)."""
         return analysis.compute_field_curvature(self.state)
+
+    def compute_distortion(self, reference: str = "chief_ray") -> distortion.DistortionResult:
+        """Grid distortion of a finite object (see ``distortion.compute_distortion``)."""
+        return distortion.compute_distortion(self.state, reference)
 
     # ---------------------------------------------------------------- undo and redo
 

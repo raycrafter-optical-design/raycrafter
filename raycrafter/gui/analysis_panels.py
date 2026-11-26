@@ -1,15 +1,26 @@
-"""The analysis plots below the side view: spot, through-focus, MTF, ray fan, field curvature.
+"""The analysis plots below the side view: spot, through-focus, MTF, ray fan, field curvature
+and distortion.
 
-Each panel is a pyqtgraph plot widget with a ``show_result`` method that draws one result
-object from ``raycrafter.core.analysis``. The panels do no optics themselves.
+Each panel has a ``show_result`` method that draws one result object from
+``raycrafter.core.analysis`` (or ``raycrafter.core.distortion``). Most panels are a single
+pyqtgraph plot widget. The panels do no optics themselves.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QTabWidget, QWidget
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import (
+    QButtonGroup,
+    QCheckBox,
+    QHBoxLayout,
+    QRadioButton,
+    QStackedWidget,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from raycrafter import palette
 from raycrafter.core.analysis import (
@@ -21,8 +32,12 @@ from raycrafter.core.analysis import (
     ThroughFocusResult,
     airy_radius,
 )
+from raycrafter.core.distortion import DistortionResult
 from raycrafter.core.plot_geometry import (
+    distortion_limit_percent,
+    distortion_title,
     field_name,
+    grid_polylines,
     largest_magnitude,
     ray_fan_limit_um,
     rms_radius_text,
@@ -286,3 +301,129 @@ class FieldCurvaturePanel(pg.PlotWidget):
             curvature.tangential_shift, curvature.sagittal_shift, floor=0.5
         )
         self.getPlotItem().setXRange(-largest_shift * 1.1, largest_shift * 1.1, padding=0)
+
+
+def _show_plain_numbers(plot_widget: pg.PlotWidget) -> None:
+    """Stop pyqtgraph rescaling an axis with small values and adding "(x0.001)" to its label."""
+    for axis_name in ("bottom", "left"):
+        plot_widget.getPlotItem().getAxis(axis_name).enableAutoSIPrefix(False)
+
+
+class DistortionPanel(QWidget):
+    """Grid distortion of a finite object, or the distortion against object height.
+
+    The grid shows the undistorted image of a square grid (grey, dashed) and where its points
+    really land (blue). Two buttons above the plot choose which of the two plots shows, and a
+    checkbox locates the image points by spot centroid rather than chief ray.
+    ``reference_changed`` is emitted when that box is clicked: the result must then be
+    computed again.
+    """
+
+    reference_changed = pyqtSignal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.grid_plot = self._build_grid_plot()
+        self.height_plot = self._build_height_plot()
+        self.plots = (self.grid_plot, self.height_plot)
+        self.stack = QStackedWidget()
+        for plot_widget in self.plots:
+            self.stack.addWidget(plot_widget)
+
+        self.grid_button = QRadioButton("Grid")
+        self.height_button = QRadioButton("Against height")
+        self.grid_button.setChecked(True)
+        view_buttons = QButtonGroup(self)
+        view_buttons.addButton(self.grid_button)
+        view_buttons.addButton(self.height_button)
+        self.grid_button.toggled.connect(
+            lambda grid_chosen: self.stack.setCurrentIndex(0 if grid_chosen else 1)
+        )
+        self.centroid_checkbox = QCheckBox("Spot centroid")
+        self.centroid_checkbox.setToolTip(
+            "Locate each image point by the centroid of its spot instead of its chief ray"
+        )
+        self.centroid_checkbox.toggled.connect(lambda _checked: self.reference_changed.emit())
+
+        controls = QHBoxLayout()
+        controls.addWidget(self.grid_button)
+        controls.addWidget(self.height_button)
+        controls.addStretch()
+        controls.addWidget(self.centroid_checkbox)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.addLayout(controls)
+        layout.addWidget(self.stack, stretch=1)
+
+    @property
+    def reference(self) -> str:
+        """How the image points are to be located: ``"chief_ray"`` or ``"centroid"``."""
+        return "centroid" if self.centroid_checkbox.isChecked() else "chief_ray"
+
+    def _build_grid_plot(self) -> pg.PlotWidget:
+        """The plot of the ideal and real grids, with its two curves."""
+        plot_widget = pg.PlotWidget()
+        style_plot(plot_widget, "image x (mm)", "image y (mm)")
+        _show_plain_numbers(plot_widget)
+        plot = plot_widget.getPlotItem()
+        plot.setAspectLocked(True)
+        self.ideal_curve = plot.plot(
+            pen=pg.mkPen(palette.AIRY, width=1, style=Qt.PenStyle.DashLine)
+        )
+        self.image_curve = plot.plot(pen=pg.mkPen(palette.TANGENTIAL, width=1.5))
+        self.image_points = pg.ScatterPlotItem(size=4, pen=None, brush=palette.TANGENTIAL)
+        plot.addItem(self.image_points)
+        return plot_widget
+
+    def _build_height_plot(self) -> pg.PlotWidget:
+        """The plot of distortion (x) against object height (y)."""
+        plot_widget = pg.PlotWidget()
+        style_plot(plot_widget, "distortion (%)", "object height (mm)")
+        _show_plain_numbers(plot_widget)
+        plot = plot_widget.getPlotItem()
+        plot.setTitle("Distortion against object height", size=TITLE_SIZE)
+        plot.addLine(x=0, pen=pg.mkPen(palette.FAINT))
+        self.selected_height_line = plot.addLine(
+            y=0, pen=pg.mkPen(palette.FAINT, style=Qt.PenStyle.DashLine)
+        )
+        self.height_curve = plot.plot(
+            pen=pg.mkPen(palette.TANGENTIAL, width=2),
+            symbol="o",
+            symbolSize=4,
+            symbolBrush=palette.TANGENTIAL,
+            symbolPen=None,
+        )
+        return plot_widget
+
+    def show_result(self, result: DistortionResult, selected_height_mm: float) -> None:
+        """Draw both plots; a dashed line marks the selected field's height (mm).
+
+        With nothing to show, both are empty and the grid plot's title says why.
+        """
+        ideal_x, ideal_y = grid_polylines(result.ideal_x, result.ideal_y)
+        self.ideal_curve.setData(ideal_x, ideal_y, connect="finite")
+        # Blocked points are NaN; connect="finite" leaves gaps there.
+        image_x, image_y = grid_polylines(result.image_x, result.image_y)
+        self.image_curve.setData(image_x, image_y, connect="finite")
+        reached = np.isfinite(result.image_x) & np.isfinite(result.image_y)
+        self.image_points.setData(result.image_x[reached], result.image_y[reached])
+
+        grid_plot = self.grid_plot.getPlotItem()
+        grid_plot.setTitle(distortion_title(result), size=TITLE_SIZE)
+        half_width = largest_magnitude(ideal_x, ideal_y, image_x, image_y) or 1.0
+        half_width *= 1.08
+        grid_plot.setRange(
+            xRange=(-half_width, half_width), yRange=(-half_width, half_width), padding=0
+        )
+
+        self.height_curve.setData(
+            result.height_distortion_percent, result.heights, connect="finite"
+        )
+        self.selected_height_line.setVisible(result.has_grid)
+        self.selected_height_line.setValue(selected_height_mm)
+        height_plot = self.height_plot.getPlotItem()
+        limit = distortion_limit_percent(result)
+        height_plot.setXRange(-limit, limit, padding=0)
+        top_mm = result.heights[-1] if result.has_grid else 1.0
+        height_plot.setYRange(0, top_mm, padding=0.02)

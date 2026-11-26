@@ -81,7 +81,8 @@ def _plot_tool(get_plot_png: Callable[[str], bytes]) -> Callable:
         """A picture (PNG) of one analysis, as seen in the GUI.
 
         kind is one of: ray_diagram, spot_diagram, through_focus, mtf, ray_fan,
-        field_curvature. MTF, ray fan and through-focus show the selected field.
+        field_curvature, grid_distortion, distortion. MTF, ray fan and through-focus show the
+        selected field. The distortion plots need a finite object.
         """
         return Image(data=get_plot_png(kind), format="png")
 
