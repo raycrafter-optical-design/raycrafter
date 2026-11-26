@@ -308,3 +308,11 @@ carry the beam to the first lens (`beam_at_first_lens`). Rob chose an explicit s
 **Supersedes:** "beam is defined where it crosses the first lens's front vertex plane" in
 "Each field's rays are launched by RayCrafter" and the offset rule in "ZMX fields are aimed
 through the stop" (2026-11-24).
+
+## 2026-11-26: Faster updates from shared glasses and one trace for all fields (#27)
+**Decision:** Each glass is loaded once and shared by every rebuilt Optiland system
+(`optic_builder.glass`), and `trace_fast` traces every field's spot and side-view rays in one
+call. The threaded or every-few-frames tracing suggested in #27 is put off.
+**Why:** Glass lookups were nearly all of a rebuild, and a trace call costs much the same for
+few rays as for many. A 12-lens, 9-field frame fell from 260 to 66 ms (Apple M2, off screen),
+only 17 ms of it tracing, so a thread would gain little.
