@@ -325,3 +325,12 @@ Gaps that clip rays are never chosen. A flip of a neighbouring lens is suggested
 at most half the merit and is better by at least 5 µrad or 1 µm.
 **Why:** Optiland's optimiser ignores a field's offset (#10) and is unbounded; one variable
 needs no more than a scan. Rebuilding per trial took about 1 s per search; this takes 0.1 s.
+
+## 2026-11-26: OpticalModel is a thin front over topic modules
+**Decision:** Editing logic left `core/model.py` (998 -> 541 lines) for functions of an
+`OpticalState` in `core/placement.py` (adding, inserting, deleting, the source plane),
+`core/moving.py` (moving, swapping blocks), `core/assemblies.py` (Plossl pairs, flipping),
+`replacement.py` and `gap_optimisation.py`. Model methods are one-line wrappers; CLAUDE.md
+now says so. No caller or test changed.
+**Why:** Each feature added 30+ lines to the model. Rob chose this over mixins (it is unclear
+where a method lives) and sub-objects (`model.gaps.set`, which changes every caller).

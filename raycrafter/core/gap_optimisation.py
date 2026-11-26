@@ -39,7 +39,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 from scipy.optimize import minimize_scalar
 
-from raycrafter.core import gaps, optic_builder
+from raycrafter.core import assemblies, gaps, optic_builder, placement
 from raycrafter.core.analysis import SPOT_RINGS, transmitted
 from raycrafter.core.ray_launch import launch_rays, pupil_points, trace_rays
 from raycrafter.core.state import OpticalState
@@ -164,19 +164,41 @@ def apply_gap(state: OpticalState, lens_index: int, goal: str, gap_mm: float) ->
         state.image_z = image_z
 
 
-def gap_limits_mm(
-    state: OpticalState, lens_index: int, goal: str, smallest_source_gap_mm: float
-) -> tuple[float, float]:
+def apply_optimisation(
+    state: OpticalState, result: GapOptimisation, lock: bool = False, flip: bool = False
+) -> None:
+    """Set the gap ``optimise_gap`` found and, if ``lock``, lock it.
+
+    With ``flip``, first turn round the lens the result suggests flipping, and set the gap
+    found for that orientation instead.
+
+    Raises
+    ------
+    ValueError
+        If ``flip`` is True but the result suggests no flip.
+    """
+    gap_mm = result.gap_after_mm
+    if flip:
+        if result.flip_lens_index is None or result.flipped_gap_mm is None:
+            raise ValueError("Flipping a lens would not do clearly better here")
+        assemblies.flip_lens(state, result.flip_lens_index)
+        gap_mm = result.flipped_gap_mm
+    apply_gap(state, result.lens_index, result.goal, gap_mm)
+    if lock:
+        if result.lens_index == gaps.SOURCE_GAP_INDEX:
+            state.source_gap_locked = True
+        else:
+            gaps.set_gap_locked(state, result.lens_index, True)
+
+
+def gap_limits_mm(state: OpticalState, lens_index: int, goal: str) -> tuple[float, float]:
     """The shortest and longest gap the search may try (mm).
 
-    Parameters
-    ----------
-    smallest_source_gap_mm : float
-        For the gap from the source plane: the shortest it may be (``OpticalModel`` keeps
-        the first lens a little way from the start of the axis).
+    The gap from the source plane must keep the first lens FIRST_LENS_MIN_Z from the start
+    of the axis (``raycrafter.core.placement``).
     """
     if lens_index == gaps.SOURCE_GAP_INDEX:
-        shortest_mm = max(0.0, smallest_source_gap_mm)
+        shortest_mm = max(0.0, placement.FIRST_LENS_MIN_Z - state.source_z)
     else:
         shortest_mm = gaps.minimum_gap_mm(state, lens_index)
     if goal == FOCUS:
@@ -254,7 +276,6 @@ def optimise_gap(
     state: OpticalState,
     lens_index: int,
     goal: str,
-    smallest_source_gap_mm: float = 0.0,
     consider_flips: bool = True,
 ) -> GapOptimisation:
     """Find the gap behind ``lens_index`` that best meets the goal, without changing the bench.
@@ -268,8 +289,6 @@ def optimise_gap(
         source plane. The gap must be unlocked, and not the gap to the image plane.
     goal : str
         COLLIMATE or FOCUS (see the module docstring).
-    smallest_source_gap_mm : float
-        For the gap from the source plane: the shortest it may be.
     consider_flips : bool
         If True, also optimise with each lens next to the gap turned round, and suggest
         the flip in the result if it is clearly better (``suggest_flip``).
@@ -287,7 +306,7 @@ def optimise_gap(
     """
     check_can_optimise(state, lens_index, goal)
     gap_before_mm = current_gap_mm(state, lens_index)
-    shortest_mm, longest_mm = gap_limits_mm(state, lens_index, goal, smallest_source_gap_mm)
+    shortest_mm, longest_mm = gap_limits_mm(state, lens_index, goal)
     trials = _GapTrials(state, lens_index, goal)
     merit_before, through_before = trials.evaluate(gap_before_mm)
 
@@ -342,7 +361,7 @@ def optimise_gap(
         rays_through_after=most_through,
     )
     if consider_flips:
-        result = suggest_flip(state, result, smallest_source_gap_mm)
+        result = suggest_flip(state, result)
     return result
 
 
@@ -363,9 +382,7 @@ def flippable_neighbours(state: OpticalState, lens_index: int) -> list[int]:
     ]
 
 
-def suggest_flip(
-    state: OpticalState, result: GapOptimisation, smallest_source_gap_mm: float = 0.0
-) -> GapOptimisation:
+def suggest_flip(state: OpticalState, result: GapOptimisation) -> GapOptimisation:
     """Optimise again with each lens next to the gap flipped; add a suggestion if clearly better.
 
     A flip is suggested if, at its own best gap, its merit is at most FLIP_BETTER_FRACTION
@@ -384,9 +401,7 @@ def suggest_flip(
         flipped = copy.deepcopy(replace(state, imported_from=None))
         flipped.lenses[index].flipped = not flipped.lenses[index].flipped
         try:
-            trial = optimise_gap(
-                flipped, result.lens_index, result.goal, smallest_source_gap_mm, False
-            )
+            trial = optimise_gap(flipped, result.lens_index, result.goal, consider_flips=False)
         except ValueError:
             continue  # e.g. no light gets through this way round
         if trial.rays_through_after < result.rays_through_after:

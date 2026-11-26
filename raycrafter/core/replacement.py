@@ -18,16 +18,20 @@ changes is the aberrations, not the focus. Locked gaps take precedence:
 
 If the new lens would then overlap a neighbour, the replacement is refused and nothing
 changes. Behind the last lens, the image plane is pushed back if the new lens would reach
-it. The gap from the source plane is handled by ``OpticalModel``, which keeps it.
+it. A locked gap from the source plane keeps its length.
+
+A lens of a Plossl pair is not replaced on its own unless the pair is split first
+(``replace_lens`` with ``split_plossl_pair``); ``replace_plossl_pair`` replaces both.
 """
 
 from __future__ import annotations
 
 import copy
+from dataclasses import fields, replace
 
 import numpy as np
 
-from raycrafter.core import gaps, optic_builder
+from raycrafter.core import assemblies, gaps, optic_builder, placement
 from raycrafter.core.state import BeamField, OpticalState, PlacedLens
 
 SAME_FOCAL_LENGTH_TOLERANCE = 0.10  # "same f" lists lenses within ±10% of the focal length
@@ -85,12 +89,80 @@ def anchored_front_z(
     return new_lenses[0].z + (old_plane_z - new_plane_z)
 
 
+def replace_lens(
+    state: OpticalState, lens_index: int, new_lens: PlacedLens, split_plossl_pair: bool = False
+) -> None:
+    """Put ``new_lens`` in place of a lens, as the module docstring describes.
+
+    The new lens takes over the old one's place in an assembly, the lock on the gap behind
+    it and, if both are catalogue lenses, whether it is flipped. It is copied; its z does not
+    matter.
+
+    Parameters
+    ----------
+    state : OpticalState
+        The bench to change.
+    lens_index : int
+        The lens to replace.
+    new_lens : PlacedLens
+        The replacement.
+    split_plossl_pair : bool
+        If the lens is one of a Plossl pair, the pair must be split first (its gap is then
+        unlocked); True does that. To replace both, use ``replace_plossl_pair``.
+
+    Raises
+    ------
+    ValueError
+        If the lens is one of a Plossl pair and ``split_plossl_pair`` is False, or the new
+        lens would overlap a neighbour. Nothing is changed then (the pair is not split).
+    """
+    in_pair = assemblies.in_plossl_pair(state, lens_index)
+    if in_pair and not split_plossl_pair:
+        raise ValueError(
+            "This lens is one of a Plossl pair: replace both lenses, or split the pair first"
+        )
+    old_lens = state.lenses[lens_index]
+    new_lens = copy.deepcopy(new_lens)
+    new_lens.flipped = old_lens.flipped and not (old_lens.is_paraxial or new_lens.is_paraxial)
+
+    # Split and replace on a copy, so that a refusal leaves the pair as it was.
+    trial = copy.deepcopy(replace(state, imported_from=None))  # the import record is large
+    if in_pair:
+        assemblies.split_assembly(trial, lens_index)
+    replace_lenses(trial, lens_index, lens_index, [new_lens])
+    for state_field in fields(OpticalState):
+        if state_field.name != "imported_from":
+            setattr(state, state_field.name, getattr(trial, state_field.name))
+
+
+def replace_plossl_pair(state: OpticalState, lens_index: int, new_lens: PlacedLens) -> None:
+    """Replace both lenses of this lens's Plossl pair with two copies of ``new_lens``.
+
+    The new pair is set up as ``assemblies.make_plossl`` does (facing each other,
+    PLOSSL_GAP_MM apart) and placed as one lens is, with the pair's own rear principal plane
+    where the old pair's was. It stays a Plossl pair.
+
+    Raises
+    ------
+    ValueError
+        If the lens is in no Plossl pair, the new lens is paraxial or diverging, or the new
+        pair would overlap a neighbour. Nothing is changed then.
+    """
+    if not assemblies.in_plossl_pair(state, lens_index):
+        raise ValueError("This lens is not one of a Plossl pair")
+    if new_lens.is_negative or new_lens.is_paraxial:
+        raise ValueError(
+            f"A Plossl pair needs a positive catalogue lens, and {new_lens.part_number} is not"
+        )
+    left, right = copy.deepcopy(new_lens), copy.deepcopy(new_lens)
+    left.z = 0.0
+    assemblies.face_as_plossl(left, right)
+    members = assemblies.assembly_indices(state, lens_index)
+    replace_lenses(state, members[0], members[-1], [left, right])
+
+
 def replace_lenses(
-    state: OpticalState,
-    first_index: int,
-    last_index: int,
-    new_lenses: list[PlacedLens],
-    lowest_front_z: float,
+    state: OpticalState, first_index: int, last_index: int, new_lenses: list[PlacedLens]
 ) -> None:
     """Put ``new_lenses`` on the bench in place of lenses ``first_index`` to ``last_index``.
 
@@ -108,9 +180,6 @@ def replace_lenses(
     new_lenses : list of PlacedLens
         The replacement, in axis order, with the spacing it should have; its own z values
         are only relative. The lenses are copied, so the caller's objects are not changed.
-    lowest_front_z : float
-        The smallest front-vertex z the first lens of the bench may have (used only if the
-        run starts at lens 0).
 
     Raises
     ------
@@ -147,7 +216,10 @@ def replace_lenses(
 
     # Refuse before changing anything if the new lenses would overlap a neighbour.
     name = new_run[0].part_number
-    lowest_z = lenses[first_index - 1].back_z if first_index > 0 else lowest_front_z
+    if first_index > 0:
+        lowest_z = lenses[first_index - 1].back_z
+    else:
+        lowest_z = placement.lowest_first_front_z(state)
     if front_z < lowest_z - OVERLAP_TOLERANCE_MM:
         neighbour = "the lens in front" if first_index > 0 else "the start of the bench"
         raise ValueError(f"{name} does not fit here: it would overlap {neighbour}")
@@ -155,6 +227,7 @@ def replace_lenses(
         raise ValueError(f"{name} does not fit here: it would overlap the lens behind")
 
     following_lenses = [lenses[index] for index in followers]
+    gap_from_source_mm = placement.source_gap_mm(state)
     for lens in new_run:
         lens.assembly_id = old_run[0].assembly_id
         lens.locked_to_next = True
@@ -168,3 +241,5 @@ def replace_lenses(
     elif end_is_last:
         # The image plane stays put unless the last lens would now reach it.
         state.image_z = max(state.image_z, lenses[-1].back_z + gaps.MIN_IMAGE_GAP_MM)
+    if first_index == 0:
+        placement.keep_source_gap(state, gap_from_source_mm)
