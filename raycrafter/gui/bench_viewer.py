@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 )
 
 from raycrafter.core.model import OpticalModel
+from raycrafter.core.plot_geometry import field_name
 from raycrafter.core.state import OpticalState
 from raycrafter.gui.field_editor import colour_swatch
 
@@ -74,7 +75,7 @@ def field_rows(state: OpticalState) -> list[tuple[str, int, list[str]]]:
             f"{beam.diameter_mm:g} mm wide, {beam.angle_deg:g}°, {beam.wavelength_nm:g} nm"
             + (", selected" if index == state.selected_field_index else "")
         )
-        rows.append((FIELD, index, [str(index), f"Field {index}", "", details]))
+        rows.append((FIELD, index, [str(index), field_name(index), "", details]))
     return rows
 
 

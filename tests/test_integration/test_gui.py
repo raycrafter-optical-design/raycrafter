@@ -17,6 +17,7 @@ from raycrafter.gui.lens_picker import ALL_COATINGS, LensPickerDialog  # noqa: E
 from raycrafter.gui.main_window import EDIT_MENU_TITLE, MainWindow  # noqa: E402
 from raycrafter.gui.range_slider import RangeSlider  # noqa: E402
 from raycrafter.gui.style import force_light_colour_scheme  # noqa: E402
+from raycrafter.report import build_report_html  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -316,6 +317,28 @@ def test_bench_viewer_lists_highlights_follows_and_deletes(application):
     assert window.side_view.highlighted_lens_index == 0
     viewer.close()
     assert window.side_view.highlighted_lens_index is None
+    window.close()
+
+
+def test_fields_are_numbered_from_zero_everywhere(application):
+    window = MainWindow()
+    window.model.add_field()  # added and selected: field 1
+    window.show()
+    window.recompute_and_redraw()
+    window.open_field_editor()
+    window.open_bench_viewer()
+
+    # The field window and the bench viewer name the fields as scripts number them.
+    field_list = window.field_editor.field_list
+    assert [field_list.item(row).text() for row in range(2)] == ["Field 0", "Field 1"]
+    section = window.bench_viewer.field_section
+    assert [section.child(row).text(1) for row in range(2)] == ["Field 0", "Field 1"]
+
+    # So do the spot diagram's title and the report.
+    assert "Field 1:" in window.spot_panel.getPlotItem().titleLabel.text
+    page = build_report_html(window.model)
+    assert "Field 0:" in page and "Field 1, at" in page
+    assert "Field 2" not in page
     window.close()
 
 

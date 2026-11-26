@@ -25,7 +25,11 @@ from pathlib import Path
 
 from raycrafter.core.analysis import airy_radius
 from raycrafter.core.model import OpticalModel
-from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
+from raycrafter.core.plot_geometry import (
+    f_number_text,
+    field_name,
+    rms_radius_text,
+)
 from raycrafter.core.state import BeamField
 from raycrafter.report import figures
 from raycrafter.report.explanations import EXPLANATIONS
@@ -72,7 +76,7 @@ def vergence_words(vergence: float) -> str:
 def field_html(field_index: int, beam: BeamField) -> str:
     """A one-line description of a field, in the field's colour."""
     text = (
-        f"Field {field_index + 1}: {beam.diameter_mm:g} mm {vergence_words(beam.vergence_dioptres)}"
+        f"{field_name(field_index)}: {beam.diameter_mm:g} mm {vergence_words(beam.vergence_dioptres)}"
         f" at {beam.angle_deg:+.1f}°, {beam.wavelength_nm:g} nm"
     )
     if beam.offset_mm != 0.0:
@@ -134,12 +138,12 @@ def build_report_html(model: OpticalModel) -> str:
     if len(state.fields) > 1:
         spot_subtitle = (
             f'<span style="color:{selected.display_colour()}">'
-            f"Field {state.selected_field_index + 1}: {spot_subtitle}</span>"
+            f"{field_name(state.selected_field_index)}: {spot_subtitle}</span>"
         )
 
     # "+ 0.0" turns a rounded -0.000 into 0.000.
     best_focus_text = f"{round(through_focus.best_offset, 3) + 0.0:+.3f}"
-    angle_text = f"Field {state.selected_field_index + 1}, at {selected.angle_deg:+.1f}°"
+    angle_text = f"{field_name(state.selected_field_index)}, at {selected.angle_deg:+.1f}°"
     cards = [
         card_html(
             "rays",

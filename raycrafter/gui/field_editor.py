@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
 )
 
 from raycrafter.core.model import OpticalModel
+from raycrafter.core.plot_geometry import field_name
 from raycrafter.core.state import BeamField
 from raycrafter.gui.undo_keys import leave_undo_keys_to_window
 
@@ -247,7 +248,7 @@ class FieldEditor(QDialog):
         self.field_list.blockSignals(True)
         self.field_list.clear()
         for index, beam in enumerate(fields):
-            item = QListWidgetItem(f"Field {index + 1}")
+            item = QListWidgetItem(field_name(index))
             item.setIcon(colour_swatch(beam.display_colour()))
             self.field_list.addItem(item)
         self.field_list.setCurrentRow(self.model.state.selected_field_index)

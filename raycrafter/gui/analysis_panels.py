@@ -22,6 +22,7 @@ from raycrafter.core.analysis import (
     airy_radius,
 )
 from raycrafter.core.plot_geometry import (
+    field_name,
     largest_magnitude,
     ray_fan_limit_um,
     rms_radius_text,
@@ -111,7 +112,7 @@ class SpotPanel(pg.PlotWidget):
             title = f"RMS radius {rms_radius_text(spot)}"
         if len(fields) > 1:
             colour = fields[selected_index].display_colour()
-            title = f'<span style="color:{colour}">Field {selected_index + 1}: {title}</span>'
+            title = f'<span style="color:{colour}">{field_name(selected_index)}: {title}</span>'
         plot.setTitle(title, size="10pt")
 
     def _match_scatter_count(self, field_count: int) -> None:

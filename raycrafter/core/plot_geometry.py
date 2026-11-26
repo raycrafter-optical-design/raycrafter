@@ -114,6 +114,14 @@ def largest_magnitude(*arrays: np.ndarray, floor: float = 0.0) -> float:
     return largest
 
 
+def field_name(field_index: int) -> str:
+    """What a field is called, e.g. ``"Field 0"``.
+
+    Fields are numbered from 0, as the Python API and the agent tools number them.
+    """
+    return f"Field {field_index}"
+
+
 def rms_radius_text(spot: SpotResult, micrometre_symbol: str = "um") -> str:
     """The spot's RMS radius for display, e.g. "1.23 um", or "no light" if no ray arrives."""
     if not spot.has_light:
