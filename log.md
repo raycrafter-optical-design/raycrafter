@@ -374,3 +374,12 @@ behind the gap: the next lens, or all of its assembly. The core takes any lens b
 (`measure_after_lens_index`) and leaves later lenses out of the search, rims included.
 **Why:** An assembly is used as one unit. The issue expects other measurement points later,
 which the core already allows. Rob agreed.
+
+## 2026-11-26: The live report is served locally and built in a separate process (#68)
+**Decision:** "Generate report" opens a page served on 127.0.0.1, which reloads when a newer
+report is ready. A worker process builds reports one at a time, at least 10 s apart, and after
+the first only while a page watches. Each carries the revision of the design it shows.
+**Why:** Rob asked for automatic updates that do not slow the GUI. A background thread stalled
+drag redraws to about 100 ms. `multiprocessing` reruns the launching script and leaves pool
+workers behind if RayCrafter is killed, so it is a plain subprocess (about 430 MB). Rob agreed.
+**Supersedes:** leaving the live page for later, in "One 3D scene for the app and the report".
