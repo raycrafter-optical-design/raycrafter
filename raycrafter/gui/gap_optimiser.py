@@ -1,4 +1,9 @@
-"""The gap menu's optimise actions: "Collimate output…" and "Focus on image plane…" (#38).
+"""The gap menu's optimise actions: the "Collimate…" entries and "Focus on image plane…" (#38).
+
+Collimating is measured either on the output of the whole system ("Collimate system
+output…") or on the light leaving the element behind the gap, a lens or its assembly
+("Collimate after …", #66). Where those are the same, because that element is the last, there
+is one entry, "Collimate output…".
 
 Each one finds the best length for the gap with ``raycrafter.core.gap_optimisation``, then
 shows the gap and the merit before and after. The user can apply it, and lock the gap
@@ -17,7 +22,12 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QCheckBox, QMenu, QMessageBox
 
 from raycrafter.core import gap_optimisation
-from raycrafter.core.gap_optimisation import COLLIMATE, FOCUS, GapOptimisation
+from raycrafter.core.gap_optimisation import (
+    COLLIMATE,
+    FOCUS,
+    GapOptimisation,
+    element_end_behind_gap,
+)
 from raycrafter.core.gaps import SOURCE_GAP_INDEX
 
 if TYPE_CHECKING:
@@ -51,20 +61,42 @@ class GapOptimiser:
         self.window = window
 
     def add_menu_entries(self, menu: QMenu, lens_index: int) -> None:
-        """Add "Collimate output…" and "Focus on image plane…" to a gap's menu.
+        """Add the "Collimate…" entries and "Focus on image plane…" to a gap's menu.
 
         An entry that cannot be used is greyed out, with the reason as its tooltip.
         """
         menu.setToolTipsVisible(True)
-        for goal, text in ((COLLIMATE, "Collimate output…"), (FOCUS, "Focus on image plane…")):
+        entries = [(text, COLLIMATE, after) for text, after in self.collimate_entries(lens_index)]
+        entries.append(("Focus on image plane…", FOCUS, None))
+        for text, goal, measure_after in entries:
             action = menu.addAction(text)
             reason = self.reason_not_possible(lens_index, goal)
             action.setEnabled(reason is None)
             if reason is not None:
                 action.setToolTip(reason)
             action.triggered.connect(
-                lambda _checked=False, goal=goal: self.optimise(lens_index, goal)
+                lambda _checked=False, goal=goal, measure_after=measure_after: self.optimise(
+                    lens_index, goal, measure_after
+                )
             )
+
+    def collimate_entries(self, lens_index: int) -> list[tuple[str, int | None]]:
+        """The text of each collimate entry, with the lens it measures after (None: system)."""
+        state = self.window.model.state
+        element_end = element_end_behind_gap(state, lens_index)
+        if element_end == len(state.lenses) - 1:
+            return [("Collimate output…", None)]
+        # "&" would mark a keyboard mnemonic in a menu, so it is doubled to show as itself.
+        name = self.element_name(element_end).replace("&", "&&")
+        return [
+            (f"Collimate after {name}…", element_end),
+            ("Collimate system output…", None),
+        ]
+
+    def element_name(self, lens_index: int) -> str:
+        """What the element holding a lens is called: its assembly, else its part number."""
+        model = self.window.model
+        return model.assembly_name(lens_index) or model.state.lenses[lens_index].part_number
 
     def reason_not_possible(self, lens_index: int, goal: str) -> str | None:
         """Why this gap cannot be optimised for this goal, or None if it can."""
@@ -76,11 +108,13 @@ class GapOptimiser:
             return str(error)
         return None
 
-    def optimise(self, lens_index: int, goal: str) -> None:
+    def optimise(
+        self, lens_index: int, goal: str, measure_after_lens_index: int | None = None
+    ) -> None:
         """Find the best gap, show it, and apply it if the user agrees."""
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            result = self.window.model.optimise_gap(lens_index, goal)
+            result = self.window.model.optimise_gap(lens_index, goal, measure_after_lens_index)
         except ValueError as error:
             self.window.statusBar().showMessage(str(error), STATUS_MESSAGE_MS)
             return
@@ -98,7 +132,7 @@ class GapOptimiser:
     def ask_to_apply(self, result: GapOptimisation) -> Choice | None:
         """Show the result and ask what to do; None if the user cancels."""
         box = QMessageBox(self.window)
-        box.setWindowTitle("Collimate output" if result.goal == COLLIMATE else "Focus")
+        box.setWindowTitle("Focus" if result.goal == FOCUS else "Collimate")
         box.setText(self.describe(result))
         lock_box = QCheckBox("Lock the gap")
         lock_box.setChecked(True)
@@ -124,11 +158,15 @@ class GapOptimiser:
             before, after = lenses[result.lens_index], lenses[result.lens_index + 1]
             gap_name = f"the gap between {before.part_number} and {after.part_number}"
         unit = result.merit_unit
+        merit_name = MERIT_NAMES[result.goal]
+        measured_after = result.measured_after_lens_index
+        if measured_after is not None and measured_after < len(lenses) - 1:
+            merit_name = f"RMS angle of the rays leaving {self.element_name(measured_after)}"
         lines = [
             f"Best length for {gap_name}:",
             "",
             f"Gap: {result.gap_before_mm:.3f} mm  →  {result.gap_after_mm:.3f} mm",
-            f"{MERIT_NAMES[result.goal]}: {format_merit(result.merit_before)} {unit}  →  "
+            f"{merit_name}: {format_merit(result.merit_before)} {unit}  →  "
             f"{format_merit(result.merit_after)} {unit}",
             f"Rays of the selected field that get through: {result.rays_through_after} of "
             f"{result.rays_launched}",
@@ -138,7 +176,7 @@ class GapOptimiser:
             lines += [
                 "",
                 f"{flipped_part} turned round does clearly better: gap "
-                f"{result.flipped_gap_mm:.3f} mm, {MERIT_NAMES[result.goal].lower()} "
+                f"{result.flipped_gap_mm:.3f} mm, {merit_name[0].lower() + merit_name[1:]} "
                 f"{format_merit(result.flipped_merit)} {unit}.",
             ]
         if result.at_bound:

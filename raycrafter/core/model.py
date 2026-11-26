@@ -198,9 +198,13 @@ class OpticalModel:
         """Lock or unlock the gap behind a lens (see ``gaps.set_gap_locked``)."""
         gaps.set_gap_locked(self.state, lens_index, locked)
 
-    def optimise_gap(self, lens_index: int, goal: str) -> gap_optimisation.GapOptimisation:
+    def optimise_gap(
+        self, lens_index: int, goal: str, measure_after_lens_index: int | None = None
+    ) -> gap_optimisation.GapOptimisation:
         """Find the best gap for a goal, changing nothing (``gap_optimisation.optimise_gap``)."""
-        return gap_optimisation.optimise_gap(self.state, lens_index, goal)
+        return gap_optimisation.optimise_gap(
+            self.state, lens_index, goal, measure_after_lens_index=measure_after_lens_index
+        )
 
     def apply_gap_optimisation(
         self, result: gap_optimisation.GapOptimisation, lock: bool = False, flip: bool = False

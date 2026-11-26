@@ -1,4 +1,4 @@
-"""Optimising one air gap for a goal: collimate the output, or focus on the image plane (#38).
+"""Optimising one air gap for a goal: collimate the light, or focus on the image plane (#38).
 
 Finding the right spacing by eye is slow: e.g. an f = 100 mm lens then an f = 50 mm lens as
 a beam reducer collimates only at one gap. ``optimise_gap`` finds that gap with real rays
@@ -9,9 +9,12 @@ Qt code, and runs only on request (never while something is dragged).
 
 The goals
 ---------
-- **collimate**: the rays leaving the last lens are parallel. The merit is the RMS angle
-  of the rays to their mean direction, in microradians. The lenses behind the gap move
-  together with the image plane, as when a gap is typed.
+- **collimate**: the rays leaving a chosen lens are parallel. By default that is the last
+  lens (the system's output); any lens behind the gap can be chosen instead (#66), e.g. to
+  set the first lens so that collimated light leaves it before the next one is adjusted.
+  Lenses behind the chosen one then play no part. The merit is the RMS angle of the rays to
+  their mean direction, in microradians. The lenses behind the gap move together with the
+  image plane, as when a gap is typed.
 - **focus**: the smallest RMS spot on the image plane, which stays where it is (autofocus
   already covers moving the image plane instead). The merit is the RMS spot radius, in
   micrometres. The lenses behind the gap move; the image plane does not.
@@ -53,6 +56,7 @@ MAX_GAP_MM = 1000.0  # "collimate" looks for gaps up to this long
 COARSE_STEPS = 41  # trial gaps in the first scan across the allowed range
 GAP_TOLERANCE_MM = 1e-3  # the refined gap is found to about this precision
 AT_BOUND_TOLERANCE_MM = 0.01  # a best gap this close to a limit counts as at that limit
+MEASUREMENT_IMAGE_GAP_MM = 10.0  # "collimate" traces to a plane this far behind the lens
 
 # Flipping a lens next to the gap is suggested (#56) only if it is clearly better: the merit
 # at most this fraction of the unflipped one, and better by at least this much.
@@ -71,6 +75,9 @@ class GapOptimisation:
         source plane.
     goal : str
         COLLIMATE or FOCUS.
+    measured_after_lens_index : int or None
+        For COLLIMATE, the lens after which the rays were measured (the last lens for the
+        system's output). None for FOCUS, which is measured on the image plane.
     gap_before_mm, gap_after_mm : float
         The gap now, and the best gap found.
     merit_before, merit_after : float
@@ -95,6 +102,7 @@ class GapOptimisation:
 
     lens_index: int
     goal: str
+    measured_after_lens_index: int | None
     gap_before_mm: float
     gap_after_mm: float
     merit_before: float
@@ -121,8 +129,27 @@ def current_gap_mm(state: OpticalState, lens_index: int) -> float:
     return gaps.air_gaps(state)[lens_index].width_mm
 
 
-def check_can_optimise(state: OpticalState, lens_index: int, goal: str) -> None:
-    """Raise ValueError, saying why, if this gap cannot be optimised for this goal."""
+def element_end_behind_gap(state: OpticalState, lens_index: int) -> int:
+    """The last lens of the element behind a gap: the next lens, or all of its assembly.
+
+    ``lens_index`` is the lens in front of the gap, or ``gaps.SOURCE_GAP_INDEX``. The gap
+    must not be the one to the image plane. This is where "collimate after the element"
+    measures the rays.
+    """
+    first_behind = 0 if lens_index == gaps.SOURCE_GAP_INDEX else lens_index + 1
+    return assemblies.assembly_indices(state, first_behind)[-1]
+
+
+def check_can_optimise(
+    state: OpticalState,
+    lens_index: int,
+    goal: str,
+    measure_after_lens_index: int | None = None,
+) -> None:
+    """Raise ValueError, saying why, if this gap cannot be optimised for this goal.
+
+    The parameters are those of ``optimise_gap``.
+    """
     if goal not in GOALS:
         raise ValueError(f"The goal must be one of {', '.join(GOALS)}, not {goal!r}")
     if lens_index == gaps.SOURCE_GAP_INDEX:
@@ -146,6 +173,19 @@ def check_can_optimise(state: OpticalState, lens_index: int, goal: str) -> None:
         raise ValueError(
             "The gap to the image plane is locked, so the image plane would move with the "
             "lenses: unlock it to focus by moving them"
+        )
+    if measure_after_lens_index is None:
+        return
+    if goal == FOCUS:
+        raise ValueError(
+            "Focus is measured on the image plane: only collimate can be measured after a lens"
+        )
+    first_behind = 0 if lens_index == gaps.SOURCE_GAP_INDEX else lens_index + 1
+    if not first_behind <= measure_after_lens_index < len(state.lenses):
+        raise ValueError(
+            f"The light can be measured after lenses {first_behind} to "
+            f"{len(state.lenses) - 1}, which are behind this gap, not lens "
+            f"{measure_after_lens_index}"
         )
 
 
@@ -210,6 +250,21 @@ def gap_limits_mm(state: OpticalState, lens_index: int, goal: str) -> tuple[floa
     return shortest_mm, max(shortest_mm, longest_mm)
 
 
+def _bench_up_to(state: OpticalState, last_lens_index: int) -> OpticalState:
+    """A copy of the bench that ends with lens ``last_lens_index``, for measuring there.
+
+    Light leaving that lens is not affected by anything behind it, and leaving those lenses
+    out also stops their rims counting as clipping. The image plane is put just behind the
+    lens: the directions measured do not depend on where it is.
+    """
+    shortened = copy.deepcopy(replace(state, imported_from=None))  # the import record is large
+    del shortened.lenses[last_lens_index + 1 :]
+    shortened.lenses[-1].locked_to_next = False
+    shortened.image_z = shortened.last_back_z() + MEASUREMENT_IMAGE_GAP_MM
+    shortened.image_gap_locked = False
+    return shortened
+
+
 class _GapTrials:
     """Traces the selected field with the gap set to trial values, for one search.
 
@@ -218,8 +273,17 @@ class _GapTrials:
     far quicker than rebuilding it: about 1 ms a trial instead of 15.
     """
 
-    def __init__(self, state: OpticalState, lens_index: int, goal: str) -> None:
-        self.state = copy.deepcopy(replace(state, imported_from=None))  # the import record is large
+    def __init__(
+        self,
+        state: OpticalState,
+        lens_index: int,
+        goal: str,
+        measure_after_lens_index: int | None,
+    ) -> None:
+        if measure_after_lens_index is None:  # focus: on the image plane, behind every lens
+            self.state = copy.deepcopy(replace(state, imported_from=None))  # the record is large
+        else:
+            self.state = _bench_up_to(state, measure_after_lens_index)
         self.lens_index = lens_index
         self.goal = goal
         self.optic = optic_builder.build_optic(self.state)
@@ -277,6 +341,7 @@ def optimise_gap(
     lens_index: int,
     goal: str,
     consider_flips: bool = True,
+    measure_after_lens_index: int | None = None,
 ) -> GapOptimisation:
     """Find the gap behind ``lens_index`` that best meets the goal, without changing the bench.
 
@@ -292,6 +357,10 @@ def optimise_gap(
     consider_flips : bool
         If True, also optimise with each lens next to the gap turned round, and suggest
         the flip in the result if it is clearly better (``suggest_flip``).
+    measure_after_lens_index : int, optional
+        For COLLIMATE only: the lens, behind the gap, after which the rays are to be
+        parallel (``element_end_behind_gap`` gives the one next to the gap). By default the
+        last lens: the output of the whole system.
 
     Returns
     -------
@@ -304,10 +373,12 @@ def optimise_gap(
         If the gap cannot be optimised (``check_can_optimise``), or no light gets through
         at any gap in the allowed range.
     """
-    check_can_optimise(state, lens_index, goal)
+    check_can_optimise(state, lens_index, goal, measure_after_lens_index)
+    if goal == COLLIMATE and measure_after_lens_index is None:
+        measure_after_lens_index = len(state.lenses) - 1
     gap_before_mm = current_gap_mm(state, lens_index)
     shortest_mm, longest_mm = gap_limits_mm(state, lens_index, goal)
-    trials = _GapTrials(state, lens_index, goal)
+    trials = _GapTrials(state, lens_index, goal, measure_after_lens_index)
     merit_before, through_before = trials.evaluate(gap_before_mm)
 
     # A coarse scan (which includes the current gap) finds the right valley, and the most
@@ -348,6 +419,7 @@ def optimise_gap(
     result = GapOptimisation(
         lens_index=lens_index,
         goal=goal,
+        measured_after_lens_index=measure_after_lens_index,
         gap_before_mm=gap_before_mm,
         gap_after_mm=best_gap_mm,
         merit_before=merit_before,
@@ -401,7 +473,13 @@ def suggest_flip(state: OpticalState, result: GapOptimisation) -> GapOptimisatio
         flipped = copy.deepcopy(replace(state, imported_from=None))
         flipped.lenses[index].flipped = not flipped.lenses[index].flipped
         try:
-            trial = optimise_gap(flipped, result.lens_index, result.goal, consider_flips=False)
+            trial = optimise_gap(
+                flipped,
+                result.lens_index,
+                result.goal,
+                consider_flips=False,
+                measure_after_lens_index=result.measured_after_lens_index,
+            )
         except ValueError:
             continue  # e.g. no light gets through this way round
         if trial.rays_through_after < result.rays_through_after:

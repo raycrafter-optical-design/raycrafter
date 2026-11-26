@@ -696,11 +696,13 @@ class DesignTools:
         apply: bool = True,
         lock: bool = False,
         flip_if_better: bool = False,
+        measure_after_lens_index: int | None = None,
     ) -> dict:
         """Find (and by default set) the gap behind a lens that best meets a goal.
 
-        ``goal`` is "collimate" (the rays leaving the last lens are parallel; merit is their
-        RMS angle in µrad; later lenses and the image plane move together) or "focus" (the
+        ``goal`` is "collimate" (the rays leaving the last lens, or the lens given by
+        ``measure_after_lens_index``, are parallel; merit is their RMS angle in µrad; later
+        lenses and the image plane move together) or "focus" (the
         smallest RMS spot on the image plane, which stays put; merit in µm). Real rays of the
         selected field are used. ``lens_index`` -1 means the gap from the source plane. The
         gap must be unlocked and not the gap to the image plane (use autofocus for that).
@@ -709,6 +711,11 @@ class DesignTools:
         the allowed range, so there may be no real solution). With ``apply`` false the bench
         is not changed; with ``lock`` true the gap is locked afterwards.
 
+        ``measure_after_lens_index`` (collimate only) names a lens behind the gap after which
+        the light is measured; lenses behind it are ignored. Give ``lens_index + 1`` (0 for
+        the source gap) to collimate the light leaving the next lens, e.g. to put a source at
+        the first lens's focus before placing the others. By default it is the last lens.
+
         Each lens next to the gap is also tried turned round (a lens the wrong way round
         cannot be fixed by spacing). If that is clearly better, ``flip_lens_index``,
         ``flipped_gap_mm`` and ``flipped_merit`` say so; with ``flip_if_better`` true that
@@ -716,7 +723,9 @@ class DesignTools:
         """
         if lens_index != SOURCE_GAP_INDEX:
             self._check_lens_index(lens_index)
-        result = self.model.optimise_gap(lens_index, goal)
+        if measure_after_lens_index is not None:
+            self._check_lens_index(measure_after_lens_index)
+        result = self.model.optimise_gap(lens_index, goal, measure_after_lens_index)
         if apply:
             flip = bool(flip_if_better) and result.flip_lens_index is not None
             self.model.apply_gap_optimisation(result, lock=bool(lock), flip=flip)

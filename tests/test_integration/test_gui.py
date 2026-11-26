@@ -1125,6 +1125,39 @@ def test_collimating_from_the_gap_menu(application, monkeypatch):
     window.close()
 
 
+def test_collimating_after_an_element_from_the_gap_menu(application, monkeypatch):
+    """Issue #66: with lenses behind it, the element behind the gap can be collimated alone."""
+    window = MainWindow()
+    model = window.model
+    model.delete_lens(0)
+    for focal_length_mm, front_z in ((100.0, 100.0), (50.0, 180.0), (80.0, 400.0)):
+        model.insert_lens(model.make_paraxial_lens(focal_length_mm, front_z))
+    model.state.image_z = 500.0
+    window.show_new_design()
+
+    def entry(lens_index: int, text: str):
+        actions = window.build_gap_menu(lens_index).actions()
+        return next(action for action in actions if action.text() == text)
+
+    entry(0, "Collimate system output…")  # both choices are offered
+    last_texts = [action.text() for action in window.build_gap_menu(1).actions()]
+    assert "Collimate output…" in last_texts  # the element behind is the last: one entry
+    assert "Collimate system output…" not in last_texts
+
+    shown = []
+    monkeypatch.setattr(
+        window.gap_optimiser,
+        "ask_to_apply",
+        lambda result: (
+            shown.append(window.gap_optimiser.describe(result)) or Choice(flip=False, lock=False)
+        ),
+    )
+    entry(0, "Collimate after Paraxial f=+50 mm…").trigger()
+    assert model.air_gaps()[0].width_mm == pytest.approx(150.0, abs=1e-3)
+    assert "RMS angle of the rays leaving Paraxial f=+50 mm" in shown[0]
+    window.close()
+
+
 def test_the_gap_dialog_suggests_flipping_a_lens(application, monkeypatch):
     """Issue #56: AC254-050-A the wrong way round is reported, and flipped only on request."""
     window = MainWindow()

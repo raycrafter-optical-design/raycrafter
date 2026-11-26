@@ -5,7 +5,12 @@ import copy
 import pytest
 
 from raycrafter.core import analysis
-from raycrafter.core.gap_optimisation import COLLIMATE, FOCUS, optimise_gap
+from raycrafter.core.gap_optimisation import (
+    COLLIMATE,
+    FOCUS,
+    element_end_behind_gap,
+    optimise_gap,
+)
 from raycrafter.core.gaps import SOURCE_GAP_INDEX
 from raycrafter.core.model import OpticalModel
 from raycrafter.mcp_server.tools import DesignTools
@@ -203,3 +208,83 @@ def test_agents_flip_only_when_they_ask(catalog):
     result = tools.optimise_gap(0, "collimate", flip_if_better=True)
     assert result["lenses"][1]["flipped"]
     assert result["lenses"][0]["gap_after_mm"] == pytest.approx(140.35, abs=0.02)
+
+
+# ------------------------------------------------------------------ where it is measured (#66)
+
+
+def point_source_bench(catalog, lenses) -> OpticalModel:
+    """An object point 80 mm in front of the first of the (focal length, z) paraxial lenses."""
+    model = make_bench(catalog, lenses)
+    model.set_finite_object(True)
+    model.set_source_gap_locked(False)
+    model.state.source_z = model.state.lenses[0].z - 80.0
+    return model
+
+
+def test_a_point_source_is_put_at_the_focus_of_the_first_lens(catalog):
+    """Collimating after the first lens sets the source gap to its focal length, whatever the
+    lenses behind do; collimating the system's output gives another gap."""
+    model = point_source_bench(catalog, [(100.0, 100.0), (50.0, 250.0)])
+    after_first = model.optimise_gap(SOURCE_GAP_INDEX, COLLIMATE, measure_after_lens_index=0)
+    assert after_first.gap_after_mm == pytest.approx(100.0, abs=1e-3)
+    assert after_first.merit_after == pytest.approx(0.0, abs=0.01)
+    assert after_first.measured_after_lens_index == 0
+
+    system = model.optimise_gap(SOURCE_GAP_INDEX, COLLIMATE)
+    assert system.measured_after_lens_index == 1
+    assert abs(system.gap_after_mm - 100.0) > 1.0
+
+
+def test_collimating_after_an_element_ignores_the_lenses_behind_it(catalog):
+    """A third lens would spoil collimation, and its rim (1 mm) would clip the beam."""
+    model = make_bench(catalog, [(100.0, 100.0), (50.0, 180.0), (80.0, 400.0)])
+    model.state.lenses[2].semi_aperture = 1.0
+    state_before = copy.deepcopy(model.state)
+    result = model.optimise_gap(0, COLLIMATE, measure_after_lens_index=1)
+    assert result.gap_after_mm == pytest.approx(150.0, abs=1e-3)
+    assert result.rays_through_after == result.rays_launched
+    assert model.state == state_before
+
+    model.apply_gap_optimisation(result)
+    assert model.air_gaps()[0].width_mm == pytest.approx(150.0, abs=1e-3)
+    assert model.air_gaps()[1].width_mm == pytest.approx(220.0)  # the third lens moved too
+
+
+def test_a_flip_is_judged_where_the_light_is_measured(catalog):
+    model = doublet_pair(catalog)
+    model.insert_lens(model.make_paraxial_lens(80.0, 450.0))
+    result = model.optimise_gap(0, COLLIMATE, measure_after_lens_index=1)
+    assert result.flip_lens_index == 1
+    assert result.flipped_merit == pytest.approx(85, abs=2)
+
+
+def test_the_element_behind_a_gap_is_the_next_lens_or_its_assembly(catalog):
+    model = make_bench(catalog, [(100.0, 100.0), (50.0, 180.0), (80.0, 200.0), (60.0, 300.0)])
+    assert element_end_behind_gap(model.state, SOURCE_GAP_INDEX) == 0
+    assert element_end_behind_gap(model.state, 0) == 1
+    model.make_assembly(1, 2)
+    assert element_end_behind_gap(model.state, 0) == 2
+
+
+@pytest.mark.parametrize(
+    ("goal", "measure_after", "message"),
+    [
+        (FOCUS, 1, "image plane"),
+        (COLLIMATE, 0, "behind this gap"),  # in front of the gap
+        (COLLIMATE, 2, "behind this gap"),  # no such lens
+    ],
+)
+def test_places_that_cannot_be_measured_are_refused(catalog, goal, measure_after, message):
+    model = make_bench(catalog, [(100.0, 100.0), (50.0, 180.0)])
+    with pytest.raises(ValueError, match=message):
+        model.optimise_gap(0, goal, measure_after_lens_index=measure_after)
+
+
+def test_agents_choose_where_to_measure(catalog):
+    tools = DesignTools(point_source_bench(catalog, [(100.0, 100.0), (50.0, 250.0)]))
+    result = tools.optimise_gap(SOURCE_GAP_INDEX, "collimate", measure_after_lens_index=0)
+    assert result["source"]["gap_to_first_lens_mm"] == pytest.approx(100.0, abs=1e-3)
+    assert result["optimisation"]["measured_after_lens_index"] == 0
+    with pytest.raises(ValueError, match="no lens 5"):
+        tools.optimise_gap(0, "collimate", measure_after_lens_index=5)
