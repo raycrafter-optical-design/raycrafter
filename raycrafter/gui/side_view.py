@@ -17,6 +17,11 @@ a dimension opens a box in which to type the gap; right-clicking it asks the mai
 the menu that locks or unlocks it. Lenses joined by locked gaps are dragged, and darkened on
 hover, as one. While the gap to the image plane is locked, the image line cannot be dragged.
 
+The source plane, where every field is defined, is a dashed line captioned "source". While
+its gap to the first lens is locked (the default, at 0 mm) it moves with the first lens;
+right-clicking its caption unlocks it, and it can then be dragged or its gap typed. The
+dimension of that gap is left out while it is locked at 0 mm, as it says nothing then.
+
 A paraxial (ideal thin) lens is drawn as a line with arrowheads. It has no thickness, so it
 can be hovered and dragged a few pixels either side of its line.
 """
@@ -30,7 +35,7 @@ from PyQt6.QtGui import QColor, QCursor, QFont, QTextOption
 
 from raycrafter import palette
 from raycrafter.core.analysis import RayPaths
-from raycrafter.core.gaps import MIN_IMAGE_GAP_MM, AirGap
+from raycrafter.core.gaps import MIN_IMAGE_GAP_MM, SOURCE_GAP_INDEX, AirGap
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import (
     DEFAULT_AXIS_Y_RANGE,
@@ -39,7 +44,7 @@ from raycrafter.core.plot_geometry import (
     axis_ranges,
     ray_polylines,
 )
-from raycrafter.core.state import PlacedLens
+from raycrafter.core.state import AXIS_START_Z, PlacedLens
 from raycrafter.gui.gap_dimensions import EDITABLE, FIXED, LOCKED, GapDimensions, GapEditor
 from raycrafter.gui.lens_shapes import (
     LENS_NAME_TRIM_PX,
@@ -138,6 +143,8 @@ class SideView(pg.PlotWidget):
         # The signal passes the line itself; drag_finished takes no arguments.
         self.image_line.sigPositionChangeFinished.connect(lambda _line: self.drag_finished.emit())
         self.image_line.sigPositionChanged.connect(self.place_image_label)
+        self.source_line.sigPositionChanged.connect(self.on_source_dragged)
+        self.source_line.sigPositionChangeFinished.connect(lambda _line: self.drag_finished.emit())
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.on_right_click)
         self.scene().sigMouseMoved.connect(self.on_hover)
@@ -171,6 +178,18 @@ class SideView(pg.PlotWidget):
         self.image_label.setZValue(40)  # above the line, so it cannot cut across the text
         side.addItem(self.image_label, ignoreBounds=True)
         self.place_image_label()
+
+        # The source plane: dashed, and captioned at the top as the image plane is.
+        self.source_line = pg.InfiniteLine(
+            angle=90,
+            movable=False,
+            pen=pg.mkPen(palette.SOURCE, width=2, style=Qt.PenStyle.DashLine),
+            hoverPen=pg.mkPen(palette.SOURCE, width=2),
+        )
+        side.addItem(self.source_line)
+        self.source_label = pg.TextItem("source", color="w", fill=palette.SOURCE, anchor=(0.5, 0))
+        self.source_label.setZValue(40)
+        side.addItem(self.source_label, ignoreBounds=True)
 
         # Trace and draw timings: small grey text in the top-right corner. Its font size is
         # set in showEvent, once the style sheet has fixed the size of the axis numbers.
@@ -268,6 +287,7 @@ class SideView(pg.PlotWidget):
         self.image_line.blockSignals(False)
         self.place_image_label()
         self.update_image_line_movable()
+        self.update_source_line()
 
         self.refresh_lens_colours()
         self.update_gap_dimensions()
@@ -347,8 +367,16 @@ class SideView(pg.PlotWidget):
     # ------------------------------------------------------------------ gaps
 
     def update_gap_dimensions(self) -> None:
-        """Redraw the dimension of every air gap."""
-        self.gap_dimensions.update(self.model.air_gaps(), self.gap_label_style)
+        """Redraw the dimension of every air gap, and of the gap from the source plane.
+
+        The source gap is left out while it is locked at 0 mm (the fields are then simply
+        defined at the first lens).
+        """
+        shown_gaps = self.model.air_gaps()
+        source_gap = self.model.source_gap()
+        if source_gap is not None and not (source_gap.locked and source_gap.width_mm == 0.0):
+            shown_gaps = [source_gap, *shown_gaps]
+        self.gap_dimensions.update(shown_gaps, self.gap_label_style)
 
     def gap_label_style(self, gap: AirGap) -> str:
         """How a gap's label is drawn (see ``GapDimensions.update``)."""
@@ -365,6 +393,8 @@ class SideView(pg.PlotWidget):
         """Why this gap cannot be typed, in words for the user; None if it can."""
         if gap.in_assembly:
             return "The gaps inside an assembly are fixed: split it to change them"
+        if gap.from_source and gap.locked:
+            return 'The gap from the source plane is locked: right-click "source" to unlock it'
         if gap.locked:
             return "This gap is locked: right-click it to unlock it"
         if gap.to_image and self.image_line_locked:
@@ -374,7 +404,13 @@ class SideView(pg.PlotWidget):
     def open_gap_editor(self, gap: AirGap) -> None:
         """Show the box for typing this gap, or say why it cannot be changed."""
         self.close_gap_editor()  # which may apply a value, so read the gap afresh
-        gap = self.model.air_gaps()[gap.lens_index]
+        if gap.from_source:
+            source_gap = self.model.source_gap()
+            if source_gap is None:
+                return
+            gap = source_gap
+        else:
+            gap = self.model.air_gaps()[gap.lens_index]
         reason = self.why_gap_is_fixed(gap)
         if reason is not None:
             self.message_requested.emit(reason)
@@ -396,7 +432,10 @@ class SideView(pg.PlotWidget):
     def set_gap(self, lens_index: int, gap_mm: float) -> None:
         """Apply a typed gap to the model, or say why it is not allowed."""
         try:
-            self.model.set_gap(lens_index, gap_mm)
+            if lens_index == SOURCE_GAP_INDEX:
+                self.model.set_source_gap(gap_mm)
+            else:
+                self.model.set_gap(lens_index, gap_mm)
         except ValueError as error:
             self.message_requested.emit(str(error))
             return
@@ -544,6 +583,41 @@ class SideView(pg.PlotWidget):
         line_scene_x = view_box.mapViewToScene(QPointF(self.image_line.value(), 0.0)).x()
         return abs(scene_position.x() - line_scene_x) <= IMAGE_HOVER_TOLERANCE_PX
 
+    def is_over_source_line(self, scene_position: QPointF) -> bool:
+        """True if the pointer is within a few pixels of the source line and it can be dragged."""
+        if not self.source_line.movable:
+            return False
+        view_box = self.getPlotItem().vb
+        line_scene_x = view_box.mapViewToScene(QPointF(self.source_line.value(), 0.0)).x()
+        return abs(scene_position.x() - line_scene_x) <= IMAGE_HOVER_TOLERANCE_PX
+
+    def update_source_line(self) -> None:
+        """Put the source line and caption at the source plane; draggable unless its gap is
+        locked. Hidden with no lenses, when there is no gap to set."""
+        state = self.model.state
+        has_lenses = bool(state.lenses)
+        self.source_line.setVisible(has_lenses)
+        self.source_label.setVisible(has_lenses)
+        self.source_line.blockSignals(True)
+        self.source_line.setValue(state.source_z)
+        self.source_line.blockSignals(False)
+        movable = has_lenses and not state.source_gap_locked
+        if movable != self.source_line.movable:
+            self.source_line.setMovable(movable)
+        y_span = self.y_range[1] - self.y_range[0]
+        self.source_label.setPos(state.source_z, self.y_range[1] - 0.01 * y_span)
+
+    def on_source_dragged(self) -> None:
+        """The source line was dragged: keep it between the axis start and the first lens."""
+        self.close_gap_editor()
+        state = self.model.state
+        if not state.lenses or state.source_gap_locked:
+            return
+        wanted_z = float(np.clip(self.source_line.value(), AXIS_START_Z, state.lenses[0].z))
+        self.model.set_source_z(wanted_z)
+        self.source_label.setPos(wanted_z, self.source_label.pos().y())
+        self.changed.emit()
+
     def place_image_label(self, *_args) -> None:
         """Put the "image" caption just inside the top of the plot, centred on the image line."""
         y_span = self.y_range[1] - self.y_range[0]
@@ -571,7 +645,11 @@ class SideView(pg.PlotWidget):
 
         if gap is not None and self.why_gap_is_fixed(gap) is None:
             self.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
-        elif hovered_index is not None or self.is_over_image_line(scene_position):
+        elif (
+            hovered_index is not None
+            or self.is_over_image_line(scene_position)
+            or self.is_over_source_line(scene_position)
+        ):
             self.viewport().setCursor(Qt.CursorShape.SizeHorCursor)
         else:
             self.viewport().unsetCursor()
@@ -718,6 +796,11 @@ class SideView(pg.PlotWidget):
             self.close_gap_editor()
             self.gap_menu_requested.emit(gap.lens_index, global_position)
             return
+        if self.source_label.isVisible() and self.source_label.sceneBoundingRect().contains(
+            scene_position
+        ):
+            self.gap_menu_requested.emit(SOURCE_GAP_INDEX, global_position)
+            return
         lens_index = self.lens_index_at(self.getPlotItem().vb.mapSceneToView(scene_position))
         if lens_index is not None:
             self.lens_menu_requested.emit(lens_index, global_position)
@@ -749,7 +832,7 @@ class SideView(pg.PlotWidget):
 
     def is_dragging(self) -> bool:
         """True while the mouse is holding a lens or the image plane."""
-        return self.lens_drag_active or self.image_line.moving
+        return self.lens_drag_active or self.image_line.moving or self.source_line.moving
 
     def on_image_dragged(self) -> None:
         """The image line was dragged: keep it behind the last lens and inside the view."""

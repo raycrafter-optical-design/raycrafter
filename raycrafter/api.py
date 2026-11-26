@@ -75,6 +75,7 @@ from raycrafter.core import analysis, gaps
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.state import OpticalState, state_from_dict
 from raycrafter.design_files import DesignFileMethods
+from raycrafter.gap_methods import GapMethods
 from raycrafter.lenscatalog import thorlabs
 from raycrafter.lenscatalog.catalog import CatalogEntry
 from raycrafter.lenscatalog.selection import search_catalog
@@ -229,14 +230,15 @@ class DesignSummary:
 # ----------------------------------------------------------------------------- the bench
 
 
-class Bench(DesignFileMethods, AssemblyMethods):
+class Bench(DesignFileMethods, AssemblyMethods, GapMethods):
     """A lens bench: a row of lenses on an optical axis, beams of light and an image plane.
 
     ``Bench()`` makes a headless bench in this process. To drive the open RayCrafter window
     instead, use ``Bench.connect()``; to start from a file, ``Bench.from_project(path)`` or
     ``Bench.from_zmx(path)``. Saving, opening, importing and exporting are described in
     ``raycrafter.design_files``; assemblies (such as Plossl pairs) and user parts in
-    ``raycrafter.assembly_methods``.
+    ``raycrafter.assembly_methods``; the gaps, and the source plane where the beams are
+    defined, in ``raycrafter.gap_methods``.
 
     Parameters
     ----------
@@ -523,57 +525,6 @@ class Bench(DesignFileMethods, AssemblyMethods):
         result = self._call("move_lens", lens_index=int(lens_index), front_z_mm=float(front_z_mm))
         return self.lenses[result["moved_lens_index"]]
 
-    def set_gap(self, lens_index: int, gap_mm: float) -> LensInfo:
-        """Set the air gap behind a lens and return that lens's snapshot.
-
-        The gap runs from the lens's back vertex to the next lens's front vertex, or to the
-        image plane behind the last lens. All later lenses and the image plane shift
-        together, so no other gap changes.
-
-        Raises
-        ------
-        ValueError
-            If there is no such lens, the gap is locked (always so inside an assembly), or
-            it is so small that the surfaces would overlap (the image plane needs at least
-            1 mm).
-
-        Example
-        -------
-        >>> bench = Bench(empty=True)
-        >>> _ = bench.add_paraxial_lens(100.0)
-        >>> _ = bench.add_paraxial_lens(50.0)
-        >>> bench.set_gap(0, 150.0).gap_after_mm
-        150.0
-        >>> bench.lenses[1].front_z_mm
-        250.0
-        """
-        self._call("set_gap", lens_index=int(lens_index), gap_mm=float(gap_mm))
-        return self.lenses[int(lens_index)]
-
-    def lock_gap(self, lens_index: int, locked: bool = True) -> LensInfo:
-        """Lock (or, with ``locked=False``, unlock) the gap behind a lens; return its snapshot.
-
-        A locked gap keeps its length while the rest of the design is edited: lenses joined
-        by locked gaps move together, and ``set_gap`` refuses to change it. Behind the last
-        lens it is the gap to the image plane, which then moves with the last lens and
-        cannot be moved on its own (``set_image_z`` and ``autofocus`` refuse). The gap
-        inside an assembly is always locked.
-
-        Example
-        -------
-        >>> bench = Bench(empty=True)
-        >>> _ = bench.add_paraxial_lens(100.0)
-        >>> _ = bench.add_paraxial_lens(50.0)
-        >>> bench.lock_gap(0).gap_after_locked
-        True
-        >>> bench.move_lens(1, front_z_mm=200.0).front_z_mm  # moves lens 0 too
-        200.0
-        >>> bench.lenses[0].front_z_mm
-        190.0
-        """
-        self._call("lock_gap", lens_index=int(lens_index), locked=bool(locked))
-        return self.lenses[int(lens_index)]
-
     def flip_lens(self, lens_index: int) -> LensInfo:
         """Turn a lens round and return its snapshot.
 
@@ -619,13 +570,13 @@ class Bench(DesignFileMethods, AssemblyMethods):
         field_index : int
             Which field (see ``fields``).
         diameter_mm : float, optional
-            Beam diameter at the first lens; must be positive.
+            Beam diameter at the source plane (see ``source_gap_mm``); must be positive.
         angle_deg : float, optional
             Angle of the beam to the axis (positive rises).
         vergence_dioptres : float, optional
             Positive converging, negative diverging, 0 collimated.
         offset_mm : float, optional
-            Height of the beam centre above the axis at the first lens.
+            Height of the beam centre above the axis at the source plane.
         wavelength_nm : float, optional
             Must be positive.
         colour : str, optional

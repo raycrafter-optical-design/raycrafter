@@ -26,6 +26,7 @@ from optiland.materials.warnings import OptilandMaterialWarning
 from optiland.optic import Optic
 from optiland.physical_apertures import RadialAperture
 
+from raycrafter.core import ray_launch
 from raycrafter.core.state import AXIS_START_Z, BeamField, OpticalState, PlacedLens
 
 
@@ -190,7 +191,10 @@ def save_zmx(state: OpticalState, file_path: str) -> None:
     """
     selected = state.selected_field
     field_angles = sorted({abs(beam.angle_deg) for beam in state.fields})
-    optic = build_optic_for_beam(state, selected, field_angles=field_angles)
+    # Zemax's object and pupil are at the first lens, so describe the beam there.
+    optic = build_optic_for_beam(
+        state, ray_launch.beam_at_first_lens(state, selected), field_angles=field_angles
+    )
     for wavelength_nm in sorted({beam.wavelength_nm for beam in state.fields}):
         if wavelength_nm != selected.wavelength_nm:
             optic.wavelengths.add(wavelength_nm / 1000.0)

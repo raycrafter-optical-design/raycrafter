@@ -18,9 +18,11 @@ Fields: Zemax gives all fields one entrance pupil and object, and pairs every fi
 with every wavelength. Each field angle becomes a RayCrafter field at the primary
 wavelength, and each other wavelength an on-axis field. When there are several angles,
 each is drawn in its own colour, as Zemax does. When the stop is in air in front of the
-first lens (a scan mirror, say), each beam's chief ray passes through the centre of the
-stop, so it reaches the first lens off axis; otherwise the beams are centred on the first
-lens, as RayCrafter's own fields are.
+first lens (a scan mirror, say), the source plane, where the beams are defined, is put at
+the stop: each beam's chief ray passes through its centre, so it reaches the first lens off
+axis. Otherwise the source plane is at the first lens and the beams are centred on it, as
+RayCrafter's own fields are. Either way the gap from the source plane is locked, so moving
+the first lens carries the beams with it.
 
 Clear apertures: Zemax blocks rays only at surfaces with an aperture (CLAP, FLAP, SQAP);
 a semi-diameter (DIAM) only sets the drawn size. RayCrafter blocks rays at every lens rim.
@@ -48,6 +50,7 @@ from raycrafter.core.prescription import (
     prescription_from_zmx_text,
 )
 from raycrafter.core.state import (
+    AXIS_START_Z,
     BeamField,
     ImportedSource,
     OpticalState,
@@ -119,10 +122,12 @@ def load_zmx(file_path: str, catalog: dict[str, CatalogEntry]) -> ZmxImport:
         notes: list[str] = []
         grouping = _lenses_from_surfaces(surfaces, surface_extras, catalog, notes)
 
-        # The beam is defined at the first lens; with none, the fields are just on axis.
+        # The beam is defined at the stop or the first lens; with none, just on axis.
         first_lens_z = grouping.lenses[0].z if grouping.lenses else grouping.image_z
         first_lens_surface = grouping.lens_surface_numbers[0][0] if grouping.lenses else None
-        fields = _fields_from_optic(optic, first_lens_z, first_lens_surface, notes)
+        fields, source_z = _fields_from_optic(optic, first_lens_z, first_lens_surface, notes)
+        if not grouping.lenses:
+            source_z = AXIS_START_Z
 
         ray_extent = _traced_ray_extent(optic)
         _note_lenses_that_block_more_than_zemax(grouping, ray_extent, notes)
@@ -132,7 +137,9 @@ def load_zmx(file_path: str, catalog: dict[str, CatalogEntry]) -> ZmxImport:
             if not lens.is_paraxial and lens.part_number.startswith("Imported"):
                 lens.is_negative = is_diverging(lens)
 
-    state = OpticalState(lenses=grouping.lenses, image_z=grouping.image_z, fields=fields)
+    state = OpticalState(
+        lenses=grouping.lenses, image_z=grouping.image_z, fields=fields, source_z=source_z
+    )
     # The file itself, and the bench as imported, are kept with the design (ImportedSource).
     state.imported_from = ImportedSource.from_bytes(
         file_format="zmx",
@@ -677,17 +684,16 @@ def _blocks_rays(aperture: ClearAperture, ray_extent: RayExtent, surface_number:
 
 def _fields_from_optic(
     optic, first_lens_z: float, first_lens_surface: int | None, notes: list[str]
-) -> list[BeamField]:
+) -> tuple[list[BeamField], float]:
     """RayCrafter fields from the file's aperture, object, stop, field angles and wavelengths.
 
-    Each beam is described where it meets the first lens (see ``BeamField``):
+    Each beam is described at the source plane (see ``BeamField``), which is put at the stop
+    if the stop is in air in front of the first lens, and otherwise at the first lens:
 
-    - its vergence is that of light from the object, ``first_lens_z - object_z`` away;
-    - if the stop is in air in front of the first lens, the chief ray of a beam at angle a
-      crosses the axis at the stop, so it meets the first lens ``d tan(a)`` above the axis,
-      d being the distance from stop to lens. The entrance pupil diameter is the beam's
-      width at the stop, so a beam from a near object is wider by the time it reaches the
-      lens: by (s + d) / s, s being the distance from object to stop.
+    - the beam's width there is the entrance pupil diameter, and its vergence that of light
+      from the object;
+    - at the stop the chief ray of every beam crosses the axis, so the offset is zero; the
+      beam then meets the first lens off axis, as in Zemax.
 
     Parameters
     ----------
@@ -699,6 +705,11 @@ def _fields_from_optic(
         The file surface number of the first lens's front surface (None with no lenses).
     notes : list of str
         Notes for the user are appended here.
+
+    Returns
+    -------
+    tuple of (list of BeamField, float)
+        The fields, and the z (mm) of the source plane on the bench.
     """
     surfaces = optic.surfaces.surfaces
     object_distance_mm = float(surfaces[0].thickness)
@@ -706,14 +717,11 @@ def _fields_from_optic(
     stop_number = int(optic.surfaces.stop_index)
     stop_z = FIRST_SURFACE_Z + sum(float(surface.thickness) for surface in surfaces[1:stop_number])
     stop_is_in_front = first_lens_surface is not None and stop_number < first_lens_surface
-    stop_to_lens_mm = first_lens_z - stop_z if stop_is_in_front else 0.0
+    source_z = stop_z if stop_is_in_front else first_lens_z
 
     aperture = optic.aperture
     if aperture is not None and aperture.ap_type == "EPD":
         diameter_mm = float(aperture.value)
-        if stop_is_in_front and np.isfinite(object_z) and stop_z != object_z:
-            object_to_stop_mm = stop_z - object_z
-            diameter_mm *= abs((object_to_stop_mm + stop_to_lens_mm) / object_to_stop_mm)
     else:
         diameter_mm = DEFAULT_BEAM_DIAMETER_MM
         notes.append(
@@ -721,8 +729,11 @@ def _fields_from_optic(
             f"{DEFAULT_BEAM_DIAMETER_MM:g} mm."
         )
 
-    object_to_lens_mm = first_lens_z - object_z
-    vergence = 0.0 if np.isinf(object_to_lens_mm) else -1000.0 / object_to_lens_mm
+    object_to_source_mm = source_z - object_z
+    if np.isinf(object_to_source_mm) or object_to_source_mm == 0.0:
+        vergence = 0.0
+    else:
+        vergence = -1000.0 / object_to_source_mm
 
     field_type = getattr(optic.fields.field_definition, "name", str(optic.fields.field_definition))
     angles = [float(field_point.y) for field_point in optic.fields.fields] or [0.0]
@@ -750,7 +761,7 @@ def _fields_from_optic(
             diameter_mm=diameter_mm,
             angle_deg=angle_deg,
             vergence_dioptres=vergence,
-            offset_mm=stop_to_lens_mm * float(np.tan(np.radians(angle_deg))),
+            offset_mm=0.0,
             wavelength_nm=round(wavelength_um * 1000.0, 3),
             colour=angle_colours.get(angle_deg),
         )
@@ -764,4 +775,4 @@ def _fields_from_optic(
             "Each field angle was loaded at the primary wavelength, and each other wavelength "
             "as an on-axis field."
         )
-    return fields
+    return fields, source_z

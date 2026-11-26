@@ -8,7 +8,9 @@
   lens to slide it along the axis; drag it past a neighbour's centre to swap them. Drag the
   green line to move the image plane (not while "Lock focus" is on or the gap to it is
   locked). Click one of the gap dimensions below the lenses to type that distance;
-  right-click it to lock or unlock it. Lenses joined by locked gaps move as one.
+  right-click it to lock or unlock it. Lenses joined by locked gaps move as one. The fields
+  are defined at the source plane ("source"), which by default moves with the first lens;
+  right-click its caption to unlock it, then drag it or type its gap.
 - Right-click a lens for Flip (F), Delete (Del or Backspace), Make Plossl, and the assembly
   actions: Make assembly (from lenses joined by locked gaps), Split assembly, and Save as
   user part. F flips a whole assembly. "Add user part" places a saved part, as one assembly.
@@ -61,7 +63,7 @@ from PyQt6.QtWidgets import (
 
 from raycrafter import palette
 from raycrafter.core.analysis import FastTrace, airy_radius
-from raycrafter.core.gaps import MIN_IMAGE_GAP_MM
+from raycrafter.core.gaps import MIN_IMAGE_GAP_MM, SOURCE_GAP_INDEX
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
 from raycrafter.core.state import PlacedLens
@@ -559,10 +561,17 @@ class MainWindow(QMainWindow):
     def build_gap_menu(self, lens_index: int) -> QMenu:
         """The context menu for the gap behind one lens: Lock gap, or Unlock gap.
 
+        ``lens_index`` is SOURCE_GAP_INDEX for the gap from the source plane to the first lens.
+
         The gaps inside an assembly cannot be unlocked, and the gap to the image plane
         cannot be locked while "Lock focus" is on, as both would set the image plane.
         """
-        gap = self.model.air_gaps()[lens_index]
+        if lens_index == SOURCE_GAP_INDEX:
+            gap = self.model.source_gap()
+            if gap is None:
+                return QMenu(self)  # no lenses: no gap from the source plane
+        else:
+            gap = self.model.air_gaps()[lens_index]
         menu = QMenu(self)
         if gap.locked:
             action = menu.addAction("Unlock gap")
@@ -576,7 +585,10 @@ class MainWindow(QMainWindow):
     def set_gap_locked(self, lens_index: int, locked: bool) -> None:
         """Lock or unlock the gap behind a lens, or say why that is not allowed."""
         try:
-            self.model.set_gap_locked(lens_index, locked)
+            if lens_index == SOURCE_GAP_INDEX:
+                self.model.set_source_gap_locked(locked)
+            else:
+                self.model.set_gap_locked(lens_index, locked)
         except ValueError as error:
             self.statusBar().showMessage(str(error), STATUS_MESSAGE_MS)
             return

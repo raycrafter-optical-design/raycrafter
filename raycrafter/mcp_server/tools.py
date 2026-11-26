@@ -48,6 +48,9 @@ EDITING_TOOL_NAMES = [  # these change the design, so a window must redraw after
     "move_lens",
     "set_gap",
     "lock_gap",
+    "set_source_gap",
+    "lock_source_gap",
+    "set_source_z",
     "flip_lens",
     "delete_lens",
     "make_plossl",
@@ -118,7 +121,9 @@ class DesignTools:
         front vertex, or to the image plane behind the last lens; ``gap_after_locked`` says
         whether that gap is locked (see ``lock_gap``). ``vendor`` and
         ``mount_type`` are null where unknown. ``surface_range`` holds the numbers of the
-        lens's first and last surface, as in the exported ZMX file. ``assembly`` is the id of
+        lens's first and last surface, as in the exported ZMX file. ``source`` is the source
+        plane, where every field's diameter, offset, angle and vergence are defined (see
+        ``set_source_gap``). ``assembly`` is the id of
         the assembly the lens is in (null if none), and ``assembly_name`` its name.
         """
         state = self.model.state
@@ -154,9 +159,17 @@ class DesignTools:
             }
             for index, beam in enumerate(state.fields)
         ]
+        source_gap = self.model.source_gap()
         return {
             "lenses": lenses,
             "fields": fields,
+            "source": {
+                "z_mm": _number(state.source_z),
+                "gap_to_first_lens_mm": None
+                if source_gap is None
+                else _number(source_gap.width_mm),
+                "gap_locked": state.source_gap_locked,
+            },
             "image_z_mm": _number(state.image_z),
             "has_unsaved_changes": self.model.has_unsaved_changes(),
             "project_file": str(self.model.project_path) if self.model.project_path else None,
@@ -466,6 +479,9 @@ class DesignTools:
     ) -> dict:
         """Change any of a field's properties; the ones left out stay as they are.
 
+        A field's diameter, offset, angle and vergence are those at the source plane (see
+        ``set_source_gap``), which by default is at the first lens.
+
         ``colour`` is a hex colour such as ``"#ff8800"``, or ``"wavelength"`` to draw the field
         in the colour of its wavelength (the default).
         """
@@ -510,6 +526,35 @@ class DesignTools:
         """Choose the field that autofocus, MTF, ray fan and through-focus analyse."""
         self._check_field_index(field_index)
         self.model.select_field(field_index)
+        return self.get_design()
+
+    def set_source_gap(self, gap_mm: float) -> dict:
+        """Set the distance from the source plane to the first lens's front vertex.
+
+        The source plane is where every field is defined: a light source, a scan mirror or a
+        stop. Every lens and the image plane shift together; the source plane stays put.
+        Refused while the gap is locked (it is by default, at 0 mm, so the fields are
+        defined at the first lens): unlock it with ``lock_source_gap(locked=False)``.
+        """
+        self.model.set_source_gap(gap_mm)
+        return self.get_design()
+
+    def lock_source_gap(self, locked: bool = True) -> dict:
+        """Lock (or unlock) the gap from the source plane to the first lens.
+
+        While locked, the source plane moves with the first lens, keeping its distance.
+        While unlocked it stays put, so moving the first lens changes where an angled beam
+        lands on it, and lenses cannot be moved in front of it.
+        """
+        self.model.set_source_gap_locked(bool(locked))
+        return self.get_design()
+
+    def set_source_z(self, source_z_mm: float) -> dict:
+        """Move the source plane to ``source_z_mm``, between the axis start and the first lens.
+
+        Refused while the gap from the source plane is locked.
+        """
+        self.model.set_source_z(source_z_mm)
         return self.get_design()
 
     def set_image_z(self, image_z_mm: float) -> dict:

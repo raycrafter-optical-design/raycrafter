@@ -29,6 +29,7 @@ from pathlib import Path
 from raycrafter.core.optic_builder import is_diverging
 from raycrafter.core.prescription import LensSurface
 from raycrafter.core.state import (
+    AXIS_START_Z,
     BeamField,
     ImportedSource,
     OpticalState,
@@ -53,6 +54,8 @@ DESIGN_KEYS = [
     "selected_field",
     "image_z_mm",
     "image_gap_locked",
+    "source_z_mm",
+    "source_gap_locked",
 ]
 TOP_LEVEL_KEYS = ["format", "format_version", "written_by", *DESIGN_KEYS, "imported_from"]
 PART_KEYS = ["vendor", "part_number", "mount_type", "clear_diameter_mm"]
@@ -144,6 +147,8 @@ def _design_to_dict(state: OpticalState) -> dict:
         "selected_field": state.selected_field_index,
         "image_z_mm": state.image_z,
         "image_gap_locked": state.image_gap_locked,
+        "source_z_mm": state.source_z,
+        "source_gap_locked": state.source_gap_locked,
     }
 
 
@@ -274,6 +279,12 @@ def _design_from_dict(data: dict, prefix: str) -> OpticalState:
         raise ProjectFileError(f"{prefix}next_assembly must be above every assembly id.")
     _check_locks(lenses, prefix)
     _check_assemblies(lenses, assembly_names, prefix)
+    source_z = _number(data["source_z_mm"], f"{prefix}source_z_mm")
+    if source_z < AXIS_START_Z or (lenses and source_z > lenses[0].z):
+        raise ProjectFileError(
+            f"{prefix}source_z_mm is {source_z} mm; the source plane must be between the start "
+            f"of the axis ({AXIS_START_Z:g} mm) and the first lens."
+        )
 
     fields = [
         _field_from_dict(field_data, f"{prefix}field {index}")
@@ -295,6 +306,8 @@ def _design_from_dict(data: dict, prefix: str) -> OpticalState:
         selected_field_index=selected_field,
         image_z=_number(data["image_z_mm"], f"{prefix}image_z_mm"),
         image_gap_locked=_boolean(data["image_gap_locked"], f"{prefix}image_gap_locked"),
+        source_z=source_z,
+        source_gap_locked=_boolean(data["source_gap_locked"], f"{prefix}source_gap_locked"),
     )
 
 

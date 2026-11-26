@@ -930,3 +930,36 @@ def test_locked_lenses_become_an_assembly_that_flips_saves_and_is_placed_again(
     assert window.model.assembly_name(0) == "Pair" and window.model.assembly_name(1) == "Pair"
     assert len(window.side_view.lens_graphics) == 4
     window.close()
+
+
+def test_the_source_plane_is_unlocked_from_its_caption_then_dragged_and_typed(application):
+    from raycrafter.core.gaps import SOURCE_GAP_INDEX
+
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    side_view = window.side_view
+    lens_z = window.model.state.lenses[0].z
+    assert side_view.source_line.value() == lens_z and not side_view.source_line.movable
+    # Locked at 0 mm, its dimension is left out.
+    assert all(not gap.from_source for gap in side_view.gap_dimensions.gaps)
+
+    menu = window.build_gap_menu(SOURCE_GAP_INDEX)
+    assert [action.text() for action in menu.actions()] == ["Unlock gap"]
+    menu.actions()[0].trigger()
+    application.processEvents()
+    assert side_view.source_line.movable
+    assert side_view.gap_dimensions.gaps[0].from_source
+
+    side_view.source_line.setValue(lens_z - 30.0)  # as a drag does
+    application.processEvents()
+    assert window.model.source_gap().width_mm == pytest.approx(30.0)
+
+    click_gap_label(window, SOURCE_GAP_INDEX)
+    editor = side_view.gap_editor
+    editor.selectAll()
+    QTest.keyClicks(editor, "45")
+    QTest.keyClick(editor, Qt.Key.Key_Return)
+    application.processEvents()
+    assert window.model.source_gap().width_mm == pytest.approx(45.0)
+    window.close()

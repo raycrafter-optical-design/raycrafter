@@ -16,6 +16,7 @@ PLOSSL_PREVIEW = "#e03131"  # dashed red outline of a proposed Plossl pair
 GHOST_BLOCKED = "#e03131"  # red: a lens being placed where there is no room for it
 RAY = "#e8a317"  # amber: the rays in the app icon
 IMAGE = "#2f9e44"  # green: the image plane and "current image plane" markers
+SOURCE = "#b5650d"  # brown-orange: the source plane, where the beams are defined
 TANGENTIAL = "#3b7dd8"  # also the through-focus curve
 SAGITTAL = "#e8590c"
 AIRY = "#868e96"  # Airy disk, Airy radius and diffraction limit

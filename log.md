@@ -298,3 +298,13 @@ flipping reverses and flips its lenses in place. "Save as user part" writes one 
 lose `plossl_group` and `split_plossl` for `assembly` and `split_assembly` (0.0.x, no alias).
 **Why:** Rob chose the user folder over the project file, so parts are shared between designs.
 Bench assembly methods live in `assembly_methods.py` to keep `api.py` under 1000 lines.
+
+## 2026-11-26: Fields are defined at a source plane with its own z (#41)
+**Decision:** `OpticalState.source_z` is where each field's diameter, offset, angle and vergence
+apply. Its gap to the first lens is locked at 0 mm by default and then follows whichever lens
+is first, so designs behave as before; unlocked, it stays put and lenses stop at it. ZMX import
+puts it at a stop in front of the first lens (offset 0, EPD as is). The MTF and ZMX export
+carry the beam to the first lens (`beam_at_first_lens`). Rob chose an explicit source z.
+**Supersedes:** "beam is defined where it crosses the first lens's front vertex plane" in
+"Each field's rays are launched by RayCrafter" and the offset rule in "ZMX fields are aimed
+through the stop" (2026-11-24).

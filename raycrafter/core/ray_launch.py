@@ -9,16 +9,21 @@ pupil model (see ``optic_builder.build_optic_for_beam``).
 
 Every ray starts at the start of the axis (``AXIS_START_Z``), so the side view can draw it
 from there. Its height and slope are worked out from where it crosses the beam's reference
-plane (the first lens; see ``BeamField``):
+plane (the source plane, ``OpticalState.source_z``; see ``BeamField``):
 
 - a ray at pupil point (px, py), normalised to the beam radius r, crosses the reference
   plane at x = px r, y = offset + py r;
 - its slope is the beam angle plus the vergence: dy/dz = tan(angle) - V py r and
   dx/dz = -V px r, with V in 1/mm. A converging beam (V > 0) thus aims at a point 1000/V mm
   beyond the reference plane, which is how a real point object would light the lens.
+
+``beam_at_first_lens`` gives the same beam described at the first lens instead, for the
+analyses that use Optiland's own object and pupil there.
 """
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 import numpy as np
 from optiland.distribution import create_distribution
@@ -89,12 +94,14 @@ def launch_rays(
     slope_x = -vergence_per_mm * pupil_x * radius_mm
     slope_y = np.tan(np.radians(beam.angle_deg)) - vergence_per_mm * pupil_y * radius_mm
 
-    # Step back along each ray to the start of the axis.
+    # Step back along each ray to the start of the axis. Optiland's z is anchored on its
+    # first surface, which is at state.first_surface_z() on the bench.
     distance_back_mm = state.beam_reference_z() - AXIS_START_Z
     start_x = x_at_reference - slope_x * distance_back_mm
     start_y = y_at_reference - slope_y * distance_back_mm
-    reference_local_z = float(optic.surfaces[1].geometry.cs.z)
-    start_z = np.full(pupil_x.shape, reference_local_z - distance_back_mm)
+    first_surface_local_z = float(optic.surfaces[1].geometry.cs.z)
+    start_local_z = first_surface_local_z - (state.first_surface_z() - AXIS_START_Z)
+    start_z = np.full(pupil_x.shape, start_local_z)
 
     # Direction cosines: the slope vector (dx/dz, dy/dz, 1), normalised.
     length = np.sqrt(slope_x**2 + slope_y**2 + 1.0)
@@ -108,6 +115,36 @@ def launch_rays(
         N=1.0 / length,
         intensity=np.ones(ray_count),
         wavelength=np.full(ray_count, beam.wavelength_um),
+    )
+
+
+def beam_at_first_lens(state: OpticalState, beam: BeamField) -> BeamField:
+    """The same beam, described where it reaches the first lens instead of the source plane.
+
+    Over the distance d from the source plane to the lens, a ray at pupil height p r rises
+    by its slope, tan(a) - V p r, times d. So at the lens the centre is d tan(a) higher, the
+    beam is |1 - V d| times as wide, and its vergence is V / (1 - V d): a beam converging on
+    a point 1/V beyond the source is converging on one 1/V - d beyond the lens. A beam
+    focused exactly on the lens has no width there.
+
+    Returns
+    -------
+    BeamField
+        A copy of ``beam`` with its diameter, vergence and offset at the first lens (the
+        beam itself if the source plane is at the first lens).
+    """
+    distance_mm = state.first_surface_z() - state.source_z
+    if distance_mm == 0.0:
+        return beam
+    vergence_per_mm = beam.vergence_dioptres / 1000.0
+    width_factor = 1.0 - vergence_per_mm * distance_mm
+    if width_factor == 0.0:
+        return replace(beam, diameter_mm=0.0)
+    return replace(
+        beam,
+        diameter_mm=beam.diameter_mm * abs(width_factor),
+        vergence_dioptres=beam.vergence_dioptres / width_factor,
+        offset_mm=beam.offset_mm + distance_mm * float(np.tan(np.radians(beam.angle_deg))),
     )
 
 

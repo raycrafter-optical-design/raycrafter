@@ -2,13 +2,15 @@
 
 A gap is measured vertex to vertex: from the back vertex of a lens to the front vertex of the
 next one, or, behind the last lens, to the image plane. Each gap is identified by the index of
-the lens in front of it. It has no Qt code.
+the lens in front of it. The gap in front of the first lens, from the source plane where the
+beams are defined (``OpticalState.source_z``), is ``source_gap``; it has the index
+SOURCE_GAP_INDEX. It has no Qt code.
 
 A gap can be locked, so that it keeps its length while the rest of the design is edited.
 Lenses joined by locked gaps form a *block* that moves as one (``block_indices``); a lens on
 its own is a block of one. The gaps inside an assembly (such as a Plossl pair) are always
-locked. A locked gap to
-the image plane makes the image plane move with the last lens.
+locked. A locked gap to the image plane makes the image plane move with the last lens, and a
+locked gap from the source plane makes the source plane move with the first lens.
 """
 
 from __future__ import annotations
@@ -23,18 +25,19 @@ from raycrafter.core.state import OpticalState, PlacedLens
 
 MIN_IMAGE_GAP_MM = 1.0  # the image plane stays at least this far behind the last lens
 SURFACE_SAMPLE_COUNT = 200  # heights at which two facing surfaces are compared
+SOURCE_GAP_INDEX = -1  # the lens_index of the gap from the source plane to the first lens
 
 
 @dataclass(frozen=True)
 class AirGap:
-    """The air gap behind one lens.
+    """The air gap behind one lens, or in front of the first lens (from the source plane).
 
     Attributes
     ----------
     lens_index : int
-        The lens in front of the gap.
+        The lens in front of the gap; SOURCE_GAP_INDEX for the gap from the source plane.
     start_z : float
-        z of that lens's back vertex (mm).
+        z of that lens's back vertex, or of the source plane (mm).
     end_z : float
         z of the next lens's front vertex, or of the image plane (mm).
     to_image : bool
@@ -43,6 +46,8 @@ class AirGap:
         True for a gap inside an assembly (such as a Plossl pair), which is always locked.
     locked : bool
         True if the gap is locked, so that it cannot be changed.
+    from_source : bool
+        True for the gap from the source plane to the first lens.
     """
 
     lens_index: int
@@ -51,6 +56,7 @@ class AirGap:
     to_image: bool
     in_assembly: bool
     locked: bool
+    from_source: bool = False
 
     @property
     def width_mm(self) -> float:
@@ -78,6 +84,45 @@ def air_gaps(state: OpticalState) -> list[AirGap]:
             )
         )
     return gaps
+
+
+def source_gap(state: OpticalState) -> AirGap | None:
+    """The gap from the source plane to the first lens; None if there are no lenses."""
+    if not state.lenses:
+        return None
+    return AirGap(
+        lens_index=SOURCE_GAP_INDEX,
+        start_z=state.source_z,
+        end_z=state.lenses[0].z,
+        to_image=False,
+        in_assembly=False,
+        locked=state.source_gap_locked,
+        from_source=True,
+    )
+
+
+def set_source_gap(state: OpticalState, gap_mm: float) -> None:
+    """Set the gap from the source plane to the first lens, moving every lens and the image.
+
+    The source plane stays where it is, and no other gap changes.
+
+    Raises
+    ------
+    ValueError
+        If there are no lenses, the gap is locked, or it is negative or not a number.
+        Nothing is changed then.
+    """
+    gap = source_gap(state)
+    if gap is None:
+        raise ValueError("There is no lens, so there is no gap from the source plane")
+    if gap.locked:
+        raise ValueError("The gap from the source plane is locked: unlock it to change it")
+    if not math.isfinite(gap_mm) or gap_mm < 0.0:
+        raise ValueError("The gap from the source plane must be 0 mm or more")
+    shift_mm = gap_mm - gap.width_mm
+    for lens in state.lenses:
+        lens.z += shift_mm
+    state.image_z += shift_mm
 
 
 def block_indices(state: OpticalState, lens_index: int) -> list[int]:

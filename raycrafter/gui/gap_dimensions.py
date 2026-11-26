@@ -138,8 +138,12 @@ class GapDimensions:
         return None
 
     def label_scene_centre(self, lens_index: int) -> QPointF:
-        """Where the label of the gap behind this lens is, in scene coordinates."""
-        return self.labels[lens_index].sceneBoundingRect().center()
+        """Where the label of the gap behind this lens is, in scene coordinates.
+
+        ``lens_index`` is SOURCE_GAP_INDEX for the gap from the source plane.
+        """
+        position = [gap.lens_index for gap in self.gaps].index(lens_index)
+        return self.labels[position].sceneBoundingRect().center()
 
     def _new_label(self) -> pg.TextItem:
         label = pg.TextItem(anchor=(0.5, 1), fill=pg.mkBrush(255, 255, 255, 220))

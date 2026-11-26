@@ -2,7 +2,8 @@
 
 ``OpticalModel`` owns the bench state (``raycrafter.core.state``) and the list of lenses
 that can be placed. It provides the editing operations: add, insert, delete, move and swap
-lenses, set and lock the air gaps between them, group lenses into assemblies (such as Plossl
+lenses, set and lock the air gaps between them (and from the source plane, where the beams
+are defined, to the first lens), group lenses into assemblies (such as Plossl
 pairs), flip them and save them as user parts (``raycrafter.core.user_parts``), add or
 remove fields, and undo and redo. It also gives access to the analyses
 (``raycrafter.core.analysis``), to saving and opening project files
@@ -159,9 +160,14 @@ class OpticalModel:
         """
         self._refuse_if_image_gap_locked("add a lens behind the last one")
         lenses = self.state.lenses
-        front_z = lenses[-1].back_z + LENS_GAP_MM if lenses else INITIAL_LENS_Z
+        if lenses:
+            front_z = lenses[-1].back_z + LENS_GAP_MM
+        else:
+            front_z = max(INITIAL_LENS_Z, self.lowest_first_front_z())
         new_lens = self.make_lens(part_number, front_z)
         lenses.append(new_lens)
+        if len(lenses) == 1:
+            self._keep_source_gap(0.0)  # a locked source plane starts at the first lens
         self.state.image_z = max(self.state.image_z, new_lens.back_z + IMAGE_CLEARANCE_MM)
         return new_lens
 
@@ -171,8 +177,8 @@ class OpticalModel:
         """The front-vertex z nearest the request at which a new lens fits without overlap.
 
         The free stretches of axis are the gaps between the lenses on the bench, plus the
-        stretch before the first lens (from FIRST_LENS_MIN_Z) and after the last one (up to
-        ``max_back_z``). A locked gap (such as the one inside a Plossl pair) is not free, as
+        stretch before the first lens (from ``lowest_first_front_z``) and after the last one
+        (up to ``max_back_z``). A locked gap (such as the one inside a Plossl pair) is not free, as
         a new lens would split it; nor is the stretch behind the last lens if the gap to the
         image plane is locked. A new lens may touch its neighbours, as a dragged lens may.
 
@@ -198,7 +204,7 @@ class OpticalModel:
             for members in gaps.blocks(self.state)
         ]
 
-        gap_starts = [FIRST_LENS_MIN_Z] + [block_back for _front, block_back in occupied]
+        gap_starts = [self.lowest_first_front_z()] + [back for _front, back in occupied]
         gap_ends = [block_front for block_front, _back in occupied] + [max_back_z]
         if lenses and self.state.image_gap_locked:
             gap_starts, gap_ends = gap_starts[:-1], gap_ends[:-1]
@@ -258,6 +264,8 @@ class OpticalModel:
         """
         lenses = self.state.lenses
         new_index = sum(1 for lens in lenses if lens.z < new_lenses[0].z)
+        if new_index == 0 and new_lenses[0].z < self.lowest_first_front_z() - 1e-9:
+            raise ValueError("A lens cannot go in front of the source plane or the axis start")
         if new_index == len(lenses):
             if lenses:
                 self._refuse_if_image_gap_locked("add a lens behind the last one")
@@ -269,7 +277,10 @@ class OpticalModel:
         if new_lenses[0].z < previous_back_z - 1e-9 or new_lenses[-1].back_z > next_front_z + 1e-9:
             raise ValueError("The new lenses would overlap a lens on the bench")
 
+        source_gap_mm = self._source_gap_mm()
         lenses[new_index:new_index] = new_lenses
+        if new_index == 0:
+            self._keep_source_gap(source_gap_mm)
         new_indices = list(range(new_index, new_index + len(new_lenses)))
         if len(new_lenses) > 1:
             assemblies.make_assembly(self.state, new_indices[0], new_indices[-1], assembly_name)
@@ -283,15 +294,20 @@ class OpticalModel:
     def delete_lens(self, lens_index: int) -> None:
         """Remove one lens, and the locks on the gaps either side of it.
 
-        Its assembly, if any, is dissolved; the other gaps inside it stay locked.
+        Its assembly, if any, is dissolved; the other gaps inside it stay locked. The gap
+        from the source plane is the exception: if it is locked, the source plane keeps the
+        same distance in front of whichever lens is now first.
         """
         assemblies.split_assembly(self.state, lens_index, unlock=False)
+        source_gap_mm = self._source_gap_mm()
         lenses = self.state.lenses
         if lens_index > 0:
             lenses[lens_index - 1].locked_to_next = False
         if lens_index == len(lenses) - 1:
             self.state.image_gap_locked = False
         del lenses[lens_index]
+        if lens_index == 0:
+            self._keep_source_gap(source_gap_mm)
 
     def flip_lens(self, lens_index: int) -> None:
         """Turn one lens around.
@@ -317,6 +333,64 @@ class OpticalModel:
         """Lock or unlock the gap behind a lens (see ``gaps.set_gap_locked``)."""
         gaps.set_gap_locked(self.state, lens_index, locked)
 
+    # ---------------------------------------------------------------- the source plane
+
+    def source_gap(self) -> gaps.AirGap | None:
+        """The gap from the source plane to the first lens (see ``gaps.source_gap``)."""
+        return gaps.source_gap(self.state)
+
+    def set_source_gap(self, gap_mm: float) -> None:
+        """Set the gap from the source plane to the first lens (see ``gaps.set_source_gap``)."""
+        gaps.set_source_gap(self.state, gap_mm)
+
+    def set_source_gap_locked(self, locked: bool) -> None:
+        """Lock or unlock the gap from the source plane to the first lens.
+
+        While it is locked the source plane moves with the first lens, keeping its distance.
+        """
+        self.state.source_gap_locked = locked
+
+    def set_source_z(self, source_z: float) -> None:
+        """Move the source plane, where every field is defined, to ``source_z`` (mm).
+
+        Raises
+        ------
+        ValueError
+            If the gap from the source plane is locked, or ``source_z`` is in front of the
+            start of the axis or behind the first lens.
+        """
+        if self.state.source_gap_locked:
+            raise ValueError("The gap from the source plane is locked: unlock it to move it")
+        highest_z = self.state.lenses[0].z if self.state.lenses else np.inf
+        if not AXIS_START_Z <= source_z <= highest_z + 1e-9:
+            raise ValueError(
+                f"The source plane must be between the start of the axis ({AXIS_START_Z:g} mm) "
+                f"and the first lens ({highest_z:g} mm)"
+            )
+        self.state.source_z = min(source_z, highest_z)
+
+    def lowest_first_front_z(self) -> float:
+        """The smallest z (mm) the front vertex of the first lens may have.
+
+        It must stay FIRST_LENS_MIN_Z from the start of the axis. With the source gap
+        unlocked it cannot pass the source plane; with it locked, the source plane, which
+        moves with it, cannot pass the start of the axis.
+        """
+        if self.state.source_gap_locked:
+            return max(FIRST_LENS_MIN_Z, AXIS_START_Z + self._source_gap_mm())
+        return max(FIRST_LENS_MIN_Z, self.state.source_z)
+
+    def _source_gap_mm(self) -> float:
+        """The gap from the source plane to the first lens (mm); 0 with no lenses."""
+        gap = gaps.source_gap(self.state)
+        return 0.0 if gap is None else gap.width_mm
+
+    def _keep_source_gap(self, source_gap_mm: float) -> None:
+        """After the first lens changed: with the source gap locked, put the source plane
+        ``source_gap_mm`` in front of the new first lens (if there is one)."""
+        if self.state.source_gap_locked and self.state.lenses:
+            self.state.source_z = self.state.lenses[0].z - source_gap_mm
+
     def _refuse_if_image_gap_locked(self, action: str) -> None:
         """Raise ValueError, saying the user cannot do ``action``, if the image gap is locked."""
         if self.state.lenses and self.state.image_gap_locked:
@@ -337,7 +411,8 @@ class OpticalModel:
         """Move a lens (and its block) so this lens's front vertex is near the request.
 
         The block is the lenses joined to this one by locked gaps (``block_indices``), which
-        move as one. If the request carries the block's centre past the centre of the
+        move as one. The first lens cannot pass ``lowest_first_front_z``, and with the source
+        gap locked the source plane moves with it. If the request carries the block's centre past the centre of the
         neighbouring block, the two swap places (see ``swap_neighbouring_blocks``).
         Otherwise the block stays between its neighbours (nothing overlaps), the first lens
         stays to the right of the start of the axis, and the last lens stays before the
@@ -369,7 +444,7 @@ class OpticalModel:
                 return self.swap_neighbouring_blocks(left_members, members)
 
         block_width = lenses[last].back_z - lenses[first].z
-        lowest_front_z = lenses[first - 1].back_z if first > 0 else FIRST_LENS_MIN_Z
+        lowest_front_z = lenses[first - 1].back_z if first > 0 else self.lowest_first_front_z()
         image_moves_too = is_last_block and self.state.image_gap_locked
         if image_moves_too:
             next_front_z = np.inf
@@ -388,6 +463,8 @@ class OpticalModel:
             lenses[index].z += shift
         if image_moves_too:
             self.state.image_z += shift
+        if first == 0 and self.state.source_gap_locked:
+            self.state.source_z += shift  # the source plane moves with the first lens
         return None
 
     def swap_neighbouring_blocks(

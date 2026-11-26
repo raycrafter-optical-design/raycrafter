@@ -122,21 +122,21 @@ class PlacedLens:
 class BeamField:
     """One beam of light entering the bench from the left (a "field").
 
-    The beam is defined where it meets the plane of the first lens's front vertex (or the
-    start of the axis when there are no lenses): there it is ``diameter_mm`` wide and its
-    centre is ``offset_mm`` above the axis. Moving the first lens therefore carries the
-    beam's aim with it, as it always has for the beam angle.
+    The beam is defined where it crosses the source plane (``OpticalState.source_z``): there
+    it is ``diameter_mm`` wide, its centre is ``offset_mm`` above the axis, and it travels
+    at ``angle_deg`` with ``vergence_dioptres``. By default the source plane is at the first
+    lens's front vertex and moves with it.
 
     Attributes
     ----------
     diameter_mm : float
-        Beam diameter at the first lens.
+        Beam diameter at the source plane.
     angle_deg : float
         Angle of the beam's central ray to the axis, in degrees (positive rises).
     vergence_dioptres : float
         Dioptres (1/m): positive is converging, negative diverging, zero collimated.
     offset_mm : float
-        Height of the beam centre above the axis at the first lens.
+        Height of the beam centre above the axis at the source plane.
     wavelength_nm : float
         Wavelength the beam is traced at.
     colour : str or None
@@ -258,6 +258,14 @@ class OpticalState:
     image_gap_locked : bool
         True if the gap from the last lens to the image plane is locked: the image plane then
         moves with the last lens, and cannot be moved on its own (e.g. by autofocus).
+    source_z : float
+        z of the source plane, where every field is defined (see ``BeamField``), in mm. It
+        could be a light source, a scan mirror or a stop. It is never behind the first lens
+        or in front of the start of the axis.
+    source_gap_locked : bool
+        True (the default) if the gap from the source plane to the first lens is locked:
+        the source plane then stays that far in front of whichever lens is first, and moves
+        with it. With the gap at 0 mm, the beams are defined at the first lens.
     imported_from : ImportedSource or None
         The file the design was imported from, if it was; editing leaves it unchanged.
     """
@@ -269,6 +277,8 @@ class OpticalState:
     selected_field_index: int = 0
     image_z: float = 310.0
     image_gap_locked: bool = False
+    source_z: float = AXIS_START_Z
+    source_gap_locked: bool = True
     imported_from: ImportedSource | None = None
 
     @property
@@ -300,9 +310,14 @@ class OpticalState:
         return current != replace(self.imported_from.imported_design, selected_field_index=0)
 
     def beam_reference_z(self) -> float:
-        """z of the plane where each field's diameter and offset are defined (mm).
+        """z of the plane where each field is defined (mm): the source plane."""
+        return self.source_z
 
-        This is the front vertex of the first lens, or the start of the axis with no lenses.
+    def first_surface_z(self) -> float:
+        """z of the optical system's first surface (mm), where Optiland's z is anchored.
+
+        This is the front vertex of the first lens, or the start of the axis with no lenses
+        (see ``optic_builder``).
         """
         return self.lenses[0].z if self.lenses else AXIS_START_Z
 
