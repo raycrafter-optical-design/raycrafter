@@ -8,6 +8,10 @@ const FIELD_OF_VIEW_DEG = 30;   // horizontal
 const FIT_MARGIN = 1.08;        // room left round the scene when a view is chosen
 const MAX_ELEVATION_DEG = 89.9; // straight down would leave "which way is up?" undecided
 
+// Where the user left the camera, kept for this tab, so that reloading the page (as the live
+// report does after each change) does not move it.
+const CAMERA_KEY = 'raycrafter-camera:' + location.pathname;
+
 const box = document.getElementById('viewer3d');
 const message = document.getElementById('viewer3d-message');
 const data = JSON.parse(document.getElementById('scene-data').textContent);
@@ -67,8 +71,13 @@ function show() {
   const render = () => renderer.render(scene, camera);
   controls.addEventListener('change', render);
 
+  // The standard view last chosen, or null once the user has moved the camera by hand.
+  let chosenView = '3D';
+  controls.addEventListener('start', () => { chosenView = null; });
+
   // Look from one of the standard views, as far away as it takes to see the whole bounding box.
   function setView(name) {
+    chosenView = name;
     const [azimuth, elevation] = data.views[name].map(THREE.MathUtils.degToRad);
     const limit = THREE.MathUtils.degToRad(MAX_ELEVATION_DEG);
     const height = Math.min(elevation, limit);
@@ -103,8 +112,30 @@ function show() {
     render();
   }
 
+  function saveCamera() {
+    sessionStorage.setItem(CAMERA_KEY, JSON.stringify({
+      view: chosenView, position: camera.position.toArray(), target: controls.target.toArray(),
+    }));
+  }
+
+  // A standard view is fitted afresh, as the design may have changed; a camera moved by hand
+  // is put back exactly.
+  function restoreCamera() {
+    const saved = JSON.parse(sessionStorage.getItem(CAMERA_KEY));
+    if (!saved || saved.view) {
+      setView(saved ? saved.view : '3D');
+      return;
+    }
+    chosenView = null;
+    camera.position.fromArray(saved.position);
+    controls.target.fromArray(saved.target);
+    controls.update();
+    render();
+  }
+
   resize();
-  setView('3D');
+  restoreCamera();
+  window.addEventListener('pagehide', saveCamera);
   new ResizeObserver(resize).observe(box);
   document.querySelectorAll('[data-view]').forEach(button => {
     button.addEventListener('click', () => setView(button.dataset.view));

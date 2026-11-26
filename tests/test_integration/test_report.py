@@ -4,7 +4,11 @@ import base64
 import json
 import re
 
+import pytest
+
+from raycrafter.core.state import state_to_dict
 from raycrafter.report import build_report_html, viewer_3d
+from raycrafter.report.report_process import ReportProcess
 
 
 def test_report_contains_every_plot(focused_model):
@@ -59,3 +63,37 @@ def test_a_part_name_cannot_end_a_script_early(focused_model):
     page = build_report_html(focused_model)
     scene = script_data(page, '<script id="scene-data" type="application/json">')
     assert "</script><b>lens" in [item["name"] for item in scene["objects"]]
+
+
+def test_the_report_process_builds_the_report_of_the_design_it_is_sent(focused_model):
+    """A real worker process (issue #68): it builds, survives a bad request, and stops."""
+    report_process = ReportProcess()
+    try:
+        page = report_process(state_to_dict(focused_model.state))
+        assert "ACT508-200-A" in page and 'id="viewer3d"' in page
+        worker = report_process._process
+
+        with pytest.raises(RuntimeError, match="KeyError"):
+            report_process({"nonsense": 1})
+        focused_model.delete_lens(0)
+        assert "There is no lens" in report_process(state_to_dict(focused_model.state))
+        assert report_process._process is worker  # one worker is kept
+
+        worker.kill()  # as if it had crashed: the next report starts another
+        worker.wait(5.0)
+        assert "There is no lens" in report_process(state_to_dict(focused_model.state))
+        worker = report_process._process
+    finally:
+        report_process.close()
+    assert worker.poll() is not None
+
+
+def test_the_report_worker_ends_when_its_input_does():
+    """When RayCrafter closes the pipe, or is killed, which closes it too, the worker ends."""
+    report_process = ReportProcess()
+    worker = report_process._start()
+    try:
+        worker.stdin.close()
+        assert worker.wait(60.0) == 0
+    finally:
+        report_process.close()

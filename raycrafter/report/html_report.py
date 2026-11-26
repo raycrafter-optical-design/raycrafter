@@ -5,7 +5,8 @@ round (``raycrafter.report.viewer_3d``), and the five analysis plots below them 
 diagram, through-focus, MTF, ray fan, field curvature), with a row of summary tiles. Every
 plot has a "?" button that opens a note explaining how to read it. Plots are inline SVG and
 the style sheet and scripts (in ``assets``) are copied into the page, so the result is a
-single HTML file that can be shared, and needs no other files or internet connection.
+single HTML file that can be shared, and needs no other files or internet connection. The
+app shows it as a page that updates itself (``raycrafter.report.live_report``).
 
 Example
 -------
@@ -17,10 +18,7 @@ Example
 from __future__ import annotations
 
 import html
-import tempfile
-import webbrowser
 from datetime import datetime
-from pathlib import Path
 
 from raycrafter.core.analysis import airy_radius
 from raycrafter.core.fields import chief_ray_angle_deg
@@ -33,7 +31,7 @@ from raycrafter.core.plot_geometry import (
     magnification_text,
     rms_radius_text,
 )
-from raycrafter.core.state import AnyField, ObjectPoint
+from raycrafter.core.state import AnyField, ObjectPoint, state_from_dict
 from raycrafter.report import figures, viewer_3d
 from raycrafter.report.explanations import EXPLANATIONS
 from raycrafter.report.viewer_3d import json_for_script, read_asset
@@ -89,6 +87,37 @@ def field_html(field_index: int, light: AnyField) -> str:
         if light.offset_mm != 0.0:
             text += f", offset {light.offset_mm:+g} mm"
     return f'<span style="color:{light.display_colour()}">{html.escape(text)}</span>'
+
+
+def message_html(message: str) -> str:
+    """A page in the report's style that only says why there is no report (yet)."""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lens system report</title>
+<style>{read_asset("report.css")}</style>
+</head>
+<body>
+<main>
+  <header><h1>Lens system report</h1><p class="when">{html.escape(message)}</p></header>
+</main>
+</body>
+</html>
+"""
+
+
+def build_report_from_data(state_data: dict) -> str:
+    """The report of a design given as ``state_to_dict`` data, e.g. sent from another process.
+
+    With no lens on the bench, the page only says so.
+    """
+    state = state_from_dict(state_data)
+    if not state.lenses:
+        return message_html("There is no lens on the bench: add one to see its report.")
+    model = OpticalModel(catalog={}, add_default_lens=False)  # no catalogue is needed
+    model.state = state
+    return build_report_html(model)
 
 
 def build_report_html(model: OpticalModel) -> str:
@@ -242,19 +271,3 @@ def build_report_html(model: OpticalModel) -> str:
 </body>
 </html>
 """
-
-
-def write_and_open_report(model: OpticalModel) -> Path:
-    """Save the report to the temp folder with a time-stamped name and open it in the browser.
-
-    Returns
-    -------
-    pathlib.Path
-        Where the report was written.
-    """
-    report_path = (
-        Path(tempfile.gettempdir()) / f"raycrafter_report_{datetime.now():%Y%m%d_%H%M%S}.html"
-    )
-    report_path.write_text(build_report_html(model), encoding="utf-8")
-    webbrowser.open(report_path.as_uri())
-    return report_path

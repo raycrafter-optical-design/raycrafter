@@ -20,6 +20,8 @@
   New, Open, Save, Save As, Save Without Original ZMX, Import ZMX and Export ZMX. New, Open,
   Import and Quit ask first if the design has changed since it was last saved, opened or
   imported.
+- "Generate report" opens the report in the web browser, where it stays up to date
+  (``raycrafter.gui.report_actions``).
 - View > Show 3D View opens a window showing the bench in 3D (``raycrafter.gui.view_3d``),
   brought up to date with the slower plots, once nothing is being dragged.
 - The Edit menu has Undo and Redo. One action (a whole drag, a typed value) is one step; New,
@@ -95,10 +97,10 @@ from raycrafter.gui.file_actions import FileActions
 from raycrafter.gui.gap_optimiser import GapOptimiser
 from raycrafter.gui.lens_picker import LensPickerDialog
 from raycrafter.gui.lens_replacement import LensReplacer
+from raycrafter.gui.report_actions import ReportActions
 from raycrafter.gui.side_view import SideView
 from raycrafter.gui.style import style_sheet
 from raycrafter.gui.undo_keys import leave_undo_keys_to_window
-from raycrafter.report import write_and_open_report
 
 if TYPE_CHECKING:
     from raycrafter.gui.view_3d import View3DWindow
@@ -146,6 +148,7 @@ class MainWindow(QMainWindow):
         self.files = FileActions(self)  # the File menu
         self.replacer = LensReplacer(self)  # the lens menu's replace actions
         self.gap_optimiser = GapOptimiser(self)  # the gap menu's optimise actions
+        self.reports = ReportActions(self)  # "Generate report", kept up to date
         self._build_widgets()
         self._build_menus()
         self._connect_signals()
@@ -245,6 +248,9 @@ class MainWindow(QMainWindow):
         self.add_field_button = QPushButton("Add field")
         self.add_field_button.setToolTip("Open the field window to add, remove and edit beams")
         self.report_button = QPushButton("Generate report")
+        self.report_button.setToolTip(
+            "Open a report in your web browser; the page updates as the design changes"
+        )
         self.view_bench_button = QPushButton("View bench")
         self.view_bench_button.setToolTip(
             "List the lenses and fields with the numbers scripts and AI agents use for them"
@@ -771,21 +777,17 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         """Closing the window (or Quit) asks first if there are unsaved changes."""
         if self.files.confirm_discard_changes("quitting"):
+            self.reports.stop()
             event.accept()
         else:
             event.ignore()
 
     def generate_report(self) -> None:
-        """Write an HTML report of the current system and open it in the web browser."""
+        """Open the report in the web browser (see ``raycrafter.gui.report_actions``)."""
         if not self.model.state.lenses:
             self.statusBar().showMessage("Add a lens before generating a report", 5000)
             return
-        try:
-            report_path = write_and_open_report(self.model)
-        except Exception as error:  # show any problem instead of crashing the GUI
-            QMessageBox.critical(self, "Report failed", f"Could not generate the report:\n{error}")
-            return
-        self.statusBar().showMessage(f"Report written to {report_path}", 8000)
+        self.reports.open_report()
 
     def on_lock_focus_toggled(self, locked: bool) -> None:
         """Lock focus on: the image plane follows best focus and cannot be dragged."""
@@ -906,6 +908,7 @@ class MainWindow(QMainWindow):
         """Recompute the slower plots (run once changes have settled) and un-fade them."""
         if self.is_dragging():
             return  # they are recomputed when the drag ends
+        self.reports.design_settled()
         self.refresh_3d_view()
         self.update_mtf_tab()
         state = self.model.state

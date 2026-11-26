@@ -11,6 +11,7 @@ from PyQt6.QtGui import QDesktopServices, QWheelEvent  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QFileDialog, QListView, QMessageBox  # noqa: E402
 
+from raycrafter.gui import report_actions  # noqa: E402
 from raycrafter.gui.about_dialog import DOCS_URL, PROJECT_URL, AboutDialog  # noqa: E402
 from raycrafter.gui.analysis_panels import MtfPanel  # noqa: E402
 from raycrafter.gui.gap_optimiser import Choice  # noqa: E402
@@ -1285,3 +1286,62 @@ def test_the_3d_view_follows_the_bench_once_changes_settle(application):
     window.view_3d_action.trigger()  # opening it again brings it up to date
     assert len([item for item in view.scene.objects if item.kind == "lens"]) == 1
     window.close()
+
+
+class QuickReport:
+    """Stands in for the report process: no second Python is started."""
+
+    def __call__(self, design: dict) -> str:
+        names = ", ".join(lens["part_number"] for lens in design["lenses"])
+        return f"<html><body>lenses: {names}</body></html>"
+
+    def close(self) -> None:
+        pass
+
+
+def test_generate_report_opens_one_page_that_follows_the_design(application, monkeypatch):
+    """Issue #68: the report page updates itself, and the button opens no second tab."""
+    opened = []
+    monkeypatch.setattr(report_actions, "ReportProcess", QuickReport)
+    monkeypatch.setattr(report_actions.webbrowser, "open", opened.append)
+    window = MainWindow()
+    window.report_button.click()
+    reports = window.reports
+    assert opened == [reports.server.url]
+
+    def shown() -> str:
+        return reports.live_report.latest()[1]
+
+    def wait_until(condition) -> None:
+        for _ in range(500):
+            if condition():
+                return
+            QTest.qWait(10)
+        raise AssertionError("timed out")
+
+    wait_until(lambda: "lenses: ACT508-200-A" in shown())
+
+    with reports.live_report.watching():  # the page is open in the browser
+        window.report_button.click()
+        assert len(opened) == 1
+        assert "updates itself" in window.statusBar().currentMessage()
+
+        # Nothing is handed over during a drag; the change arrives once it ends.
+        window.model.add_lens("LA1509-A")
+        window.is_dragging = lambda: True
+        window.show_new_design()
+        window.recompute_and_redraw()
+        window.update_slow_plots()
+        assert reports.live_report._design_revision == 1
+        del window.is_dragging
+        window.update_slow_plots()
+        assert reports.live_report._design_revision == 2
+
+    window.report_button.click()  # the tab was closed, and the report is wanted again
+    assert len(opened) == 2
+
+    server = reports.server
+    window.close()
+    assert window.reports.server is None
+    with pytest.raises(RuntimeError, match="not running"):
+        server.url
