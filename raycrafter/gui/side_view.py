@@ -4,8 +4,10 @@ Each field's rays are drawn in the field's colour.
 
 Lenses and the image plane can be dragged along the axis. Hovering a lens darkens it and
 shows its part number; that lens is the target of the right-click menu and the keyboard
-shortcuts (handled by the main window). The view edits the model directly when something
-is dragged, then emits ``changed`` so the main window recomputes and redraws.
+shortcuts (handled by the main window). Clicking a lens selects it (it stays dark), so
+that its settings can be edited in the context bar; clicking empty space clears that.
+The view edits the model directly when something is dragged, then emits ``changed`` so the
+main window recomputes and redraws.
 
 To insert a lens (or a user part), the main window calls ``start_placement``: a dashed ghost
 of the lens then
@@ -20,7 +22,12 @@ hover, as one. While the gap to the image plane is locked, the image line cannot
 The source plane, where every field is defined, is a dashed line captioned "source". While
 its gap to the first lens is locked (the default, at 0 mm) it moves with the first lens;
 right-clicking its caption unlocks it, and it can then be dragged or its gap typed. The
-dimension of that gap is left out while it is locked at 0 mm, as it says nothing then.
+dimension of that gap is left out while it is locked at 0 mm, as it says nothing then. When
+the fields are points of a finite object, the source plane is the object plane and is
+captioned "object" instead.
+
+The axes have no titles: a small glyph in the bottom-left corner (``raycrafter.gui.axis_glyph``)
+shows that z runs right and y up, and every length on the bench is in mm.
 
 A paraxial (ideal thin) lens is drawn as a line with arrowheads. It has no thickness, so it
 can be hovered and dragged a few pixels either side of its line.
@@ -43,8 +50,10 @@ from raycrafter.core.plot_geometry import (
     IMAGE_EDGE_GAP_MM,
     axis_ranges,
     ray_polylines,
+    source_caption,
 )
 from raycrafter.core.state import AXIS_START_Z, PlacedLens
+from raycrafter.gui.axis_glyph import AxisGlyph
 from raycrafter.gui.gap_dimensions import EDITABLE, FIXED, LOCKED, GapDimensions, GapEditor
 from raycrafter.gui.lens_shapes import (
     LENS_NAME_TRIM_PX,
@@ -60,10 +69,11 @@ from raycrafter.gui.style import PLOT_BOTTOM_GAP_PX, join_with_gaps, scaled_font
 SIDE_PLOT_MIN_HEIGHT_PX = 240  # the side view is never squeezed below this height
 SIDE_PLOT_TOP_GAP_PX = 8  # space between the top edge and the top of the y axis
 SIDE_GRID_CELL_PX = 40  # grid cells are this many screen pixels on each side
-TIMING_FONT_SCALE = 2 / 3  # timing text is this fraction of the axis number size
+TIMING_EDGE_GAP_PX = 7  # timings sit this far from the top and right edges
+TIMING_FONT_SCALE = 2 / 3  # timing text is this fraction of the default axis number size
+TICK_FONT_SCALE = 0.9  # the axis numbers are a little smaller than the default
 LENS_NAME_GAP_PX = 3  # gap between the top of a lens and its name tag
 LENS_NAME_FONT_SCALE = 0.9  # name tag text is this fraction of the default text size
-PLOSSL_PREVIEW_PAD_MM = 1.5  # margin of the dashed rectangle round a proposed Plossl pair
 IMAGE_HOVER_TOLERANCE_PX = 6  # a pointer this close to the image line counts as over it
 GHOST_Z_VALUE = 80  # the ghost is drawn above the lenses on the bench
 RAY_WIDTH_PX = 1.3
@@ -92,6 +102,8 @@ class SideView(pg.PlotWidget):
         Placing a lens ended: True if it was put on the bench, False if cancelled.
     drag_finished
         The mouse was released after dragging a lens or the image plane.
+    lens_selected(object)
+        The selected lens changed: its index, or None when no lens is selected.
     """
 
     changed = pyqtSignal()
@@ -100,15 +112,19 @@ class SideView(pg.PlotWidget):
     placement_finished = pyqtSignal(bool)
     drag_finished = pyqtSignal()
     message_requested = pyqtSignal(str)
+    lens_selected = pyqtSignal(object)
 
     def __init__(self, model: OpticalModel) -> None:
         super().__init__()
         self.model = model
         self.lens_graphics: list[LensGraphics] = []  # one entry per lens in the model
         self.hovered_index: int | None = None  # lens under the pointer
+        self.selected_index: int | None = None  # lens last clicked (see set_selected_lens)
         # The lens and field picked in the bench viewer, drawn highlighted (see set_highlight).
         self.highlighted_lens_index: int | None = None
         self.highlighted_field_index: int | None = None
+        # True while the field editor is shown: the selected field's rays are drawn thick.
+        self.selected_field_in_bold = False
         self.image_line_locked = False  # True while "Lock focus" sets the image plane
         # True while the image line cannot be dragged: "Lock focus" is on or the gap to the
         # image plane is locked (see update_image_line_movable).
@@ -118,14 +134,20 @@ class SideView(pg.PlotWidget):
         )
 
         self.placement: Placement | None = None  # set while new lenses follow the pointer
+        self.last_placed_lenses: list[PlacedLens] = []  # put on the bench by the last click
         self.gap_editor: GapEditor | None = None  # set while a gap is being typed
 
         # The (min, max) of each axis, in mm; changed only by fit_to_design.
         self.z_range: tuple[float, float] = DEFAULT_AXIS_Z_RANGE
         self.y_range: tuple[float, float] = DEFAULT_AXIS_Y_RANGE
 
-        style_plot(self, x_label="z (mm)", y_label="y (mm)")
+        # No axis titles: the small glyph in the corner (AxisGlyph) shows which way z and y
+        # run, and every length on the bench is in mm. The titles took a lot of room.
+        style_plot(self)
         side = self.getPlotItem()
+        side.getAxis("bottom").showLabel(False)
+        side.getAxis("left").showLabel(False)
+        self.tick_fonts_scaled = False  # see showEvent
         # With no title the y axis would run right up to the top border; a few pixels of top
         # margin keep the plot visibly inside the frame.
         side.layout.setContentsMargins(0, SIDE_PLOT_TOP_GAP_PX, 0, PLOT_BOTTOM_GAP_PX)
@@ -139,6 +161,8 @@ class SideView(pg.PlotWidget):
 
         side.vb.sigResized.connect(self.update_grid)
         side.vb.sigResized.connect(self.on_view_resized)
+        side.vb.sigResized.connect(self.axis_glyph.place)
+        side.vb.sigResized.connect(self.place_timing_label)  # it is placed in screen pixels
         self.image_line.sigPositionChanged.connect(self.on_image_dragged)
         # The signal passes the line itself; drag_finished takes no arguments.
         self.image_line.sigPositionChangeFinished.connect(lambda _line: self.drag_finished.emit())
@@ -152,7 +176,7 @@ class SideView(pg.PlotWidget):
         self.viewport().installEventFilter(self)
 
     def _add_items(self, side: pg.PlotItem) -> None:
-        """Create the grid, rays, image line, captions and Plossl preview outline."""
+        """Create the grid, rays, image line, captions and lens name tag."""
         # Square grid: drawn by hand (not with showGrid) so its cells stay square on screen
         # even though the z and y axes cover very different distances in mm.
         self.grid_curve = pg.PlotCurveItem(
@@ -160,6 +184,8 @@ class SideView(pg.PlotWidget):
         )
         self.grid_curve.setZValue(-10)  # behind the lenses and rays
         side.addItem(self.grid_curve)
+
+        self.axis_glyph = AxisGlyph(side)
 
         self.ray_curves: list[pg.PlotCurveItem] = []  # one per field, made in update_view
         self.gap_dimensions = GapDimensions(side)
@@ -197,14 +223,6 @@ class SideView(pg.PlotWidget):
         self.place_timing_label()
         self.timing_label.setZValue(50)
         side.addItem(self.timing_label, ignoreBounds=True)
-
-        # Dashed red rectangle shown while "Make Plossl" is highlighted in the lens menu.
-        self.plossl_preview_curve = pg.PlotCurveItem(
-            pen=pg.mkPen(palette.PLOSSL_PREVIEW, width=2, style=Qt.PenStyle.DashLine)
-        )
-        self.plossl_preview_curve.setZValue(60)
-        self.plossl_preview_curve.hide()
-        side.addItem(self.plossl_preview_curve, ignoreBounds=True)
 
         # Lens name tag: centred just above the hovered lens, text a little smaller than default.
         self.name_tag = LensNameTag()
@@ -251,6 +269,7 @@ class SideView(pg.PlotWidget):
         self.lens_graphics = []
         self.hovered_index = None
         self.highlighted_lens_index = None  # the lens list changed, so the index may be wrong
+        self.set_selected_lens(None)  # likewise
 
         side = self.getPlotItem()
         for lens in self.model.state.lenses:
@@ -293,12 +312,19 @@ class SideView(pg.PlotWidget):
         self.update_gap_dimensions()
 
     def restyle_ray_curves(self) -> None:
-        """Draw each field's rays in its colour, thicker (and on top) if it is highlighted."""
+        """Draw each field's rays in its colour, thicker (and on top) if it is highlighted in
+        the bench viewer, or is the selected field while the field editor is shown."""
+        bold_index = self.model.state.selected_field_index if self.selected_field_in_bold else None
         for index, (beam, curve) in enumerate(zip(self.model.state.fields, self.ray_curves)):
-            highlighted = index == self.highlighted_field_index
+            highlighted = index in (self.highlighted_field_index, bold_index)
             width = HIGHLIGHTED_RAY_WIDTH_PX if highlighted else RAY_WIDTH_PX
             curve.setPen(pg.mkPen(beam.display_colour(), width=width))
             curve.setZValue(1 if highlighted else 0)
+
+    def show_selected_field_in_bold(self, bold: bool) -> None:
+        """Draw the selected field's rays thick (as it changes), or stop doing so."""
+        self.selected_field_in_bold = bold
+        self.restyle_ray_curves()
 
     def set_highlight(self, lens_index: int | None, field_index: int | None) -> None:
         """Highlight a lens (drawn as if hovered) and a field (thicker rays); None for neither."""
@@ -394,7 +420,8 @@ class SideView(pg.PlotWidget):
         if gap.in_assembly:
             return "The gaps inside an assembly are fixed: split it to change them"
         if gap.from_source and gap.locked:
-            return 'The gap from the source plane is locked: right-click "source" to unlock it'
+            caption = source_caption(self.model.state)
+            return f'The gap from the source plane is locked: right-click "{caption}" to unlock it'
         if gap.locked:
             return "This gap is locked: right-click it to unlock it"
         if gap.to_image and self.image_line_locked:
@@ -441,34 +468,22 @@ class SideView(pg.PlotWidget):
             return
         self.changed.emit()
 
-    # ------------------------------------------------------------------ Plossl preview
-
-    def show_plossl_preview(self, lens_index: int) -> None:
-        """Outline, dashed red, the lens and the neighbour it would form a Plossl pair with."""
-        partner_index = self.model.plossl_partner(lens_index)
-        if partner_index is None:
-            return
-        lenses = self.model.state.lenses
-        pair = [lenses[lens_index], lenses[partner_index]]
-        z_low = min(lens.z for lens in pair) - PLOSSL_PREVIEW_PAD_MM
-        z_high = max(lens.back_z for lens in pair) + PLOSSL_PREVIEW_PAD_MM
-        half_height = max(lens.semi_aperture for lens in pair) + PLOSSL_PREVIEW_PAD_MM
-
-        self.plossl_preview_curve.setData(
-            [z_low, z_high, z_high, z_low, z_low],
-            [-half_height, -half_height, half_height, half_height, -half_height],
-        )
-        self.plossl_preview_curve.show()
-
-    def hide_plossl_preview(self) -> None:
-        """Remove the dashed Plossl rectangle."""
-        self.plossl_preview_curve.hide()
-
     def showEvent(self, event) -> None:
-        """Once shown, size the timing text at 2/3 of the axis numbers (set by the style sheet)."""
+        """Once shown, shrink the axis numbers and size the timing text to match.
+
+        The default axis font is only known once the style sheet has been applied, i.e. when
+        the view is first shown. The numbers are scaled once; the timing text is 2/3 of the
+        default size.
+        """
         super().showEvent(event)
-        axis_font = self.getPlotItem().getAxis("bottom").style["tickFont"] or self.viewport().font()
-        self.timing_label.setFont(scaled_font(QFont(axis_font), TIMING_FONT_SCALE))
+        side = self.getPlotItem()
+        axis_font = QFont(side.getAxis("bottom").style["tickFont"] or self.viewport().font())
+        if not self.tick_fonts_scaled:
+            for axis_name in ("bottom", "left"):
+                side.getAxis(axis_name).setStyle(tickFont=scaled_font(axis_font, TICK_FONT_SCALE))
+            self.tick_fonts_scaled = True
+            self.timing_label.setFont(scaled_font(axis_font, TIMING_FONT_SCALE))
+        self.axis_glyph.place()
 
     # ------------------------------------------------------------- hover and colours
 
@@ -491,11 +506,11 @@ class SideView(pg.PlotWidget):
 
     def lens_colour(self, index: int) -> str:
         """Blue (purple in an assembly); darker when it, or a lens joined to it by locked
-        gaps, is under the pointer or highlighted in the bench viewer."""
+        gaps, is under the pointer, selected or highlighted in the bench viewer."""
         in_assembly = self.model.state.lenses[index].assembly_id is not None
         # Lenses joined by locked gaps move as one, so they are highlighted as one.
         darkened = []
-        for marked_index in (self.hovered_index, self.highlighted_lens_index):
+        for marked_index in (self.hovered_index, self.selected_index, self.highlighted_lens_index):
             if marked_index is not None and marked_index < len(self.model.state.lenses):
                 darkened += self.model.block_indices(marked_index)
         if index in darkened:
@@ -507,6 +522,15 @@ class SideView(pg.PlotWidget):
         for index, (lens, graphics) in enumerate(zip(self.model.state.lenses, self.lens_graphics)):
             graphics.update(lens, self.lens_colour(index))
         self.place_name_tag()
+
+    def set_selected_lens(self, lens_index: int | None) -> None:
+        """Select a lens (None: no lens), redraw the colours and emit ``lens_selected``."""
+        if lens_index == self.selected_index:
+            return
+        self.selected_index = lens_index
+        if len(self.lens_graphics) == len(self.model.state.lenses):
+            self.refresh_lens_colours()
+        self.lens_selected.emit(lens_index)
 
     def set_hovered_lens(self, lens_index: int | None) -> None:
         """Remember which lens the pointer is over and recolour the lenses if that changed."""
@@ -598,6 +622,9 @@ class SideView(pg.PlotWidget):
         has_lenses = bool(state.lenses)
         self.source_line.setVisible(has_lenses)
         self.source_label.setVisible(has_lenses)
+        caption = source_caption(state)
+        if self.source_label.toPlainText() != caption:
+            self.source_label.setText(caption)
         self.source_line.blockSignals(True)
         self.source_line.setValue(state.source_z)
         self.source_line.blockSignals(False)
@@ -623,11 +650,12 @@ class SideView(pg.PlotWidget):
         y_span = self.y_range[1] - self.y_range[0]
         self.image_label.setPos(self.image_line.value(), self.y_range[1] - 0.01 * y_span)
 
-    def place_timing_label(self) -> None:
-        """Put the trace and draw timings just inside the top-right corner of the plot."""
-        z_span = self.z_range[1] - self.z_range[0]
-        y_span = self.y_range[1] - self.y_range[0]
-        self.timing_label.setPos(self.z_range[1] - 0.01 * z_span, self.y_range[1] - 0.04 * y_span)
+    def place_timing_label(self, *_args) -> None:
+        """Put the trace and draw timings in the top-right corner of the frame, as far from
+        its top edge as from its right one (on screen)."""
+        corner = self.mapToScene(self.viewport().rect().topRight())
+        corner_in_view = QPointF(corner.x() - TIMING_EDGE_GAP_PX, corner.y() + TIMING_EDGE_GAP_PX)
+        self.timing_label.setPos(self.getPlotItem().vb.mapSceneToView(corner_in_view))
 
     def on_hover(self, scene_position: QPointF) -> None:
         """Track the lens under the pointer; show a left/right arrow over anything draggable.
@@ -725,7 +753,8 @@ class SideView(pg.PlotWidget):
         self.place_name_tag()
 
     def on_scene_clicked(self, event) -> None:
-        """A left click types a gap, or while placing puts the lenses where their ghost is."""
+        """A left click types a gap or selects a lens; while placing, it puts the new lenses
+        where their ghost is."""
         if event.button() != Qt.MouseButton.LeftButton:
             return
         placement = self.placement
@@ -736,17 +765,29 @@ class SideView(pg.PlotWidget):
                 # moving at the end of the release otherwise reached the new box as a
                 # focus-out, which accepts and closes it at once.
                 QTimer.singleShot(0, lambda: self.open_gap_editor(gap))
+                return
+            view_point = self.getPlotItem().vb.mapSceneToView(event.scenePos())
+            self.set_selected_lens(self.lens_index_at(view_point))
             return
         self.move_ghost(placement, event.scenePos())  # the ghost may lag a fast click
         if not (placement.fits and placement.is_visible()):
             return
         self._end_placement(placement)
+        self.last_placed_lenses = placement.lenses
         self.model.insert_lenses(
             placement.lenses, max_image_z=self.image_max_z(), assembly_name=placement.assembly_name
         )
         self.rebuild_lens_graphics()
         self.changed.emit()
         self.placement_finished.emit(True)
+
+    def update_ghost_lenses(self, new_lenses: list[PlacedLens]) -> None:
+        """Swap the lenses being placed for ones of the same kind (e.g. a new focal length)."""
+        if self.placement is None:
+            return
+        self.placement.lenses = new_lenses
+        self.placement.draw()
+        self.place_name_tag()
 
     def cancel_placement(self) -> None:
         """Stop placing a lens without adding it (Escape or right click)."""
@@ -823,6 +864,8 @@ class SideView(pg.PlotWidget):
             # so the item being dragged keeps showing the lens it belongs to.
             self.lens_graphics = [self.lens_graphics[old_index] for old_index in new_order]
             self.hovered_index = new_order.index(index)
+            if self.selected_index is not None:
+                self.selected_index = new_order.index(self.selected_index)
             if self.highlighted_lens_index is not None:
                 self.highlighted_lens_index = new_order.index(self.highlighted_lens_index)
         self.changed.emit()

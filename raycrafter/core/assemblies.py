@@ -5,7 +5,8 @@ An assembly is a named run of two or more neighbouring lenses that share an
 moves as one block (``raycrafter.core.gaps``). It can be flipped as a whole, which reverses
 the order of its lenses and turns each one round, and it can be saved as a user part
 (``raycrafter.core.user_parts``) to be inserted again later. A Plossl pair is an assembly
-named PLOSSL_NAME. It has no Qt code.
+named PLOSSL_NAME (see ``raycrafter.core.plossl``, which makes them). Flipping a single lens
+(``flip_lens``) is here too. It has no Qt code.
 """
 
 from __future__ import annotations
@@ -142,3 +143,22 @@ def flip_assembly(state: OpticalState, lens_index: int) -> list[int]:
     for index in members:
         lenses[index].locked_to_next = index < last or gap_after_locked
     return list(range(first)) + members[::-1] + list(range(last + 1, len(lenses)))
+
+
+def flip_lens(state: OpticalState, lens_index: int) -> None:
+    """Turn one lens around.
+
+    Lenses in an assembly cannot be flipped on their own (see ``flip_assembly``), and a
+    paraxial lens is the same both ways round, so neither changes.
+    """
+    lens = state.lenses[lens_index]
+    if lens.assembly_id is None and not lens.is_paraxial:
+        lens.flipped = not lens.flipped
+
+
+# ---------------------------------------------------------------------- Plossl pairs
+
+
+def in_plossl_pair(state: OpticalState, lens_index: int) -> bool:
+    """True if the lens is one of a Plossl pair."""
+    return assembly_name(state, lens_index) == PLOSSL_NAME

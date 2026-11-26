@@ -20,6 +20,12 @@ little or no AI. If something would confuse a careful human reader, it is wrong.
   else goes on the slow path (after changes settle) or runs only once nothing is being
   dragged, as the f-number does (`MainWindow.is_dragging`). Measure what you add to the fast
   path; the side view shows the trace and draw times.
+- **The model is a thin front.** `OpticalModel` (`core/model.py`) holds only what needs more
+  than the bench state: the catalogue, the user parts folder, undo and files. Any editing rule
+  or calculation goes in a topic module of `core` as a function of an `OpticalState`
+  (`placement`, `moving`, `gaps`, `assemblies`, `replacement`, `gap_optimisation`, ...), or in
+  a new module. The model method is then a one-line wrapper whose docstring says what it does
+  in one line and names that function; the details are documented there, not repeated.
 - **File size.** Aim for files under about 1000 lines. This is a soft limit: if a file has to be
   bigger, say why in `log.md`.
 - **Optiland.** It is pinned to a tested minor version in `pyproject.toml`. Any workaround for an

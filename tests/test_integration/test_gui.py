@@ -2,6 +2,7 @@
 
 import os
 
+import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -9,14 +10,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QPoint, QPointF, Qt  # noqa: E402
 from PyQt6.QtGui import QDesktopServices, QWheelEvent  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QFileDialog, QListView, QMessageBox  # noqa: E402
 
+from raycrafter.core.examples import basic_microscope  # noqa: E402
+from raycrafter.gui import report_actions  # noqa: E402
 from raycrafter.gui.about_dialog import DOCS_URL, PROJECT_URL, AboutDialog  # noqa: E402
 from raycrafter.gui.analysis_panels import MtfPanel  # noqa: E402
-from raycrafter.gui.lens_picker import ALL_COATINGS, LensPickerDialog  # noqa: E402
+from raycrafter.gui.gap_optimiser import Choice  # noqa: E402
+from raycrafter.gui.lens_browser import ALL_COATINGS, SUITS_BEAMS  # noqa: E402
 from raycrafter.gui.main_window import EDIT_MENU_TITLE, MainWindow  # noqa: E402
 from raycrafter.gui.range_slider import RangeSlider  # noqa: E402
 from raycrafter.gui.style import force_light_colour_scheme  # noqa: E402
+from raycrafter.gui.tool_palette import Tool  # noqa: E402
+from raycrafter.report import build_report_html  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -75,7 +81,10 @@ def test_window_adds_pairs_and_deletes_lenses(application):
     window.side_view.rebuild_lens_graphics()
     assert len(window.side_view.lens_graphics) == 2
 
-    window.make_plossl(0)
+    window.make_plossl(0)  # the first lens becomes a pair
+    assert len(window.side_view.lens_graphics) == 3
+    assert not lens_menu_action(window, 0, "Split assembly").menu()
+    assert lens_menu_action(window, 2, "Make Plossl").isEnabled()
     window.model.state.selected_field.angle_deg = 5.0
     window.recompute_and_redraw()
     window.update_slow_plots()
@@ -84,8 +93,45 @@ def test_window_adds_pairs_and_deletes_lenses(application):
 
     window.delete_lens(1)
     window.recompute_and_redraw()
-    assert len(window.side_view.lens_graphics) == 1
+    assert len(window.side_view.lens_graphics) == 2
     window.close()
+
+
+def test_side_view_shows_axis_glyph_instead_of_axis_titles(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+
+    side = window.side_view.getPlotItem()
+    assert not side.getAxis("bottom").label.isVisible()
+    assert not side.getAxis("left").label.isVisible()
+
+    # The glyph sits just inside the bottom-left corner of the data area.
+    data_area = side.vb.geometry()
+    glyph_position = window.side_view.axis_glyph.pos()
+    assert data_area.left() < glyph_position.x() < data_area.left() + 20
+    assert data_area.bottom() - 20 < glyph_position.y() < data_area.bottom()
+    window.close()
+
+
+def test_make_plossl_says_why_a_pair_does_not_fit(application):
+    window = MainWindow()
+    window.model.insert_lens(window.model.make_paraxial_lens(100.0, 90.0))  # just in front
+    window.show_new_design()
+
+    window.make_plossl(1)
+    assert len(window.model.state.lenses) == 2
+    assert "does not fit" in window.statusBar().currentMessage()
+    assert not lens_menu_action(window, 0, "Make Plossl").isEnabled()  # paraxial
+    window.close()
+
+
+def lens_menu_action(window: MainWindow, lens_index: int, text: str):
+    """The entry of a lens's context menu with this text."""
+    for action in window.build_lens_menu(lens_index).actions():
+        if action.text() == text:
+            return action
+    raise AssertionError(f"The lens menu has no {text!r}")
 
 
 def test_light_colour_scheme_is_forced(application):
@@ -101,39 +147,85 @@ def test_light_colour_scheme_is_forced(application):
     assert button_text_colour.lightness() < 128
 
 
-def test_lens_picker_filters_and_selects(application):
+def test_lens_browser_filters_and_selects(application):
     window = MainWindow()
-    picker = LensPickerDialog(window.model.catalog, parent=window)
-    assert picker.coating_combo.currentText() == ALL_COATINGS
-    assert not picker.insert_button.isEnabled()  # nothing selected yet
+    browser = window.lens_browser
+    controls = browser.filter_controls
+    assert controls.coating_combo.currentData() == SUITS_BEAMS  # the default
+    assert browser.tree.columnCount() == 3  # no coating column: it is in the part number
 
-    all_coatings_count = len(picker._lens_items())
-    picker.coating_combo.setCurrentIndex(picker.coating_combo.findText("Uncoated"))
-    assert 0 < len(picker._lens_items()) < all_coatings_count
-    picker.coating_combo.setCurrentIndex(picker.coating_combo.findText(ALL_COATINGS))
+    controls.coating_combo.setCurrentIndex(controls.coating_combo.findText(ALL_COATINGS))
+    all_coatings_count = len(browser._lens_items())
+    controls.coating_combo.setCurrentIndex(controls.coating_combo.findText("Uncoated"))
+    assert 0 < len(browser._lens_items()) < all_coatings_count
+    controls.coating_combo.setCurrentIndex(controls.coating_combo.findText(ALL_COATINGS))
 
-    picker.search_box.setText("act508-200")
-    assert {item.text(0) for item in picker._lens_items()} >= {"ACT508-200-A", "ACT508-200-B"}
-    assert picker.select_part_number("ACT508-200-A")
-    assert picker.selected_part_number() == "ACT508-200-A"
-    assert picker.insert_button.isEnabled()
+    browser.search_box.setText("act508-200")
+    assert {item.text(0) for item in browser._lens_items()} >= {"ACT508-200-A", "ACT508-200-B"}
+    assert browser.select_part_number("ACT508-200-A")
+    assert browser.selected_part_number() == "ACT508-200-A"
 
-    picker.hide_positive_checkbox.setChecked(True)  # the selected lens is filtered out
-    assert picker._lens_items() == []
-    assert not picker.insert_button.isEnabled()
+    controls.hide_positive_button.setChecked(True)  # pressed: positive lenses are hidden
+    assert browser._lens_items() == []
+    assert browser.selected_part_number() is None
+
+    # "Expand all" opens every group; then the button closes them all.
+    controls.hide_positive_button.setChecked(False)
+    browser.search_box.clear()
+    assert browser.expand_button.text() == "Expand all"
+    browser.expand_button.click()
+    assert all(item.isExpanded() for item in browser._group_items())
+    assert browser.expand_button.text() == "Collapse all"
+    browser.expand_button.click()
+    assert not any(item.isExpanded() for item in browser._group_items())
     window.close()
 
 
-def test_lens_picker_focal_length_slider_narrows_the_list(application):
+def test_lens_browser_range_sliders_narrow_the_list(application):
     window = MainWindow()
-    picker = LensPickerDialog(window.model.catalog, parent=window)
-    shown_before = len(picker._lens_items())
-    picker.focal_length_slider.values_changed.emit(0, 500)  # the shorter half, on a log scale
-    shortest, longest = picker.lens_filter.focal_length_range_mm
-    assert longest < picker.slider_span_mm[1]
-    focal_lengths = [abs(float(item.text(1))) for item in picker._lens_items()]
+    browser = window.lens_browser
+    controls = browser.filter_controls
+    shown_before = len(browser._lens_items())
+    controls.focal_length_slider.values_changed.emit(0, 500)  # the shorter half, on a log scale
+    shortest, longest = browser.lens_filter.focal_length_range_mm
+    assert longest < browser.focal_length_range.span[1]
+    focal_lengths = [abs(float(item.text(1))) for item in browser._lens_items()]
     assert 0 < len(focal_lengths) < shown_before
     assert max(focal_lengths) <= longest
+    assert controls.focal_length_text.text().endswith(" mm")
+
+    # The diameter slider narrows the list further; its span follows the |f| range.
+    shown_before = len(browser._lens_items())
+    controls.diameter_slider.values_changed.emit(500, 1000)  # the wider lenses
+    narrowest, widest = browser.lens_filter.diameter_range_mm
+    assert narrowest > browser.diameter_range.span[0]
+    assert 0 < len(browser._lens_items()) < shown_before
+    window.close()
+
+
+def test_add_catalogue_lens_tool_places_the_lens_chosen_in_the_browser(application):
+    """#70: the browser takes the bottom-right corner; the chosen lens is placed, again and
+    again, until Escape brings back the plots."""
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    side_view, browser = window.side_view, window.lens_browser
+    window.tool_palette.tool_actions[Tool.ADD_CATALOGUE_LENS].trigger()
+    assert window.bottom_right.currentWidget() is browser
+    assert window.context_bar.pages.currentWidget() is browser.filter_controls
+    assert side_view.placement is None  # no lens chosen yet
+
+    browser.search_box.setText("LA1050")
+    assert browser.select_part_number(browser._lens_items()[0].text(0))
+    assert side_view.placement is not None
+    part_number = side_view.placement.lenses[0].part_number
+    side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, 30.0)))
+    assert side_view.placement is not None  # the tool stays on
+    assert [lens.part_number for lens in window.model.state.lenses].count(part_number) == 1
+
+    window.tools.escape()
+    assert window.bottom_right.currentWidget() is window.field_tabs
+    assert window.model.state.lenses[side_view.selected_index].part_number == part_number
     window.close()
 
 
@@ -187,12 +279,13 @@ def test_placing_hovering_and_dragging_a_paraxial_lens(application):
     application.processEvents()
     side_view = window.side_view
 
-    # The focal length box sets the new lens; a click on the axis places it.
-    window.paraxial_focal_length_box.setValue(-80)
-    window.add_paraxial_lens_button.click()
+    # The context bar's focal length sets the new lens; a click on the axis places it.
+    window.tool_palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
+    window.context_bar.focal_length.box.setValue(-80)
     assert side_view.placement.lenses[0].paraxial_focal_length_mm == -80.0
     side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, 40.0)))
     paraxial_lens = window.model.state.lenses[0]
+    window.tools.escape()  # back to Move, so the lens can be hovered and dragged
     assert paraxial_lens.is_paraxial and paraxial_lens.z == pytest.approx(40.0, abs=1.0)
 
     # A zero-thickness lens can still be hovered a couple of pixels off its line ...
@@ -209,16 +302,133 @@ def test_placing_hovering_and_dragging_a_paraxial_lens(application):
     graphics.region.setRegion((region_start + 10.0, region_end + 10.0))
     assert paraxial_lens.z == pytest.approx(region_start + 10.0 + graphics.grab_margin_mm)
 
-    # A focal length of zero is not a lens, so the button is switched off.
-    window.paraxial_focal_length_box.setValue(0)
-    assert not window.add_paraxial_lens_button.isEnabled()
+    # A focal length of zero is not a lens, so nothing follows the pointer.
+    window.tool_palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
+    window.context_bar.focal_length.box.setValue(0)
+    assert side_view.placement is None
+    window.close()
+
+
+def test_add_tools_stay_on_until_escape_or_another_tool(application):
+    """#70: an add tool places lens after lens; Escape or V goes back to Move."""
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    side_view, palette, tools = window.side_view, window.tool_palette, window.tools
+    assert palette.current_tool() == Tool.MOVE
+    assert window.context_bar.pages.currentWidget() is window.context_bar.empty_page.parentWidget()
+
+    palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
+    assert window.context_bar.pages.currentWidget() is (
+        window.context_bar.paraxial_page.parentWidget()
+    )
+    for z_mm in (30.0, 400.0):
+        side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, z_mm)))
+        assert side_view.placement is not None  # a new ghost follows after each click
+    assert sum(lens.is_paraxial for lens in window.model.state.lenses) == 2
+
+    # The ghost takes a new focal length at once, and the tool stays on.
+    window.context_bar.focal_length.box.setValue(-50)
+    assert side_view.placement.lenses[0].paraxial_focal_length_mm == -50.0
+    assert palette.current_tool() == Tool.ADD_PARAXIAL_LENS
+
+    # Escape goes back to Move with the lens just placed selected, ready to be adjusted.
+    tools.escape()
+    assert palette.current_tool() == Tool.MOVE and side_view.placement is None
+    last_placed = side_view.selected_index
+    assert window.model.state.lenses[last_placed].z == pytest.approx(400.0, abs=1.0)
+    bar = window.context_bar
+    assert bar.pages.currentWidget() is bar.paraxial_page.parentWidget()
+    assert bar.paraxial_values_mm() == (100.0, pytest.approx(50.8))
+
+    # A right click (a cancelled placement) ends the tool too; V chooses Move.
+    palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
+    side_view.cancel_placement()
+    assert palette.current_tool() == Tool.MOVE
+    palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
+    QTest.keyClick(window, Qt.Key.Key_V)
+    assert palette.current_tool() == Tool.MOVE and side_view.placement is None
+    window.close()
+
+
+def test_a_selected_paraxial_lens_is_edited_from_the_context_bar(application):
+    """#70: click a paraxial lens, then its focal length and diameter sliders change it."""
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    side_view, bar = window.side_view, window.context_bar
+    window.model.insert_lens(window.model.make_paraxial_lens(80.0, z=400.0))
+    side_view.rebuild_lens_graphics()
+    window.recompute_and_redraw()
+    paraxial_index = next(
+        index for index, lens in enumerate(window.model.state.lenses) if lens.is_paraxial
+    )
+
+    side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, 400.0)))
+    assert side_view.selected_index == paraxial_index
+    assert bar.pages.currentWidget() is bar.paraxial_page.parentWidget()
+    assert bar.paraxial_values_mm() == (80.0, pytest.approx(50.8))
+
+    bar.focal_length.slider.setValue(bar.focal_length.slider.maximum())  # 1000 mm
+    bar.diameter.box.setValue(20.0)
+    lens = window.model.state.lenses[paraxial_index]
+    assert lens.paraxial_focal_length_mm == pytest.approx(1000.0)
+    assert lens.semi_aperture == pytest.approx(10.0)
+    bar.sign_button.click()
+    assert lens.paraxial_focal_length_mm == pytest.approx(-1000.0) and lens.is_negative
+
+    # The next lens to be placed keeps its own values; a click on empty space deselects.
+    window.tool_palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
+    assert bar.paraxial_values_mm() == (100.0, pytest.approx(50.8))
+    bar.diameter.box.setValue(12.0)
+    assert side_view.placement.lenses[0].semi_aperture == pytest.approx(6.0)
+    window.tools.escape()
+    side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, 30.0)))
+    assert side_view.selected_index is None
+    assert bar.pages.currentWidget() is bar.empty_page.parentWidget()
+    window.close()
+
+
+def test_add_field_tool_shows_the_field_editor_and_light_switch(application):
+    """#70: the field editor takes the bottom-right corner, the Light switch the bar; the
+    switch's list always opens with the current choice at the top."""
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
+    editor = window.field_editor
+    assert window.bottom_right.currentWidget() is editor
+    assert window.context_bar.pages.currentWidget() is editor.light_controls
+
+    light_box = editor.light_kind_box
+    light_box.setCurrentIndex(light_box.findData(True))  # object points
+    assert window.model.state.has_finite_object
+    light_box.showPopup()
+    assert light_box.itemData(0) is True and light_box.currentIndex() == 0
+    light_box.hidePopup()
+    assert window.model.state.has_finite_object  # reordering changed nothing
+
+    # The rays of the field selected in the list are drawn thick, and only while it is shown.
+    editor.add_button.click()  # a second field, now the selected one
+    window.recompute_and_redraw()
+    widths = [curve.opts["pen"].widthF() for curve in window.side_view.ray_curves]
+    assert widths[1] > widths[0]
+    editor.field_list.setCurrentRow(0)
+    window.recompute_and_redraw()  # as the window does straight after
+    widths = [curve.opts["pen"].widthF() for curve in window.side_view.ray_curves]
+    assert widths[0] > widths[1]
+
+    window.tools.escape()
+    assert window.bottom_right.currentWidget() is window.field_tabs
+    widths = [curve.opts["pen"].widthF() for curve in window.side_view.ray_curves]
+    assert widths[0] == widths[1]
     window.close()
 
 
 def test_field_window_adds_edits_and_removes_fields_live(application):
     window = MainWindow()
     window.show()
-    window.add_field_button.click()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
     editor = window.field_editor
     assert editor.isVisible() and editor.field_list.count() == 1
     assert not editor.remove_button.isEnabled()  # the only field cannot be removed
@@ -266,7 +476,7 @@ def test_bench_viewer_lists_highlights_follows_and_deletes(application):
     window.side_view.rebuild_lens_graphics()
     window.show()
     window.recompute_and_redraw()
-    window.view_bench_button.click()
+    window.view_bench_action.trigger()
     viewer = window.bench_viewer
     assert viewer.isVisible()
 
@@ -319,11 +529,33 @@ def test_bench_viewer_lists_highlights_follows_and_deletes(application):
     window.close()
 
 
+def test_fields_are_numbered_from_zero_everywhere(application):
+    window = MainWindow()
+    window.model.add_field()  # added and selected: field 1
+    window.show()
+    window.recompute_and_redraw()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
+    window.open_bench_viewer()
+
+    # The field window and the bench viewer name the fields as scripts number them.
+    field_list = window.field_editor.field_list
+    assert [field_list.item(row).text() for row in range(2)] == ["Field 0", "Field 1"]
+    section = window.bench_viewer.field_section
+    assert [section.child(row).text(1) for row in range(2)] == ["Field 0", "Field 1"]
+
+    # So do the spot diagram's title and the report.
+    assert "Field 1:" in window.spot_panel.getPlotItem().titleLabel.text
+    page = build_report_html(window.model)
+    assert "Field 0:" in page and "Field 1, at" in page
+    assert "Field 2" not in page
+    window.close()
+
+
 def test_field_window_shows_values_outside_its_usual_ranges(application):
     """A -20 D beam (an object 50 mm away, from a ZMX file) was shown, and edited, as -10 D."""
     window = MainWindow()
     window.model.state.selected_field.vergence_dioptres = -20.0
-    window.add_field_button.click()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
     vergence_box = window.field_editor.value_boxes["vergence_dioptres"]
     assert vergence_box.value() == -20.0
     vergence_box.stepUp()
@@ -447,14 +679,15 @@ def test_file_menu_new_save_open_import_and_export(
 ):
     window = MainWindow()
     menu_titles = [action.text() for action in window.menuBar().actions()]
-    assert menu_titles == ["RayCrafter", "File", EDIT_MENU_TITLE, "Help"]
+    assert menu_titles == ["RayCrafter", "File", EDIT_MENU_TITLE, "View", "Help"]
     file_menu = window.menuBar().actions()[1].menu()
     assert [action.text() for action in file_menu.actions() if action.text()] == [
-        "New", "Open...", "Save", "Save As...", "Save Without Original ZMX...",
+        "New", "New from Example", "Open...", "Save", "Save As...", "Save Without Original ZMX...",
         "Import ZMX...", "Export ZMX...",
     ]  # fmt: skip
     assert not window.model.has_unsaved_changes()  # the start-up bench counts as saved
     assert window.windowTitle() == "Untitled[*] - RayCrafter"
+    assert window.context_bar.document_title.text().startswith("Untitled")
 
     # Save with no project file yet asks where, adds the extension and marks the design saved.
     window.model.add_lens("AC254-050-A")
@@ -702,7 +935,7 @@ def test_undo_with_lock_focus_does_not_get_stuck(application):
     window.model.state.image_z = 250.0  # well out of focus
     window.request_update()
     application.processEvents()
-    window.lock_focus_checkbox.setChecked(True)  # refocuses: a step
+    window.lock_focus_button.setChecked(True)  # refocuses: a step
     application.processEvents()
 
     window.undo()  # back to 250 mm, which "Lock focus" at once refocuses
@@ -719,7 +952,7 @@ def test_undo_keys_work_from_a_field_box_and_spun_values_undo_together(applicati
     window = MainWindow()
     window.show()
     application.processEvents()
-    window.open_field_editor()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
     box = window.field_editor.value_boxes["angle_deg"]
     box.setFocus()
     for _ in range(3):
@@ -815,7 +1048,7 @@ def test_fixed_and_impossible_gaps_say_why(application):
     window.side_view.set_gap(0, 0.0)  # the image plane cannot touch the lens
     assert "at least" in window.statusBar().currentMessage()
 
-    window.lock_focus_checkbox.setChecked(True)
+    window.lock_focus_button.setChecked(True)
     application.processEvents()
     click_gap_label(window, 0)
     assert window.side_view.gap_editor is None
@@ -864,7 +1097,7 @@ def test_a_gap_is_locked_from_its_menu_and_then_refuses_typing(application):
     assert "locked" in window.statusBar().currentMessage()
 
     # The image plane now follows the lens, so "Lock focus" and dragging it are off.
-    assert not window.lock_focus_checkbox.isEnabled()
+    assert not window.lock_focus_button.isEnabled()
     assert not window.side_view.image_line.movable
     window.run_autofocus()
     assert "locked" in window.statusBar().currentMessage()
@@ -872,14 +1105,14 @@ def test_a_gap_is_locked_from_its_menu_and_then_refuses_typing(application):
     window.build_gap_menu(0).actions()[0].trigger()  # now "Unlock gap"
     application.processEvents()
     assert not window.model.air_gaps()[0].locked
-    assert window.lock_focus_checkbox.isEnabled() and window.side_view.image_line.movable
+    assert window.lock_focus_button.isEnabled() and window.side_view.image_line.movable
     window.close()
 
 
 def test_the_image_gap_cannot_be_locked_while_lock_focus_is_on(application):
     window = MainWindow()
     window.show()
-    window.lock_focus_checkbox.setChecked(True)
+    window.lock_focus_button.setChecked(True)
     application.processEvents()
     assert not window.build_gap_menu(0).actions()[0].isEnabled()
 
@@ -887,7 +1120,7 @@ def test_the_image_gap_cannot_be_locked_while_lock_focus_is_on(application):
     window.model.set_gap_locked(0, True)
     window.show_replaced_design()
     application.processEvents()
-    assert not window.lock_focus_checkbox.isChecked()
+    assert not window.lock_focus_button.isChecked()
     assert not window.side_view.image_line.movable
     window.close()
 
@@ -904,10 +1137,10 @@ def test_locked_lenses_become_an_assembly_that_flips_saves_and_is_placed_again(
     application.processEvents()
 
     menu_texts = lambda: [action.text() for action in window.build_lens_menu(0).actions()]  # noqa: E731
-    make_assembly = window.build_lens_menu(0).actions()[3]
-    assert make_assembly.text() == "Make assembly" and not make_assembly.isEnabled()
+    make_assembly = lens_menu_action(window, 0, "Make assembly")
+    assert not make_assembly.isEnabled()
     window.set_gap_locked(0, True)
-    window.build_lens_menu(0).actions()[3].trigger()
+    lens_menu_action(window, 0, "Make assembly").trigger()
     assert window.model.assembly_name(1) == "Assembly 1"
     assert "Flip assembly\tF" in menu_texts() and "Split assembly" in menu_texts()
 
@@ -921,11 +1154,12 @@ def test_locked_lenses_become_an_assembly_that_flips_saves_and_is_placed_again(
     window.save_as_user_part(0)
     assert [part.name for part in window.model.user_parts()] == ["Pair"]
 
-    window.fill_user_parts_menu()
-    window.user_parts_menu.actions()[0].trigger()  # starts placing the part
+    window.tool_palette.tool_actions[Tool.ADD_USER_PART].trigger()  # starts placing the part
     placement = window.side_view.placement
     assert placement is not None and placement.name == "Pair" and len(placement.ghosts) == 2
     window.side_view.on_scene_clicked(FakeClick(scene_point_on_axis(window.side_view, 40.0)))
+    assert window.side_view.placement.name == "Pair"  # the tool stays on: another one follows
+    window.tools.escape()
     assert window.side_view.placement is None
     assert len(window.model.state.lenses) == 4
     assert window.model.assembly_name(0) == "Pair" and window.model.assembly_name(1) == "Pair"
@@ -946,7 +1180,10 @@ def test_the_source_plane_is_unlocked_from_its_caption_then_dragged_and_typed(ap
     assert all(not gap.from_source for gap in side_view.gap_dimensions.gaps)
 
     menu = window.build_gap_menu(SOURCE_GAP_INDEX)
-    assert [action.text() for action in menu.actions()] == ["Unlock gap"]
+    texts = [action.text() for action in menu.actions() if not action.isSeparator()]
+    assert texts == ["Unlock gap", "Collimate output…", "Focus on image plane…"]
+    optimise_actions = [action for action in menu.actions()[1:] if not action.isSeparator()]
+    assert not any(action.isEnabled() for action in optimise_actions)  # locked: unlock first
     menu.actions()[0].trigger()
     application.processEvents()
     assert side_view.source_line.movable
@@ -975,7 +1212,7 @@ def test_opening_a_project_with_lock_focus_on_leaves_nothing_unsaved(
     window.model.state.image_z += 20.0  # saved away from best focus
     project_path = tmp_path / "design.raycrafter"
     window.model.save_project(project_path)
-    window.lock_focus_checkbox.setChecked(True)
+    window.lock_focus_button.setChecked(True)
     application.processEvents()
 
     monkeypatch.setattr(
@@ -986,3 +1223,341 @@ def test_opening_a_project_with_lock_focus_on_leaves_nothing_unsaved(
     window.recompute_and_redraw()
     assert not window.model.has_unsaved_changes()
     window.close()
+
+
+def test_replacing_a_lens_from_the_lens_menu(application, monkeypatch):
+    """Issue #63: "Replace with same f…" lists suitable lenses and swaps one in place."""
+    window = MainWindow()  # one ACT508-200-A, beam at 555 nm
+    menu_texts = [action.text() for action in window.build_lens_menu(0).actions()]
+    assert {"Replace with same f…", "Swap lens…", "Replace with paraxial"} <= set(menu_texts)
+
+    browser = window.lens_browser
+    browser.search_box.setText("LA1")  # the user's own filters, put back afterwards
+    lens_menu_action(window, 0, "Replace with same f…").trigger()
+    assert browser.replacing and window.bottom_right.currentWidget() is browser
+    shown = {item.text(0): item for item in browser._lens_items()}
+    focal_lengths = [float(item.text(1)) for item in shown.values()]
+    assert focal_lengths and all(180.0 <= f <= 220.0 for f in focal_lengths)
+    assert not any(part.endswith("-B") or part.endswith("-C") for part in shown)
+    assert all(item.isExpanded() for item in browser._group_items())  # just scroll to choose
+    assert window.side_view.placement is None  # choosing a lens makes no ghost here
+    assert browser.select_part_number("AC254-200-A")
+    browser.replace_button.click()
+    assert not browser.replacing and window.tool_palette.current_tool() == Tool.MOVE
+    assert browser.search_box.text() == "LA1"
+    assert [lens.part_number for lens in window.model.state.lenses] == ["AC254-200-A"]
+    assert len(window.side_view.lens_graphics) == 1
+
+    lens_menu_action(window, 0, "Replace with paraxial").trigger()
+    assert window.model.state.lenses[0].part_number == "Paraxial f=+200.2 mm"
+    assert not lens_menu_action(window, 0, "Replace with paraxial").isEnabled()
+    window.close()
+
+
+def test_replacing_one_lens_of_a_plossl_pair_asks_first(application, monkeypatch):
+    window = MainWindow()
+    window.make_plossl(0)
+
+    browser = window.lens_browser
+    coatings = browser.filter_controls.coating_combo
+
+    def choose_and_replace():
+        window.replacer.replace_with_catalogue_lens(1, same_focal_length=False)
+        coatings.setCurrentIndex(coatings.findText(ALL_COATINGS))
+        assert browser.select_part_number("AC508-150-A")
+        browser.replace_button.click()
+
+    monkeypatch.setattr(window.replacer, "ask_about_plossl_pair", lambda **_kwargs: None)
+    choose_and_replace()  # cancelled
+    assert [lens.part_number for lens in window.model.state.lenses] == ["ACT508-200-A"] * 2
+
+    monkeypatch.setattr(window.replacer, "ask_about_plossl_pair", lambda **_kwargs: "both")
+    choose_and_replace()
+    assert [lens.part_number for lens in window.model.state.lenses] == ["AC508-150-A"] * 2
+    assert window.model.in_plossl_pair(0)
+    window.close()
+
+
+def test_collimating_from_the_gap_menu(application, monkeypatch):
+    """Issue #38: the gap menu finds the gap that collimates the output, and locks it."""
+    window = MainWindow()
+    model = window.model
+    model.delete_lens(0)
+    for focal_length_mm, front_z in ((100.0, 100.0), (50.0, 180.0)):
+        model.insert_lens(model.make_paraxial_lens(focal_length_mm, front_z))
+    model.state.image_z = 400.0
+    window.show_new_design()
+
+    texts = [action.text() for action in window.build_gap_menu(0).actions()]
+    assert "Collimate output…" in texts and "Focus on image plane…" in texts
+    image_gap_texts = [action.text() for action in window.build_gap_menu(1).actions()]
+    assert "Collimate output…" not in image_gap_texts  # autofocus does the image gap
+
+    window.lock_focus_button.setChecked(True)
+    focus_action = next(
+        action
+        for action in window.build_gap_menu(0).actions()
+        if action.text() == "Focus on image plane…"
+    )
+    assert not focus_action.isEnabled() and "Lock focus" in focus_action.toolTip()
+    window.lock_focus_button.setChecked(False)
+
+    shown = []
+    monkeypatch.setattr(
+        window.gap_optimiser,
+        "ask_to_apply",
+        lambda result: (
+            shown.append(window.gap_optimiser.describe(result)) or Choice(flip=False, lock=True)
+        ),
+    )
+    window.gap_optimiser.optimise(0, "collimate")
+    assert model.air_gaps()[0].width_mm == pytest.approx(150.0, abs=1e-3)
+    assert model.air_gaps()[0].locked
+    assert "80.000 mm  →  150.000 mm" in shown[0]
+    window.close()
+
+
+def test_collimating_after_an_element_from_the_gap_menu(application, monkeypatch):
+    """Issue #66: with lenses behind it, the element behind the gap can be collimated alone."""
+    window = MainWindow()
+    model = window.model
+    model.delete_lens(0)
+    for focal_length_mm, front_z in ((100.0, 100.0), (50.0, 180.0), (80.0, 400.0)):
+        model.insert_lens(model.make_paraxial_lens(focal_length_mm, front_z))
+    model.state.image_z = 500.0
+    window.show_new_design()
+
+    def entry(lens_index: int, text: str):
+        actions = window.build_gap_menu(lens_index).actions()
+        return next(action for action in actions if action.text() == text)
+
+    entry(0, "Collimate system output…")  # both choices are offered
+    last_texts = [action.text() for action in window.build_gap_menu(1).actions()]
+    assert "Collimate output…" in last_texts  # the element behind is the last: one entry
+    assert "Collimate system output…" not in last_texts
+
+    shown = []
+    monkeypatch.setattr(
+        window.gap_optimiser,
+        "ask_to_apply",
+        lambda result: (
+            shown.append(window.gap_optimiser.describe(result)) or Choice(flip=False, lock=False)
+        ),
+    )
+    entry(0, "Collimate after Paraxial f=+50 mm…").trigger()
+    assert model.air_gaps()[0].width_mm == pytest.approx(150.0, abs=1e-3)
+    assert "RMS angle of the rays leaving Paraxial f=+50 mm" in shown[0]
+    window.close()
+
+
+def test_the_gap_dialog_suggests_flipping_a_lens(application, monkeypatch):
+    """Issue #56: AC254-050-A the wrong way round is reported, and flipped only on request."""
+    window = MainWindow()
+    model = window.model
+    model.delete_lens(0)
+    for part_number, front_z in (("AC254-100-A", 100.0), ("AC254-050-A", 220.0)):
+        model.insert_lens(model.make_lens(part_number, front_z))
+    model.state.selected_field.diameter_mm = 20.0
+    model.state.image_z = 500.0
+    window.show_new_design()
+
+    shown = []
+    monkeypatch.setattr(
+        window.gap_optimiser,
+        "ask_to_apply",
+        lambda result: (
+            shown.append(window.gap_optimiser.describe(result)) or Choice(flip=True, lock=False)
+        ),
+    )
+    window.gap_optimiser.optimise(0, "collimate")
+    assert "AC254-050-A turned round does clearly better" in shown[0]
+    assert model.state.lenses[1].flipped
+    assert model.air_gaps()[0].width_mm == pytest.approx(140.35, abs=0.02)
+    assert not model.air_gaps()[0].locked
+    window.close()
+
+
+# ------------------------------------------------------------- a finite object (#29)
+
+
+def test_the_field_window_switches_the_design_to_object_points(application):
+    window = MainWindow()
+    window.show()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
+    editor = window.field_editor
+    assert not editor.form.isRowVisible(editor.value_boxes["numerical_aperture"])
+
+    editor.light_kind_box.setCurrentIndex(1)  # "Object points"
+    window.recompute_and_redraw()  # completes the switch as one undo step
+    state = window.model.state
+    assert state.has_finite_object and not state.source_gap_locked
+    assert editor.form.isRowVisible(editor.value_boxes["numerical_aperture"])
+    assert not editor.form.isRowVisible(editor.value_boxes["diameter_mm"])
+
+    editor.value_boxes["height_y_mm"].setValue(2.0)
+    assert state.fields[0].height_y_mm == 2.0
+    window.recompute_and_redraw()
+    assert window.side_view.source_label.toPlainText() == "object"
+    assert "image y=" in window.status_label.text()
+
+    window.undo()  # the height
+    window.undo()  # the switch
+    assert not window.model.state.has_finite_object
+    window.recompute_and_redraw()
+    assert window.side_view.source_label.toPlainText() == "source"
+
+
+def test_new_from_example_opens_the_microscope_with_its_readouts(application):
+    window = MainWindow()
+    window.show()
+    file_menu = window.menuBar().actions()[1].menu()
+    examples_menu = next(
+        action.menu() for action in file_menu.actions() if action.text() == "New from Example"
+    )
+    next(a for a in examples_menu.actions() if a.text() == "Basic microscope").trigger()
+    window.recompute_and_redraw()
+    window.update_slow_plots()
+
+    assert window.model.state.has_finite_object
+    assert not window.model.has_unsaved_changes()
+    text = window.status_label.text()
+    assert "M=-20.00x" in text and "image y=0.000 mm" in text and "f/" not in text
+    window.model.select_field(1)
+    window.update_mtf_tab()
+    assert "y = +0.50 mm" in window.mtf_panel.getPlotItem().titleLabel.text
+    assert "Magnification" in build_report_html(window.model)
+
+
+def test_drop_downs_use_a_styled_list_rather_than_the_native_popup(application):
+    # The native macOS popup ignores the style sheet, so the highlighted item's text could
+    # not be read, and it moves the list so that the items jump about as one is picked.
+    window = MainWindow()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
+    assert type(window.field_editor.light_kind_box.view()) is QListView
+    assert type(window.lens_browser.filter_controls.coating_combo.view()) is QListView
+
+
+def test_the_3d_view_follows_the_bench_once_changes_settle(application):
+    """Issue #52: View > Show 3D View opens a window that is not updated during a drag."""
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    assert window.view_3d is None  # OpenGL is loaded only when asked for
+
+    window.view_3d_action.trigger()
+    view = window.view_3d
+    assert view.isVisible()
+    assert [item.name for item in view.scene.objects if item.kind == "lens"] == ["ACT508-200-A"]
+    item_count = len(view.gl_view.items)
+
+    window.model.add_lens("LA1509-A")
+    window.show_new_design()
+    window.recompute_and_redraw()
+    window.update_slow_plots()
+    assert len([item for item in view.scene.objects if item.kind == "lens"]) == 2
+    assert len(view.gl_view.items) > item_count
+
+    # While something is dragged, the view is left as it was.
+    scene_before = view.scene
+    window.is_dragging = lambda: True
+    window.update_slow_plots()
+    assert view.scene is scene_before
+    del window.is_dragging
+
+    camera_distance = view.gl_view.opts["distance"]
+    view.view_buttons["Side"].click()
+    assert view.gl_view.opts["azimuth"] == -90 and view.gl_view.opts["elevation"] == 0
+    assert view.gl_view.opts["distance"] != camera_distance
+
+    view.close()
+    window.model.delete_lens(1)
+    window.update_slow_plots()
+    assert view.scene is scene_before  # a closed view costs nothing
+    window.view_3d_action.trigger()  # opening it again brings it up to date
+    assert len([item for item in view.scene.objects if item.kind == "lens"]) == 1
+    window.close()
+
+
+class QuickReport:
+    """Stands in for the report process: no second Python is started."""
+
+    def __call__(self, design: dict) -> str:
+        names = ", ".join(lens["part_number"] for lens in design["lenses"])
+        return f"<html><body>lenses: {names}</body></html>"
+
+    def close(self) -> None:
+        pass
+
+
+def test_generate_report_opens_one_page_that_follows_the_design(application, monkeypatch):
+    """Issue #68: the report page updates itself, and the button opens no second tab."""
+    opened = []
+    monkeypatch.setattr(report_actions, "ReportProcess", QuickReport)
+    monkeypatch.setattr(report_actions.webbrowser, "open", opened.append)
+    window = MainWindow()
+    window.web_report_action.trigger()
+    reports = window.reports
+    assert opened == [reports.server.url]
+
+    def shown() -> str:
+        return reports.live_report.latest()[1]
+
+    def wait_until(condition) -> None:
+        for _ in range(500):
+            if condition():
+                return
+            QTest.qWait(10)
+        raise AssertionError("timed out")
+
+    wait_until(lambda: "lenses: ACT508-200-A" in shown())
+
+    with reports.live_report.watching():  # the page is open in the browser
+        window.web_report_action.trigger()
+        assert len(opened) == 1
+        assert "updates itself" in window.statusBar().currentMessage()
+
+        # Nothing is handed over during a drag; the change arrives once it ends.
+        window.model.add_lens("LA1509-A")
+        window.is_dragging = lambda: True
+        window.show_new_design()
+        window.recompute_and_redraw()
+        window.update_slow_plots()
+        assert reports.live_report._design_revision == 1
+        del window.is_dragging
+        window.update_slow_plots()
+        assert reports.live_report._design_revision == 2
+
+    window.web_report_action.trigger()  # the tab was closed, and the report is wanted again
+    assert len(opened) == 2
+
+    server = reports.server
+    window.close()
+    assert window.reports.server is None
+    with pytest.raises(RuntimeError, match="not running"):
+        server.url
+
+
+def test_the_distortion_tab_is_computed_when_shown_and_follows_the_design(application):
+    window = MainWindow()
+    window.model.state = basic_microscope()
+    window.show_replaced_design()
+    window.update_slow_plots()
+    panel = window.distortion_panel
+    assert panel.image_curve.getData()[0] is None  # not computed while another tab shows
+
+    window.field_tabs.setCurrentWidget(panel)
+    assert "Max distortion" in panel.grid_plot.getPlotItem().titleLabel.text
+    image_x, image_y = panel.image_curve.getData()
+    assert np.nanmax(np.abs(image_y)) == pytest.approx(20.0 * 0.5 / np.sqrt(2.0))
+
+    panel.centroid_checkbox.setChecked(True)
+    assert panel.reference == "centroid"
+    panel.height_button.setChecked(True)
+    assert panel.stack.currentWidget() is panel.height_plot
+    assert panel.height_curve.getData()[1][-1] == pytest.approx(0.5)
+
+    # With beams there is nothing to show, and the title says why.
+    window.model.set_finite_object(False)
+    window.update_slow_plots()
+    assert "finite object" in panel.grid_plot.getPlotItem().titleLabel.text
+    assert panel.height_curve.getData()[0] is None or panel.height_curve.getData()[0].size == 0

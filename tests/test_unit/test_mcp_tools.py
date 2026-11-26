@@ -37,6 +37,7 @@ def test_every_result_is_valid_json(tools):
         tools.get_ray_fan(),
         tools.get_through_focus(),
         tools.get_field_curvature(),
+        tools.get_distortion(),
         tools.search_lenses("AC254", limit=3),
     ]
     for result in results:
@@ -93,7 +94,7 @@ def test_set_field_changes_only_what_is_given(tools):
         lambda tools: tools.set_field(3, angle_deg=1.0),
         lambda tools: tools.set_field(0, diameter_mm=-1.0),
         lambda tools: tools.set_image_z(0.0),
-        lambda tools: tools.make_plossl(0),
+        lambda tools: tools.make_plossl(5),
         lambda tools: tools.add_paraxial_lens(0.0, 100.0),
     ],
 )

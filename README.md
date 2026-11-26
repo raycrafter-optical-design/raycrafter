@@ -10,12 +10,21 @@
 
 RayCrafter is an early proof of principle for a lens-level optical design tool. You place
 off-the-shelf lenses on an optical axis, drag them around, and see the spot diagram,
-through-focus curve, MTF, ray fan and field curvature update as you go. The ray tracing is
-done by [Optiland](https://github.com/HarrisonKramer/optiland).
+through-focus curve, MTF, ray fan, field curvature and distortion update as you go. The ray
+tracing is done by [Optiland](https://github.com/optiland/optiland).
 
-At present it offers the Thorlabs spherical lenses and ideal (paraxial) lenses, and any number
-of beams, each with its own width, angle, vergence, offset and wavelength. It can export the
-system as a Zemax `.zmx` file and write an HTML report.
+- **Lenses:** the Thorlabs spherical lenses, achromats, air-spaced doublets, triplets and
+  matched pairs, plus ideal (paraxial) lenses.
+- **Layout:** type the gaps between lenses and lock them; group lenses into assemblies (such
+  as Plossl pairs) and save them as your own parts.
+- **Beams:** any number, each with its own width, angle, vergence, offset and wavelength.
+- **3D view:** View > Show 3D View shows the lenses and rays in a window you can rotate.
+- **Files:** save designs as RayCrafter project files, import and export Zemax `.zmx` files,
+  and open a report with a 3D view in your browser, which updates as you change the design
+  and can be saved as one file to send to others.
+- **Scripting:** drive it from Python, or let an AI agent do so (see below).
+
+[Documentation](https://raycrafter-optical-design.github.io/raycrafter-docs/)
 
 **Status:** pre-alpha. Expect anything to change, including the API.
 

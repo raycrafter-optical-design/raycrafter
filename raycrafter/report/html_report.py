@@ -1,10 +1,12 @@
 """Build a self-contained HTML report of the current lens system.
 
-The report has the ray diagram across the top and the five analysis plots below it (spot
-diagram, through-focus, MTF, ray fan, field curvature), with a row of summary tiles. Every
-plot has a "?" button that opens a note explaining how to read it. Plots are inline SVG and
-the style sheet and script (``assets/report.css``, ``assets/report.js``) are copied into the
-page, so the result is a single HTML file that needs no other files or internet connection.
+The report has the ray diagram across the top, a 3D view of the design that can be turned
+round (``raycrafter.report.viewer_3d``), and the analysis plots below them (spot diagram,
+through-focus, MTF, ray fan, field curvature and, for a finite object, two of distortion),
+with a row of summary tiles. Every plot has a "?" button that opens a note explaining how to
+read it. Plots are inline SVG and the style sheet and scripts (in ``assets``) are copied into
+the page, so the result is a single HTML file that can be shared, and needs no other files or
+internet connection. The app shows it as a page that updates itself (``raycrafter.report.live_report``).
 
 Example
 -------
@@ -16,30 +18,31 @@ Example
 from __future__ import annotations
 
 import html
-import json
-import tempfile
-import webbrowser
 from datetime import datetime
-from importlib import resources
-from pathlib import Path
 
 from raycrafter.core.analysis import airy_radius
+from raycrafter.core.fields import chief_ray_angle_deg, field_height_mm
 from raycrafter.core.model import OpticalModel
-from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
-from raycrafter.core.state import BeamField
-from raycrafter.report import figures
+from raycrafter.core.plot_geometry import (
+    distortion_title,
+    f_number_text,
+    field_name,
+    field_position_text,
+    image_point_text,
+    magnification_text,
+    rms_radius_text,
+)
+from raycrafter.core.state import AnyField, ObjectPoint, state_from_dict
+from raycrafter.report import figures, viewer_3d
 from raycrafter.report.explanations import EXPLANATIONS
-
-
-def read_asset(file_name: str) -> str:
-    """Text of one of the report's packaged asset files (CSS or JavaScript)."""
-    return resources.files("raycrafter.report").joinpath("assets", file_name).read_text("utf-8")
+from raycrafter.report.viewer_3d import json_for_script, read_asset
 
 
 def card_html(
-    key: str, title: str, subtitle_html: str, svg: str, width_class: str, with_help: bool = True
+    key: str, title: str, subtitle_html: str, body: str, width_class: str, with_help: bool = True
 ) -> str:
-    """One card: a heading, a one-line subtitle, the "?" button (optional) and the plot."""
+    """One card: a heading, a one-line subtitle, the "?" button (optional) and the body (the
+    plot, as inline SVG, or the 3D view)."""
     help_button = ""
     if with_help:
         help_button = (
@@ -50,7 +53,7 @@ def card_html(
         f'<section class="card {width_class}">'
         f'<div class="card-head"><div><h2>{html.escape(title)}</h2>'
         f'<p class="sub">{subtitle_html}</p></div>'
-        f"{help_button}</div>{svg}</section>"
+        f"{help_button}</div>{body}</section>"
     )
 
 
@@ -69,15 +72,53 @@ def vergence_words(vergence: float) -> str:
     return "converging" if vergence > 0 else "diverging"
 
 
-def field_html(field_index: int, beam: BeamField) -> str:
+def field_html(field_index: int, light: AnyField) -> str:
     """A one-line description of a field, in the field's colour."""
-    text = (
-        f"Field {field_index + 1}: {beam.diameter_mm:g} mm {vergence_words(beam.vergence_dioptres)}"
-        f" at {beam.angle_deg:+.1f}°, {beam.wavelength_nm:g} nm"
-    )
-    if beam.offset_mm != 0.0:
-        text += f", offset {beam.offset_mm:+g} mm"
-    return f'<span style="color:{beam.display_colour()}">{html.escape(text)}</span>'
+    if isinstance(light, ObjectPoint):
+        text = (
+            f"{field_name(field_index)}: object point at {field_position_text(light)}, "
+            f"NA {light.numerical_aperture:g}, {light.wavelength_nm:g} nm"
+        )
+    else:
+        text = (
+            f"{field_name(field_index)}: {light.diameter_mm:g} mm "
+            f"{vergence_words(light.vergence_dioptres)} at {light.angle_deg:+.1f}°, "
+            f"{light.wavelength_nm:g} nm"
+        )
+        if light.offset_mm != 0.0:
+            text += f", offset {light.offset_mm:+g} mm"
+    return f'<span style="color:{light.display_colour()}">{html.escape(text)}</span>'
+
+
+def message_html(message: str) -> str:
+    """A page in the report's style that only says why there is no report (yet)."""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lens system report</title>
+<style>{read_asset("report.css")}</style>
+</head>
+<body>
+<main>
+  <header><h1>Lens system report</h1><p class="when">{html.escape(message)}</p></header>
+</main>
+</body>
+</html>
+"""
+
+
+def build_report_from_data(state_data: dict) -> str:
+    """The report of a design given as ``state_to_dict`` data, e.g. sent from another process.
+
+    With no lens on the bench, the page only says so.
+    """
+    state = state_from_dict(state_data)
+    if not state.lenses:
+        return message_html("There is no lens on the bench: add one to see its report.")
+    model = OpticalModel(catalog={}, add_default_lens=False)  # no catalogue is needed
+    model.state = state
+    return build_report_html(model)
 
 
 def build_report_html(model: OpticalModel) -> str:
@@ -99,6 +140,7 @@ def build_report_html(model: OpticalModel) -> str:
     mtf = model.compute_mtf()
     ray_fan = model.compute_ray_fan()
     curvature = model.compute_field_curvature()
+    distortion = model.compute_distortion()
 
     spot = fast_trace.spot
     summary = fast_trace.summary
@@ -115,6 +157,11 @@ def build_report_html(model: OpticalModel) -> str:
             chip_html("EFL", f"{summary.effective_focal_length:.1f} mm"),
             chip_html("BFL", f"{summary.back_focal_length:.1f} mm"),
         ]
+        if summary.magnification is not None:
+            chips.append(chip_html("Magnification", magnification_text(summary.magnification)))
+    if state.has_finite_object:
+        image_x, image_y = fast_trace.chief_ray_image_points[state.selected_field_index]
+        chips.append(chip_html("Image height", image_point_text(image_x, image_y)))
     f_number = model.compute_f_number()
     if f_number is not None:
         chips.append(chip_html("f-number", f_number_text(f_number)))
@@ -134,18 +181,26 @@ def build_report_html(model: OpticalModel) -> str:
     if len(state.fields) > 1:
         spot_subtitle = (
             f'<span style="color:{selected.display_colour()}">'
-            f"Field {state.selected_field_index + 1}: {spot_subtitle}</span>"
+            f"{field_name(state.selected_field_index)}: {spot_subtitle}</span>"
         )
 
     # "+ 0.0" turns a rounded -0.000 into 0.000.
     best_focus_text = f"{round(through_focus.best_offset, 3) + 0.0:+.3f}"
-    angle_text = f"Field {state.selected_field_index + 1}, at {selected.angle_deg:+.1f}°"
+    angle_text = f"{field_name(state.selected_field_index)}, at {field_position_text(selected)}"
     cards = [
         card_html(
             "rays",
             "Ray diagram",
             ray_subtitle,
             figures.figure_to_inline_svg(figures.draw_ray_diagram(state, fast_trace)),
+            "span-6",
+            with_help=False,
+        ),
+        card_html(
+            "view_3d",
+            "3D view",
+            "Drag to rotate &middot; scroll to zoom &middot; right-drag to pan",
+            viewer_3d.viewer_html(),
             "span-6",
             with_help=False,
         ),
@@ -178,18 +233,38 @@ def build_report_html(model: OpticalModel) -> str:
             "Field curvature",
             "Best focus against field angle",
             figures.figure_to_inline_svg(
-                figures.draw_field_curvature(curvature, selected.angle_deg)
+                figures.draw_field_curvature(curvature, chief_ray_angle_deg(state, selected))
             ),
             "span-3",
         ),
     ]
 
+    # Only a finite object with a field of view has a grid to distort.
+    if distortion.has_grid:
+        cards += [
+            card_html(
+                "grid_distortion",
+                "Grid distortion",
+                "Where a square grid of object points is imaged",
+                figures.figure_to_inline_svg(figures.draw_distortion_grid(distortion)),
+                "span-3",
+            ),
+            card_html(
+                "distortion",
+                "Distortion",
+                distortion_title(distortion),
+                figures.figure_to_inline_svg(
+                    figures.draw_distortion_curve(distortion, field_height_mm(selected))
+                ),
+                "span-3",
+            ),
+        ]
+
     explanation_data = {
         key: {"title": title, "paragraphs": paragraphs}
         for key, (title, paragraphs) in EXPLANATIONS.items()
     }
-    # "</" inside a script block would end it early, so escape it in the JSON.
-    explanation_json = json.dumps(explanation_data).replace("</", "<\\/")
+    explanation_json = json_for_script(explanation_data)
 
     generated = datetime.now().strftime("%d %B %Y, %H:%M")
     return f"""<!DOCTYPE html>
@@ -215,22 +290,7 @@ def build_report_html(model: OpticalModel) -> str:
   <h3></h3><div class="body"></div></div>
 <script id="explanation-data" type="application/json">{explanation_json}</script>
 <script>{read_asset("report.js")}</script>
+{viewer_3d.scripts_html(model.build_scene())}
 </body>
 </html>
 """
-
-
-def write_and_open_report(model: OpticalModel) -> Path:
-    """Save the report to the temp folder with a time-stamped name and open it in the browser.
-
-    Returns
-    -------
-    pathlib.Path
-        Where the report was written.
-    """
-    report_path = (
-        Path(tempfile.gettempdir()) / f"raycrafter_report_{datetime.now():%Y%m%d_%H%M%S}.html"
-    )
-    report_path.write_text(build_report_html(model), encoding="utf-8")
-    webbrowser.open(report_path.as_uri())
-    return report_path

@@ -1,38 +1,50 @@
-"""The RayCrafter main window: side view on top, controls and analysis plots below.
+"""The RayCrafter main window: side view on top, analysis plots below.
 
-- "Add catalogue lens" opens the lens picker (``raycrafter.gui.lens_picker``). After Insert,
-  a ghost of the chosen lens follows the pointer along the axis; a click places it, Escape
-  cancels. "Add paraxial lens" does the same for an ideal thin lens of the focal length in
-  the box beside it.
+Laid out like a graphics editor: a palette of tools down the left
+(``raycrafter.gui.tool_palette``) and a context bar across the top that shows the settings
+of the active tool (``raycrafter.gui.context_bar``); on macOS the bar sits in the title bar.
+What each tool does is in ``raycrafter.gui.tool_actions``.
+
+- The add tools (paraxial lens, catalogue lens, user part) make a ghost of the new lens
+  follow the pointer along the axis; a click places it, Escape cancels. The focus-lock
+  button at the right of the context bar is "Lock focus".
 - Hover a lens and it turns a darker shade; that is the lens the actions apply to. Drag a
   lens to slide it along the axis; drag it past a neighbour's centre to swap them. Drag the
   green line to move the image plane (not while "Lock focus" is on or the gap to it is
   locked). Click one of the gap dimensions below the lenses to type that distance;
-  right-click it to lock or unlock it. Lenses joined by locked gaps move as one. The fields
+  right-click it to lock or unlock it, or to collimate the output or focus by setting it
+  (``raycrafter.gui.gap_optimiser``). Lenses joined by locked gaps move as one. The fields
   are defined at the source plane ("source"), which by default moves with the first lens;
   right-click its caption to unlock it, then drag it or type its gap.
-- Right-click a lens for Flip (F), Delete (Del or Backspace), Make Plossl, and the assembly
+- Right-click a lens for Flip (F), Delete (Del or Backspace), the replace actions
+  (``raycrafter.gui.lens_replacement``), Make Plossl, and the assembly
   actions: Make assembly (from lenses joined by locked gaps), Split assembly, and Save as
   user part. F flips a whole assembly. "Add user part" places a saved part, as one assembly.
 - The RayCrafter menu has About and Quit. The File menu (``raycrafter.gui.file_actions``) has
   New, Open, Save, Save As, Save Without Original ZMX, Import ZMX and Export ZMX. New, Open,
   Import and Quit ask first if the design has changed since it was last saved, opened or
   imported.
+- View > Web report opens the report in the web browser, where it stays up to date
+  (``raycrafter.gui.report_actions``). View > View bench lists the lenses and fields.
+- View > Show 3D View opens a window showing the bench in 3D (``raycrafter.gui.view_3d``),
+  brought up to date with the slower plots, once nothing is being dragged.
 - The Edit menu has Undo and Redo. One action (a whole drag, a typed value) is one step; New,
   Open and Import clear the history.
-- "Add field" opens the field window (``raycrafter.gui.field_editor``), where beams are
-  added, removed and edited while the bench updates live.
+- The Add field tool shows the field editor (``raycrafter.gui.field_editor``) in place of
+  the bottom-right plots, where beams are added, removed and edited while the bench updates
+  live.
 
 Updates come in two speeds, to keep the window responsive (see CLAUDE.md). The side view,
 spot, through-focus plot and status bar are recomputed on every change (coalesced, so a
 burst of drag events costs one recompute). Everything else waits until nothing is being
 dragged (a lens or the image plane):
 
-- The MTF, ray fan and field curvature are faded while a drag goes on, then recomputed
-  once the mouse is released (or SLOW_PLOT_DELAY_MS after a change that is not a drag),
-  and only for the tab that is showing.
+- The MTF, ray fan, field curvature and distortion are faded while a drag goes on, then
+  recomputed once the mouse is released (or SLOW_PLOT_DELAY_MS after a change that is not a
+  drag), and only for the tabs that are showing.
 - The f-number needs an extra trace, so during a drag the status bar keeps showing the
   last value, and it is recomputed on release.
+- The 3D view, if open, is redrawn along with the slower plots.
 """
 
 from __future__ import annotations
@@ -40,13 +52,19 @@ from __future__ import annotations
 import sys
 import time
 from collections.abc import Callable, Hashable
+from typing import TYPE_CHECKING
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QPoint, Qt, QTimer, QUrl
-from PyQt6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence, QShortcut
+from PyQt6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QDesktopServices,
+    QKeySequence,
+    QShortcut,
+    QShowEvent,
+)
 from PyQt6.QtWidgets import (
-    QCheckBox,
-    QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QInputDialog,
@@ -54,21 +72,28 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
-    QPushButton,
     QSizePolicy,
-    QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from raycrafter import palette
 from raycrafter.core.analysis import FastTrace, airy_radius
+from raycrafter.core.fields import chief_ray_angle_deg, field_height_mm
 from raycrafter.core.gaps import MIN_IMAGE_GAP_MM, SOURCE_GAP_INDEX
 from raycrafter.core.model import OpticalModel
-from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
+from raycrafter.core.plot_geometry import (
+    f_number_text,
+    field_position_text,
+    image_point_text,
+    magnification_text,
+    rms_radius_text,
+)
 from raycrafter.core.state import PlacedLens
 from raycrafter.gui.about_dialog import DOCS_URL, AboutDialog
 from raycrafter.gui.analysis_panels import (
+    DistortionPanel,
     FieldCurvaturePanel,
     MtfPanel,
     RayFanPanel,
@@ -77,26 +102,29 @@ from raycrafter.gui.analysis_panels import (
     make_tabs,
 )
 from raycrafter.gui.bench_viewer import BenchViewer
+from raycrafter.gui.context_bar import ContextBar, hide_title_text, put_in_title_bar
 from raycrafter.gui.field_editor import FieldEditor
 from raycrafter.gui.file_actions import FileActions
-from raycrafter.gui.lens_picker import LensPickerDialog
+from raycrafter.gui.gap_optimiser import GapOptimiser
+from raycrafter.gui.lens_browser import LensBrowser
+from raycrafter.gui.lens_replacement import LensReplacer
+from raycrafter.gui.report_actions import ReportActions
 from raycrafter.gui.side_view import SideView
 from raycrafter.gui.style import style_sheet
-from raycrafter.gui.undo_keys import leave_undo_keys_to_window
-from raycrafter.report import write_and_open_report
+from raycrafter.gui.tool_actions import ToolActions
+from raycrafter.gui.tool_palette import Tool, ToolPalette
+
+if TYPE_CHECKING:
+    from raycrafter.gui.view_3d import View3DWindow
 
 # macOS adds AutoFill, Start Dictation and Emoji & Symbols to any menu called "Edit", none of
 # which is any use here, and Qt has no setting to stop it. A zero-width space after the name
 # looks the same but is not recognised, so the menu holds only RayCrafter's own items.
 EDIT_MENU_TITLE = "Edit\u200b" if sys.platform == "darwin" else "Edit"
-SLOW_PLOT_DELAY_MS = 120  # MTF, ray fan and field curvature wait this long after the last change
+SLOW_PLOT_DELAY_MS = 120  # the slower plots wait this long after the last change
 STALE_PLOT_OPACITY = 0.4  # the slower plots are this faded while a drag makes them out of date
-DEFAULT_PARAXIAL_FOCAL_LENGTH_MM = 100
-PARAXIAL_FOCAL_LENGTH_RANGE_MM = (-2000, 2000)
-FOCAL_LENGTH_BOX_WIDTH_PX = 82  # room for "-2000 mm" and the arrows, leaving the rest to buttons
-NARROW_BUTTON_STYLE = "padding: 6px 8px;"  # a button only as wide as its text needs
-HINT_MIN_HEIGHT_PX = 52  # height reserved for the help text at the foot of the control panel
 STATUS_MESSAGE_MS = 5000
+STATUS_EDGE_GAP_PX = 5  # room between the status text and the window's edge
 
 
 class MainWindow(QMainWindow):
@@ -111,21 +139,26 @@ class MainWindow(QMainWindow):
     def __init__(self, model: OpticalModel | None = None) -> None:
         super().__init__()
         self.setWindowTitle("RayCrafter")
+        put_in_title_bar(self)  # on macOS, the context bar goes in the title bar
         self.resize(1450, 900)
         self.setStyleSheet(style_sheet())
         pg.setConfigOptions(background="w", foreground=palette.TEXT, antialias=True)
 
         self.model = model if model is not None else OpticalModel()
-        self.lens_picker: LensPickerDialog | None = None  # made on first use, then kept
-        self.field_editor: FieldEditor | None = None  # made on first use, then kept
         self.bench_viewer: BenchViewer | None = None  # made on first use, then kept
+        self.view_3d: View3DWindow | None = None  # made on first use, then kept
         self.f_number_readout: str | None = None  # last f-number text, kept during a drag
         # How the next redraw enters the undo history (see record_undo_step).
         self.undo_merge_key: Hashable | None = None
         self.next_redraw_is_undo_step = True
         self.next_redraw_counts_as_saved = False  # see show_replaced_design
+        self.title_text_hidden = False  # see showEvent
         self.files = FileActions(self)  # the File menu
+        self.replacer = LensReplacer(self)  # the lens menu's replace actions
+        self.gap_optimiser = GapOptimiser(self)  # the gap menu's optimise actions
+        self.reports = ReportActions(self)  # "Generate report", kept up to date
         self._build_widgets()
+        self.tools = ToolActions(self)  # what the palette's tools do
         self._build_menus()
         self._connect_signals()
 
@@ -161,131 +194,66 @@ class MainWindow(QMainWindow):
         self.mtf_panel = MtfPanel()
         self.ray_fan_panel = RayFanPanel()
         self.field_curvature_panel = FieldCurvaturePanel()
+        self.distortion_panel = DistortionPanel()
 
         # The slower plots fade while a drag leaves them out of date. The effect is switched
         # off (not set to full opacity) when they are current, so it costs nothing then.
         self.slow_plot_fades: list[QGraphicsOpacityEffect] = []
-        for panel in (self.mtf_panel, self.ray_fan_panel, self.field_curvature_panel):
+        slow_plots = (self.mtf_panel, self.ray_fan_panel, self.field_curvature_panel)
+        for panel in (*slow_plots, *self.distortion_panel.plots):
             fade = QGraphicsOpacityEffect(panel)
             fade.setOpacity(STALE_PLOT_OPACITY)
             fade.setEnabled(False)
             panel.setGraphicsEffect(fade)
             self.slow_plot_fades.append(fade)
 
-        # Three tab widgets of equal width. Field curvature gets a one-tab widget so that all
-        # three plots line up.
+        # Three tab widgets of equal width.
         self.spot_tabs = make_tabs(
             [("Spot", self.spot_panel), ("Through-focus", self.through_focus_panel)]
         )
         self.mtf_tabs = make_tabs([("MTF", self.mtf_panel), ("Ray fan", self.ray_fan_panel)])
-        self.field_tabs = make_tabs([("Field curvature", self.field_curvature_panel)])
+        self.field_tabs = make_tabs(
+            [("Field curvature", self.field_curvature_panel), ("Distortion", self.distortion_panel)]
+        )
+
+        # The bottom-right corner shows the field curvature and distortion, or the panel of
+        # the "Add catalogue lens" or "Add field" tool while it is active (see
+        # show_in_bottom_right).
+        self.lens_browser = LensBrowser(self.model.catalog)
+        self.field_editor = FieldEditor(self.model)
+        self.field_editor.fields_changed.connect(self.request_update)
+        self.bottom_right = QStackedWidget()
+        for panel in (self.field_tabs, self.lens_browser, self.field_editor):
+            self.bottom_right.addWidget(panel)
 
         bottom_row = QHBoxLayout()
-        self.control_panel = self._build_control_panel()
-        bottom_row.addWidget(self.control_panel)
-        for tab_widget in (self.spot_tabs, self.mtf_tabs, self.field_tabs):
+        for tab_widget in (self.spot_tabs, self.mtf_tabs, self.bottom_right):
             bottom_row.addWidget(tab_widget, stretch=1)
 
         central = QWidget()
         layout = QVBoxLayout(central)
         # Plot widgets report a large preferred height, which skewed the 2:3 split between the
         # side view and the bottom row; ignoring it lets the stretch factors alone decide.
-        for plot_area in (self.side_view, self.spot_tabs, self.mtf_tabs, self.field_tabs):
+        for plot_area in (self.side_view, self.spot_tabs, self.mtf_tabs, self.bottom_right):
             plot_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
         layout.addWidget(self.side_view, stretch=2)
         layout.addLayout(bottom_row, stretch=3)
         self.setCentralWidget(central)
 
         self.status_label = QLabel()
+        self.status_label.setContentsMargins(STATUS_EDGE_GAP_PX, 0, 0, 0)  # clear of the edge
         self.statusBar().addWidget(self.status_label)
 
-    def _build_control_panel(self) -> QFrame:
-        """The framed panel of buttons."""
-        self.add_catalogue_lens_button = QPushButton("Add catalogue lens")
-        self.add_paraxial_lens_button = QPushButton("Add paraxial lens")
-        self.add_user_part_button = QPushButton("Add user part")
-        self.add_user_part_button.setToolTip(
-            'Place an assembly saved with "Save as user part" (right-click an assembly)'
-        )
-        # The menu is filled each time it opens, so parts saved meanwhile appear in it.
-        self.user_parts_menu = QMenu(self.add_user_part_button)
-        self.user_parts_menu.aboutToShow.connect(self.fill_user_parts_menu)
-        self.add_user_part_button.setMenu(self.user_parts_menu)
-        self.paraxial_focal_length_box = QSpinBox()
-        self.paraxial_focal_length_box.setRange(*PARAXIAL_FOCAL_LENGTH_RANGE_MM)
-        self.paraxial_focal_length_box.setValue(DEFAULT_PARAXIAL_FOCAL_LENGTH_MM)
-        self.paraxial_focal_length_box.setSuffix(" mm")
-        self.paraxial_focal_length_box.setMaximumWidth(FOCAL_LENGTH_BOX_WIDTH_PX)
-        leave_undo_keys_to_window(self.paraxial_focal_length_box)
-        self.paraxial_focal_length_box.setToolTip(
-            "Focal length of the next paraxial (ideal thin) lens; negative for a diverging lens"
-        )
-        self.autofocus_button = QPushButton("Autofocus")
-        self.add_field_button = QPushButton("Add field")
-        self.add_field_button.setToolTip("Open the field window to add, remove and edit beams")
-        self.report_button = QPushButton("Generate report")
-        self.view_bench_button = QPushButton("View bench")
-        self.view_bench_button.setToolTip(
-            "List the lenses and fields with the numbers scripts and AI agents use for them"
-        )
-        self.lock_focus_checkbox = QCheckBox("Lock focus")  # off by default
-        self.lock_focus_checkbox.setToolTip(
-            "Keep the image plane at best focus as lenses or the beams change, "
-            "whenever that focus is in view. Not available while the gap to the image "
-            "plane is locked."
-        )
-
-        # Reminder of where the per-lens actions are, since they are not buttons.
-        hint_label = QLabel(
-            "Right-click a lens to flip it (F), delete it (Del), make a Plossl pair or an "
-            "assembly. "
-            "Drag a lens past its neighbour to swap their order. Click a gap to type it; "
-            "right-click it to lock it."
-        )
-        hint_label.setObjectName("hintLabel")
-        hint_label.setWordWrap(True)
-        # A wrapped label reports a large height-for-width size hint, which swelled the bottom
-        # row and squeezed the side view to a sliver. Ignoring its size hints keeps the panel's
-        # size set by the controls; the label just wraps to fit the space at the bottom.
-        hint_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        hint_label.setMinimumHeight(HINT_MIN_HEIGHT_PX)
-        hint_label.setAlignment(Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
-
-        # One column of controls, so the panel is narrow and the plots get the width. The two
-        # rows with something beside a button set that width; the other buttons fill it.
-        paraxial_row = QHBoxLayout()
-        paraxial_row.addWidget(self.add_paraxial_lens_button, stretch=1)
-        paraxial_row.addWidget(self.paraxial_focal_length_box)
-
-        autofocus_row = QHBoxLayout()
-        self.autofocus_button.setStyleSheet(NARROW_BUTTON_STYLE)
-        autofocus_row.addWidget(self.autofocus_button)
-        autofocus_row.addWidget(self.lock_focus_checkbox)
-        autofocus_row.addStretch(1)
-
-        controls = QVBoxLayout()
-        controls.setSpacing(8)
-        controls.addWidget(self.add_catalogue_lens_button)
-        controls.addLayout(paraxial_row)
-        controls.addWidget(self.add_user_part_button)
-        controls.addWidget(self.add_field_button)
-        controls.addLayout(autofocus_row)
-        controls.addWidget(self.report_button)
-        controls.addWidget(self.view_bench_button)
-        controls.addStretch(1)  # spare space goes above the hint, which sits at the foot
-        controls.addWidget(hint_label)
-        controls.setContentsMargins(14, 14, 14, 14)
-
-        # A framed card (QFrame#controls in the style sheet), so the controls read as one panel.
-        # It keeps the width its controls need and gives none of the spare width to itself.
-        control_panel = QFrame()
-        control_panel.setObjectName("controls")
-        control_panel.setLayout(controls)
-        control_panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-        return control_panel
+        self.tool_palette = ToolPalette(self)
+        self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self.tool_palette)
+        self.context_bar = ContextBar(self)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.context_bar)
+        self.lock_focus_button = self.context_bar.lock_focus_button  # "Lock focus"
+        self.context_bar.add_page(Tool.ADD_CATALOGUE_LENS, self.lens_browser.filter_controls)
+        self.context_bar.add_page(Tool.ADD_FIELD, self.field_editor.light_controls)
 
     def _build_menus(self) -> None:
-        """The RayCrafter menu (About, Quit), File (see ``file_actions``), Edit and Help.
+        """The RayCrafter menu (About, Quit), File (see ``file_actions``), Edit, View and Help.
 
         On macOS, Qt moves About and Quit into the application menu, which is named after
         the app, so they appear where Mac users expect them; the menu roles tell it which.
@@ -327,6 +295,19 @@ class MainWindow(QMainWindow):
         ]
         self.redo_action.setShortcuts([shift_redo, *other_redo_keys])
 
+        view_menu = menu_bar.addMenu("View")
+        self.web_report_action = add_action(view_menu, "Web report", self.generate_report)
+        self.web_report_action.setToolTip(
+            "Open a report in your web browser; the page updates as the design changes"
+        )
+        self.view_bench_action = add_action(view_menu, "View bench", self.open_bench_viewer)
+        self.view_bench_action.setToolTip(
+            "List the lenses and fields with the numbers scripts and AI agents use for them"
+        )
+        view_menu.setToolTipsVisible(True)
+        view_menu.addSeparator()
+        self.view_3d_action = add_action(view_menu, "Show 3D View", self.show_3d_view)
+
         help_menu = menu_bar.addMenu("Help")
         add_action(
             help_menu,
@@ -336,23 +317,12 @@ class MainWindow(QMainWindow):
         )
 
     def _connect_signals(self) -> None:
-        """Wire the buttons, side view and keyboard shortcuts to their handlers."""
-        self.add_catalogue_lens_button.clicked.connect(self.open_lens_picker)
-        self.add_paraxial_lens_button.clicked.connect(self.start_paraxial_lens_placement)
-        # A focal length of zero is not a lens, so the button is off while the box shows 0.
-        self.paraxial_focal_length_box.valueChanged.connect(
-            lambda focal_length_mm: self.add_paraxial_lens_button.setEnabled(focal_length_mm != 0)
-        )
-        self.autofocus_button.clicked.connect(self.run_autofocus)
-        self.add_field_button.clicked.connect(self.open_field_editor)
-        self.report_button.clicked.connect(self.generate_report)
-        self.view_bench_button.clicked.connect(self.open_bench_viewer)
-        self.lock_focus_checkbox.toggled.connect(self.on_lock_focus_toggled)
+        """Wire the side view, the focus lock and keyboard shortcuts to their handlers."""
+        self.lock_focus_button.toggled.connect(self.on_lock_focus_toggled)
 
         self.side_view.changed.connect(self.request_update)
         self.side_view.lens_menu_requested.connect(self.show_lens_menu)
         self.side_view.gap_menu_requested.connect(self.show_gap_menu)
-        self.side_view.placement_finished.connect(self.on_placement_finished)
         self.side_view.message_requested.connect(
             lambda message: self.statusBar().showMessage(message, STATUS_MESSAGE_MS)
         )
@@ -370,10 +340,12 @@ class MainWindow(QMainWindow):
                 self,
                 activated=lambda: self.act_on_hovered_lens(self.delete_lens),
             )
-        QShortcut(QKeySequence("Escape"), self, activated=self.side_view.cancel_placement)
+        QShortcut(QKeySequence("Escape"), self, activated=self.tools.escape)
 
         # Only the visible tab of each pair is computed, so switching tab must trigger a redraw.
         self.mtf_tabs.currentChanged.connect(lambda _index: self.update_mtf_tab())
+        self.field_tabs.currentChanged.connect(lambda _index: self.update_field_tab())
+        self.distortion_panel.reference_changed.connect(self.update_field_tab)
 
     # --------------------------------------------------------------- controls
 
@@ -387,38 +359,6 @@ class MainWindow(QMainWindow):
         if not self.update_timer.isActive():
             self.update_timer.start(0)
 
-    def open_lens_picker(self) -> None:
-        """Show the lens picker; after Insert, let the user place the chosen lens on the axis."""
-        if self.lens_picker is None:
-            self.lens_picker = LensPickerDialog(self.model.catalog, parent=self)
-        if self.lens_picker.exec() != LensPickerDialog.DialogCode.Accepted:
-            return
-        part_number = self.lens_picker.selected_part_number()
-        if part_number is None:
-            return
-        self.start_lens_placement([self.model.make_lens(part_number)])
-
-    def start_paraxial_lens_placement(self) -> None:
-        """Let the user place a paraxial lens with the focal length shown beside the button."""
-        focal_length_mm = float(self.paraxial_focal_length_box.value())
-        if focal_length_mm != 0.0:
-            self.start_lens_placement([self.model.make_paraxial_lens(focal_length_mm)])
-
-    def fill_user_parts_menu(self) -> None:
-        """List the saved user parts in the "Add user part" menu, read afresh from disk."""
-        self.user_parts_menu.clear()
-        parts = self.model.user_parts()
-        if not parts:
-            empty_action = self.user_parts_menu.addAction("No user parts saved yet")
-            empty_action.setEnabled(False)
-        for part in parts:
-            action = self.user_parts_menu.addAction(f"{part.name}\t{part.length_mm:.1f} mm")
-            action.triggered.connect(
-                lambda _checked=False, part=part: self.start_lens_placement(
-                    part.lenses_at(0.0), part.name
-                )
-            )
-
     def start_lens_placement(
         self, new_lenses: list[PlacedLens], assembly_name: str | None = None
     ) -> None:
@@ -428,12 +368,6 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Click on the axis to place {name}. Esc or right-click to cancel."
         )
-
-    def on_placement_finished(self, placed: bool) -> None:
-        """Clear the placement instructions; the side view has already updated the model."""
-        self.statusBar().clearMessage()
-        if not placed:
-            self.statusBar().showMessage("Lens not added", 3000)
 
     def act_on_hovered_lens(self, action: Callable[[int], None]) -> None:
         """Keyboard shortcuts: run ``action(index)`` for the lens under the pointer, if any."""
@@ -456,12 +390,16 @@ class MainWindow(QMainWindow):
         self.request_update()
 
     def make_plossl(self, lens_index: int) -> None:
-        """Snap a lens and its identical neighbour into a Plossl pair, then refocus."""
-        if self.model.plossl_partner(lens_index) is not None:
+        """Turn a lens into a Plossl pair and refocus, or say why that is not possible."""
+        try:
             self.model.make_plossl(lens_index)
-            if not self.model.state.image_gap_locked:
-                self.model.autofocus()  # the pair has a new focal length: the focus is stale
-            self.request_update()
+        except ValueError as error:
+            self.statusBar().showMessage(str(error), STATUS_MESSAGE_MS)
+            return
+        self.side_view.rebuild_lens_graphics()
+        if not self.model.state.image_gap_locked:
+            self.model.autofocus()  # the pair has a new focal length: the focus is stale
+        self.request_update()
 
     def make_assembly(self, lens_index: int) -> None:
         """Make the lenses joined to this one by locked gaps into one assembly."""
@@ -526,6 +464,9 @@ class MainWindow(QMainWindow):
         delete_action.triggered.connect(lambda: self.delete_lens(lens_index))
 
         menu.addSeparator()
+        self.replacer.add_menu_entries(menu, lens_index)
+
+        menu.addSeparator()
         # Lenses joined by locked gaps can be made one assembly, unless they already are.
         block = self.model.block_indices(lens_index)
         assembly_action = menu.addAction("Make assembly")
@@ -541,18 +482,12 @@ class MainWindow(QMainWindow):
             save_action.triggered.connect(lambda: self.save_as_user_part(lens_index))
         else:
             plossl_action = menu.addAction("Make Plossl")
-            plossl_action.setEnabled(self.model.plossl_partner(lens_index) is not None)
+            reason = self.model.reason_no_plossl(lens_index)
+            plossl_action.setEnabled(reason is None)
+            if reason is not None:
+                menu.setToolTipsVisible(True)
+                plossl_action.setToolTip(reason)
             plossl_action.triggered.connect(lambda: self.make_plossl(lens_index))
-
-            # While "Make Plossl" is highlighted, outline the two lenses that would be paired.
-            def preview_if_plossl(hovered_action) -> None:
-                if hovered_action is plossl_action and plossl_action.isEnabled():
-                    self.side_view.show_plossl_preview(lens_index)
-                else:
-                    self.side_view.hide_plossl_preview()
-
-            menu.hovered.connect(preview_if_plossl)
-        menu.aboutToHide.connect(self.side_view.hide_plossl_preview)
         return menu
 
     def show_gap_menu(self, lens_index: int, global_position: QPoint) -> None:
@@ -560,7 +495,7 @@ class MainWindow(QMainWindow):
         self.build_gap_menu(lens_index).exec(global_position)
 
     def build_gap_menu(self, lens_index: int) -> QMenu:
-        """The context menu for the gap behind one lens: Lock gap, or Unlock gap.
+        """The context menu for the gap behind one lens: Lock or Unlock gap, and optimise it.
 
         ``lens_index`` is SOURCE_GAP_INDEX for the gap from the source plane to the first lens.
 
@@ -579,8 +514,11 @@ class MainWindow(QMainWindow):
             action.setEnabled(not gap.in_assembly)
         else:
             action = menu.addAction("Lock gap")
-            action.setEnabled(not (gap.to_image and self.lock_focus_checkbox.isChecked()))
+            action.setEnabled(not (gap.to_image and self.lock_focus_button.isChecked()))
         action.triggered.connect(lambda: self.set_gap_locked(lens_index, not gap.locked))
+        if not gap.to_image:  # autofocus is what optimises the gap to the image plane
+            menu.addSeparator()
+            self.gap_optimiser.add_menu_entries(menu, lens_index)
         return menu
 
     def set_gap_locked(self, lens_index: int, locked: bool) -> None:
@@ -604,22 +542,6 @@ class MainWindow(QMainWindow):
             return
         self.request_update()
 
-    def open_field_editor(self) -> None:
-        """Show the field window (made on first use) and bring it to the front.
-
-        The first time, it is put over the control panel, so it covers neither the side
-        view nor the plots the user is watching.
-        """
-        if self.field_editor is None:
-            self.field_editor = FieldEditor(self.model, parent=self)
-            self.field_editor.fields_changed.connect(self.request_update)
-            self.field_editor.adjustSize()
-            self.field_editor.move(self.control_panel.mapToGlobal(QPoint(0, 0)))
-        self.field_editor.refresh()  # the bench may have changed since it was last open
-        self.field_editor.show()
-        self.field_editor.raise_()
-        self.field_editor.activateWindow()
-
     def open_bench_viewer(self) -> None:
         """Show the bench viewer (made on first use) and bring it to the front."""
         if self.bench_viewer is None:
@@ -642,9 +564,25 @@ class MainWindow(QMainWindow):
     def delete_fields(self, field_indices: list[int]) -> None:
         """Remove fields (the bench viewer's Delete); at least one always remains."""
         self.model.remove_fields(field_indices)
-        if self.field_editor is not None:
-            self.field_editor.refresh()
+        self.field_editor.refresh()
         self.request_update()
+
+    def show_3d_view(self) -> None:
+        """View > Show 3D View: open the 3D window (made on first use) and bring it forward."""
+        if self.view_3d is None:
+            # Imported on first use: loading OpenGL would slow every start-up.
+            from raycrafter.gui.view_3d import View3DWindow
+
+            self.view_3d = View3DWindow(parent=self)
+        self.view_3d.show()
+        self.view_3d.raise_()
+        self.view_3d.activateWindow()
+        self.refresh_3d_view()  # once shown: a hidden view is not kept up to date
+
+    def refresh_3d_view(self) -> None:
+        """Bring the 3D view up to date, if it is open. Not for the fast path (it traces)."""
+        if self.view_3d is not None and self.view_3d.isVisible():
+            self.view_3d.show_scene(self.model.build_scene())
 
     # ------------------------------------------------------------------ undo and redo
 
@@ -707,8 +645,7 @@ class MainWindow(QMainWindow):
         """Redraw everything after the lenses or the whole design changed behind the view."""
         self.side_view.cancel_placement()
         self.side_view.rebuild_lens_graphics()
-        if self.field_editor is not None:
-            self.field_editor.refresh()
+        self.field_editor.refresh()
         self.f_number_readout = None
         self.request_update()
 
@@ -720,24 +657,27 @@ class MainWindow(QMainWindow):
         """RayCrafter > About: the icon, name, version and project link."""
         AboutDialog(self).exec()
 
+    def showEvent(self, event: QShowEvent) -> None:
+        """On the first show, hide macOS's window title, which would cover the context bar."""
+        super().showEvent(event)
+        if not self.title_text_hidden:
+            hide_title_text(self)
+            self.title_text_hidden = True
+
     def closeEvent(self, event: QCloseEvent) -> None:
         """Closing the window (or Quit) asks first if there are unsaved changes."""
         if self.files.confirm_discard_changes("quitting"):
+            self.reports.stop()
             event.accept()
         else:
             event.ignore()
 
     def generate_report(self) -> None:
-        """Write an HTML report of the current system and open it in the web browser."""
+        """Open the report in the web browser (see ``raycrafter.gui.report_actions``)."""
         if not self.model.state.lenses:
             self.statusBar().showMessage("Add a lens before generating a report", 5000)
             return
-        try:
-            report_path = write_and_open_report(self.model)
-        except Exception as error:  # show any problem instead of crashing the GUI
-            QMessageBox.critical(self, "Report failed", f"Could not generate the report:\n{error}")
-            return
-        self.statusBar().showMessage(f"Report written to {report_path}", 8000)
+        self.reports.open_report()
 
     def on_lock_focus_toggled(self, locked: bool) -> None:
         """Lock focus on: the image plane follows best focus and cannot be dragged."""
@@ -752,12 +692,12 @@ class MainWindow(QMainWindow):
         """
         state = self.model.state
         image_gap_locked = bool(state.lenses) and state.image_gap_locked
-        if image_gap_locked and self.lock_focus_checkbox.isChecked():
-            self.lock_focus_checkbox.blockSignals(True)  # no redraw of its own: one is running
-            self.lock_focus_checkbox.setChecked(False)
-            self.lock_focus_checkbox.blockSignals(False)
+        if image_gap_locked and self.lock_focus_button.isChecked():
+            self.lock_focus_button.blockSignals(True)  # no redraw of its own: one is running
+            self.lock_focus_button.setChecked(False)
+            self.lock_focus_button.blockSignals(False)
             self.side_view.set_image_line_locked(False)
-        self.lock_focus_checkbox.setEnabled(not image_gap_locked)
+        self.lock_focus_button.setEnabled(not image_gap_locked)
 
     def refocus_if_focus_in_view(self) -> None:
         """With "Lock focus" on, move the image plane to best focus if that focus is visible.
@@ -785,7 +725,7 @@ class MainWindow(QMainWindow):
         state = self.model.state
         start = time.perf_counter()
         self.apply_image_gap_lock()
-        if self.lock_focus_checkbox.isChecked():
+        if self.lock_focus_button.isChecked():
             self.refocus_if_focus_in_view()
         if not self.is_dragging():
             self.record_undo_step()  # after any refocus, which is part of the same step
@@ -828,6 +768,12 @@ class MainWindow(QMainWindow):
                 f"EFL={summary.effective_focal_length:.1f} mm",
                 f"BFL={summary.back_focal_length:.1f} mm",
             ]
+            if summary.magnification is not None:
+                readouts.append(magnification_text(summary.magnification))
+        if state.has_finite_object:
+            # The real image height: where the selected field's chief ray lands.
+            image_x, image_y = fast_trace.chief_ray_image_points[state.selected_field_index]
+            readouts.append(image_point_text(image_x, image_y))
         # The f-number needs an extra trace: during a drag the last value stays on show.
         if not self.is_dragging():
             f_number = self.model.compute_f_number()
@@ -844,7 +790,7 @@ class MainWindow(QMainWindow):
         return self.side_view.is_dragging()
 
     def set_slow_plots_faded(self, faded: bool) -> None:
-        """Fade the MTF, ray fan and field curvature (out of date), or show them normally."""
+        """Fade the slower plots (out of date), or show them normally."""
         for fade in self.slow_plot_fades:
             fade.setEnabled(faded)
 
@@ -852,16 +798,43 @@ class MainWindow(QMainWindow):
         """Recompute the slower plots (run once changes have settled) and un-fade them."""
         if self.is_dragging():
             return  # they are recomputed when the drag ends
+        self.reports.design_settled()
+        self.refresh_3d_view()
         self.update_mtf_tab()
-        self.field_curvature_panel.show_result(
-            self.model.compute_field_curvature(), self.model.state.selected_field.angle_deg
-        )
+        self.update_field_tab()
         self.set_slow_plots_faded(False)
 
     def update_mtf_tab(self) -> None:
         """Compute whichever of the MTF and ray fan is showing; the other waits until selected."""
-        field_angle = self.model.state.selected_field.angle_deg
+        field_position = field_position_text(self.model.state.selected_field)
         if self.mtf_tabs.currentWidget() is self.mtf_panel:
-            self.mtf_panel.show_result(self.model.compute_mtf(), field_angle)
+            self.mtf_panel.show_result(self.model.compute_mtf(), field_position)
         else:
-            self.ray_fan_panel.show_result(self.model.compute_ray_fan(), field_angle)
+            self.ray_fan_panel.show_result(self.model.compute_ray_fan(), field_position)
+
+    def show_in_bottom_right(self, widget: QWidget) -> None:
+        """Show the field curvature and distortion tabs, or a tool's panel, bottom right."""
+        if self.bottom_right.currentWidget() is widget:
+            return
+        self.bottom_right.setCurrentWidget(widget)
+        if widget is self.field_tabs:
+            self.update_field_tab()  # it was not kept up to date while hidden
+
+    def update_field_tab(self) -> None:
+        """Compute whichever of field curvature and distortion is showing, as for the MTF.
+
+        Nothing is computed while a tool's panel covers them (see ``show_in_bottom_right``).
+        """
+        if self.bottom_right.currentWidget() is not self.field_tabs:
+            return
+        state = self.model.state
+        selected = state.selected_field
+        if self.field_tabs.currentWidget() is self.field_curvature_panel:
+            self.field_curvature_panel.show_result(
+                self.model.compute_field_curvature(), chief_ray_angle_deg(state, selected)
+            )
+        else:
+            self.distortion_panel.show_result(
+                self.model.compute_distortion(self.distortion_panel.reference),
+                field_height_mm(selected),
+            )

@@ -309,6 +309,32 @@ carry the beam to the first lens (`beam_at_first_lens`). Rob chose an explicit s
 "Each field's rays are launched by RayCrafter" and the offset rule in "ZMX fields are aimed
 through the stop" (2026-11-24).
 
+## 2026-11-26: Replacing a lens keeps its rear principal plane (#63)
+**Decision:** "Replace with same f…", "Swap lens…" and "Replace with paraxial" put the new lens
+where the old one's rear principal plane was, so focus barely moves. A locked gap in front
+keeps the front vertex, one behind keeps the back vertex; an overlap is refused. For a lens
+of a Plossl pair the user replaces both or splits the pair. The picker's coating filter
+defaults to "suits the beams" (uncoated always suits); "same f" means same sign, within ±10%.
+**Why:** Rob's choice, for teaching. Keeping the front vertex or centre shifts the focus.
+
+## 2026-11-26: Gap optimisation uses our own rays and a 1-D search (#38, #56)
+**Decision:** "Collimate output" and "Focus" scan the allowed gap range with RayCrafter's own
+launched rays of the selected field, then refine with SciPy's bounded scalar minimiser. The
+Optiland system is built once per search; trials change thicknesses (`updater.set_thickness`).
+Gaps that clip rays are never chosen. A flip of a neighbouring lens is suggested when it gives
+at most half the merit and is better by at least 5 µrad or 1 µm.
+**Why:** Optiland's optimiser ignores a field's offset (#10) and is unbounded; one variable
+needs no more than a scan. Rebuilding per trial took about 1 s per search; this takes 0.1 s.
+
+## 2026-11-26: OpticalModel is a thin front over topic modules
+**Decision:** Editing logic left `core/model.py` (998 -> 541 lines) for functions of an
+`OpticalState` in `core/placement.py` (adding, inserting, deleting, the source plane),
+`core/moving.py` (moving, swapping blocks), `core/assemblies.py` (Plossl pairs, flipping),
+`replacement.py` and `gap_optimisation.py`. Model methods are one-line wrappers; CLAUDE.md
+now says so. No caller or test changed.
+**Why:** Each feature added 30+ lines to the model. Rob chose this over mixins (it is unclear
+where a method lives) and sub-objects (`model.gaps.set`, which changes every caller).
+
 ## 2026-11-26: Faster updates from shared glasses and one trace for all fields (#27)
 **Decision:** Each glass is loaded once and shared by every rebuilt Optiland system
 (`optic_builder.glass`), and `trace_fast` traces every field's spot and side-view rays in one
@@ -316,3 +342,51 @@ call. The threaded or every-few-frames tracing suggested in #27 is put off.
 **Why:** Glass lookups were nearly all of a rebuild, and a trace call costs much the same for
 few rays as for many. A 12-lens, 9-field frame fell from 260 to 66 ms (Apple M2, off screen),
 only 17 ms of it tracing, so a thread would gain little.
+
+## 2026-11-26: A finite object is points on the source plane (#29)
+**Decision:** A design's fields are all beams (object at infinity) or all `ObjectPoint`s (x and
+y height, object-space NA) on the source plane, which is then the object plane; there is no
+separate `object_z`. Rays fill a cone of half-angle asin(NA) about a chief ray aimed at the
+first lens centre (a stop item comes later). Switching keeps each chief-ray angle; with the
+source on the lens, the object goes to its front focal plane. Project files are format 2.
+**Why:** Rob's choices. The source plane (#41) already did what `object_z` would; one kind per
+design, as in Zemax, keeps magnification, the MTF and ZMX export well defined.
+
+## 2026-11-26: One 3D scene for the app and the report, which carries three.js (#51, #52)
+**Decision:** `core/scene.py` turns the bench into coloured meshes and polylines, with a
+versioned JSON form. The app draws it with pyqtgraph.opengl (new dependency PyOpenGL). The
+HTML report embeds it with a copy of three.js 0.160.0, so a design is shared as one file
+that works offline (about 1.5 MB). A live web page was left for later (#68).
+**Why:** Rob's choices. VTK, installed with Optiland, would be fussier to embed in Qt. A
+hosted viewer needs a site, and a browser cannot recompute a design from its project file.
+
+## 2026-11-26: A Plossl pair is made from one lens, centred on its optical centre (#67)
+**Decision:** "Make Plossl" duplicates a positive lens. The pair is centred midway between the
+original's principal planes. Locked gaps keep their length, so the lenses joined by them move
+outwards, and a pair that would overlap anything is refused. Singlets have curved faces inside.
+**Why:** The issue asked for the pair about the optical centre; positive lenses only was Rob's
+choice. Refusing follows "Typed gaps are refused rather than adjusted". For achromats the pair
+reaches further forwards than back, which centring on the glass would avoid. Rob agreed.
+
+## 2026-11-26: Collimating "after the element" means the lens or assembly behind the gap (#66)
+**Decision:** The gap menu measures either the system's output or the light leaving the element
+behind the gap: the next lens, or all of its assembly. The core takes any lens behind the gap
+(`measure_after_lens_index`) and leaves later lenses out of the search, rims included.
+**Why:** An assembly is used as one unit. The issue expects other measurement points later,
+which the core already allows. Rob agreed.
+
+## 2026-11-26: The live report is served locally and built in a separate process (#68)
+**Decision:** "Generate report" opens a page served on 127.0.0.1, which reloads when a newer
+report is ready. A worker process builds reports one at a time, at least 10 s apart, and after
+the first only while a page watches. Each carries the revision of the design it shows.
+**Why:** Rob asked for automatic updates that do not slow the GUI. A background thread stalled
+drag redraws to about 100 ms. `multiprocessing` reruns the launching script and leaves pool
+workers behind if RayCrafter is killed, so it is a plain subprocess (about 430 MB). Rob agreed.
+**Supersedes:** leaving the live page for later, in "One 3D scene for the app and the report".
+
+## 2026-11-26: Distortion is measured against the near-axis magnification (#30)
+**Decision:** The ideal grid is scaled by the image/object ratio of a near-axis point on the image
+plane, not the paraxial M. Its corners are at the farthest object point. We trace it ourselves
+(`core/distortion.py`).
+**Why:** With the paraxial M a defocused image reads as distorted; Zemax and Optiland avoid this
+the same way.

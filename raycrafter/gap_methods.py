@@ -17,12 +17,17 @@ defined at the first lens and move with it.
 (50.0, 150.0)
 
 Any gap can be locked, so that it keeps its length while the rest of the design changes.
+``optimise_gap`` finds the gap that collimates the light (leaving the system, or a chosen
+lens) or focuses on the image plane.
 They are kept apart from ``raycrafter.api`` to keep that file a manageable size.
 """
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
+
+from raycrafter.core.gap_optimisation import GapOptimisation
 
 if TYPE_CHECKING:
     from raycrafter.api import LensInfo
@@ -144,3 +149,82 @@ class GapMethods:
             start of the axis and the first lens.
         """
         self._call("set_source_z", source_z_mm=float(source_z_mm))
+
+    def optimise_gap(
+        self,
+        lens_index: int,
+        goal: str = "collimate",
+        apply: bool = True,
+        lock: bool = False,
+        flip_if_better: bool = False,
+        measure_after_lens_index: int | None = None,
+    ) -> GapOptimisation:
+        """Find, and by default set, the gap behind a lens that best meets a goal.
+
+        Real rays of the selected field are traced, so aberrations and the beam's own width,
+        angle, vergence and offset are allowed for. Gaps at which rays are clipped are never
+        chosen. Check ``at_bound`` in the result: if True, the best gap is at an end of the
+        allowed range, and there is probably no true solution within it.
+
+        Parameters
+        ----------
+        lens_index : int
+            The lens in front of the gap; -1 for the gap from the source plane. The gap must
+            be unlocked, and not the gap to the image plane (use ``autofocus`` for that).
+        goal : str
+            "collimate": the rays leaving the last lens (or the one given by
+            ``measure_after_lens_index``) are parallel (merit: their RMS angle, µrad); the
+            later lenses and the image plane move together. "focus": the smallest
+            RMS spot (µm) on the image plane, which stays where it is.
+        apply : bool
+            If False, only report the best gap; the bench is not changed.
+        lock : bool
+            If True, lock the gap once it is set.
+        flip_if_better : bool
+            Each lens next to the gap is also tried turned round. If that is clearly better,
+            the result's ``flip_lens_index`` names the lens; with this True, it is flipped
+            and its own best gap set. Lenses are never flipped otherwise.
+        measure_after_lens_index : int, optional
+            "collimate" only: a lens behind the gap after which the light is to be parallel;
+            lenses behind it are ignored. By default the last lens.
+
+        Returns
+        -------
+        GapOptimisation
+            The gap and merit before and after (see ``raycrafter.core.gap_optimisation``).
+
+        Example
+        -------
+        >>> from raycrafter import Bench
+        >>> bench = Bench(empty=True)
+        >>> for focal_length_mm in (100.0, 50.0):  # a 2x beam reducer
+        ...     _ = bench.add_paraxial_lens(focal_length_mm)
+        >>> round(bench.optimise_gap(0, "collimate").gap_after_mm, 3)
+        150.0
+
+        A light source 80 mm in front of the first lens is moved to that lens's focus,
+        whatever follows:
+
+        >>> _ = bench.set_finite_object()
+        >>> bench.lock_source_gap(False)
+        >>> bench.set_source_gap(80.0)
+        >>> result = bench.optimise_gap(-1, "collimate", measure_after_lens_index=0)
+        >>> round(result.gap_after_mm, 3)
+        100.0
+        """
+        result = self._call(
+            "optimise_gap",
+            lens_index=int(lens_index),
+            goal=goal,
+            apply=bool(apply),
+            lock=bool(lock),
+            flip_if_better=bool(flip_if_better),
+            measure_after_lens_index=(
+                None if measure_after_lens_index is None else int(measure_after_lens_index)
+            ),
+        )["optimisation"]
+        # JSON has no NaN, so a merit with no light came back as None.
+        for name in ("merit_before", "merit_after"):
+            if result[name] is None:
+                result[name] = math.nan
+        return GapOptimisation(**result)

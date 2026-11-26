@@ -98,8 +98,8 @@ def test_the_image_plane_stays_behind_the_last_lens(three_lenses):
 
 
 def test_the_gap_inside_a_plossl_pair_cannot_be_set_but_others_move_the_pair(three_lenses):
-    three_lenses.set_gap(1, 5.0)  # close enough to pair
-    three_lenses.make_plossl(1)  # the two LA1509-A
+    three_lenses.delete_lens(2)  # leave one LA1509-A to make the pair from
+    three_lenses.make_plossl(1)
     assert [gap.in_assembly for gap in three_lenses.air_gaps()] == [False, True, False]
     with pytest.raises(ValueError, match="assembly"):
         three_lenses.set_gap(1, 20.0)

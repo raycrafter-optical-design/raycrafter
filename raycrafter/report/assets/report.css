@@ -44,6 +44,22 @@ header .when { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
   background: transparent; color: #868e96; font-size: 18px; line-height: 1; cursor: pointer;
 }
 #explain .close:hover { background: var(--faint); color: var(--text); }
+.views { display: flex; gap: 6px; margin-bottom: 8px; }
+.views button {
+  border: 1px solid #ced4da; border-radius: 7px; background: white; color: var(--text);
+  padding: 3px 14px; font: 13px/1.5 inherit; cursor: pointer;
+}
+.views button:hover, .views button:focus-visible { border-color: var(--accent); color: var(--accent); outline: none; }
+#viewer3d { position: relative; height: 520px; overflow: hidden; border-radius: 8px; }
+#viewer3d canvas { display: block; }
+#viewer3d-message { position: absolute; inset: 0; margin: auto; height: 1.5em; text-align: center; color: var(--muted); font-size: 14px; }
+#viewer3d-message[hidden] { display: none; }
+.live-bar {
+  position: fixed; right: 16px; bottom: 16px; z-index: 5; display: flex; gap: 14px; padding: 7px 16px;
+  background: white; border: 1px solid #dee2e6; border-radius: 999px; font-size: 13px; color: var(--muted);
+  box-shadow: 0 4px 16px rgba(16, 24, 40, 0.12);
+}
+.live-bar a { color: var(--accent); text-decoration: none; }
 footer { margin-top: 32px; font-size: 12px; color: var(--muted); text-align: center; }
 @media (max-width: 960px) { .span-2, .span-3 { grid-column: span 6; } main { padding: 28px 16px 40px; } }
-@media print { body { background: white; } .help, #explain { display: none; } .card { box-shadow: none; } }
+@media print { body { background: white; } .help, #explain, .views, .live-bar { display: none; } .card { box-shadow: none; } }

@@ -13,13 +13,16 @@ dioptres (1/m), wavelengths in nm.
 from __future__ import annotations
 
 import math
+from dataclasses import asdict
 
 import numpy as np
 
 from raycrafter.core import analysis
+from raycrafter.core.examples import EXAMPLES
+from raycrafter.core.gaps import SOURCE_GAP_INDEX
 from raycrafter.core.model import INITIAL_LENS_Z, LENS_GAP_MM, OpticalModel
 from raycrafter.core.project_file import ProjectFileError
-from raycrafter.core.state import PlacedLens, state_to_dict
+from raycrafter.core.state import AnyField, ObjectPoint, PlacedLens, state_to_dict
 from raycrafter.core.zmx_import import ZmxImportError
 from raycrafter.lenscatalog.catalog import CatalogEntry
 from raycrafter.lenscatalog.selection import search_catalog
@@ -40,6 +43,7 @@ READ_ONLY_TOOL_NAMES = [
     "get_ray_fan",
     "get_through_focus",
     "get_field_curvature",
+    "get_distortion",
     "get_plot",
     "list_user_parts",
 ]
@@ -55,6 +59,7 @@ EDITING_TOOL_NAMES = [  # these change the design, so a window must redraw after
     "set_source_z",
     "flip_lens",
     "delete_lens",
+    "replace_lens",
     "make_plossl",
     "make_assembly",
     "split_assembly",
@@ -62,11 +67,13 @@ EDITING_TOOL_NAMES = [  # these change the design, so a window must redraw after
     "save_user_part",
     "insert_user_part",
     "set_field",
+    "set_finite_object",
     "add_field",
     "remove_fields",
     "select_field",
     "set_image_z",
     "autofocus",
+    "optimise_gap",
     "new_design",
     "save_project",
     "load_project",
@@ -84,6 +91,33 @@ def _number(value: float, digits: int = 4) -> float | None:
     """A float rounded for sending, with NaN and infinity turned into None (not valid JSON)."""
     value = float(value)
     return round(value, digits) if np.isfinite(value) else None
+
+
+def _field_properties(light: AnyField) -> dict:
+    """A field's kind ("beam" or "object_point") and the properties of that kind."""
+    if isinstance(light, ObjectPoint):
+        return {
+            "kind": "object_point",
+            "height_x_mm": light.height_x_mm,
+            "height_y_mm": light.height_y_mm,
+            "numerical_aperture": light.numerical_aperture,
+            "wavelength_nm": light.wavelength_nm,
+        }
+    return {
+        "kind": "beam",
+        "diameter_mm": light.diameter_mm,
+        "angle_deg": light.angle_deg,
+        "vergence_dioptres": light.vergence_dioptres,
+        "offset_mm": light.offset_mm,
+        "wavelength_nm": light.wavelength_nm,
+    }
+
+
+# The properties ``set_field`` may change on each kind of field (besides the colour).
+_FIELD_PROPERTY_NAMES = {
+    "beam": ["diameter_mm", "angle_deg", "vergence_dioptres", "offset_mm", "wavelength_nm"],
+    "object_point": ["height_x_mm", "height_y_mm", "numerical_aperture", "wavelength_nm"],
+}
 
 
 def _thinned(values: np.ndarray, indices: np.ndarray, digits: int = 5) -> list[float | None]:
@@ -152,14 +186,10 @@ class DesignTools:
         fields = [
             {
                 "index": index,
-                "diameter_mm": beam.diameter_mm,
-                "angle_deg": beam.angle_deg,
-                "vergence_dioptres": beam.vergence_dioptres,
-                "offset_mm": beam.offset_mm,
-                "wavelength_nm": beam.wavelength_nm,
+                **_field_properties(light),
                 "selected": index == state.selected_field_index,
             }
-            for index, beam in enumerate(state.fields)
+            for index, light in enumerate(state.fields)
         ]
         source_gap = self.model.source_gap()
         return {
@@ -224,12 +254,14 @@ class DesignTools:
         spot_results = []
         for index, spot in enumerate(fast_trace.spots):
             airy = analysis.airy_radius(spot)
+            image_x, image_y = fast_trace.chief_ray_image_points[index]
             spot_results.append(
                 {
                     "field_index": index,
                     "rms_radius_um": _number(spot.rms_radius * 1000.0),
                     "airy_radius_um": None if airy is None else _number(airy * 1000.0),
                     "rays_transmitted": len(spot.x),
+                    "chief_ray_image_mm": [_number(image_x), _number(image_y)],
                 }
             )
         return {
@@ -237,6 +269,9 @@ class DesignTools:
             if summary is None
             else _number(summary.effective_focal_length),
             "back_focal_length_mm": None if summary is None else _number(summary.back_focal_length),
+            "magnification": None
+            if summary is None or summary.magnification is None
+            else _number(summary.magnification),
             "f_number": None if f_number is None else _number(f_number.f_number),
             "transmitted_beam_diameter_mm": None
             if f_number is None
@@ -295,6 +330,26 @@ class DesignTools:
             "tangential_shift_mm": _thinned(result.tangential_shift, indices, 3),
             "sagittal_shift_mm": _thinned(result.sagittal_shift, indices, 3),
             "note": "null means too few rays got through to find a focus.",
+        }
+
+    def get_distortion(self, reference: str = "chief_ray") -> dict:
+        """Distortion (%) of a finite object against object height, and the largest value.
+
+        reference is "chief_ray" or "centroid" (how each image point is located). Positive is
+        pincushion, negative barrel. Needs object points (set_finite_object), at least one off
+        the axis; the farthest sets the field of view.
+        """
+        result = self.model.compute_distortion(reference)
+        indices = _thinning_indices(len(result.heights))
+        return {
+            "field_index": self.model.state.selected_field_index,
+            "reference": result.reference,
+            "magnification": _number(result.magnification),
+            "max_distortion_percent": _number(result.max_distortion_percent),
+            "object_height_mm": _thinned(result.heights, indices),
+            "distortion_percent": _thinned(result.height_distortion_percent, indices),
+            "blocked_grid_points": result.blocked_point_count,
+            "note": result.unavailable_reason or "null means the light of that point was blocked.",
         }
 
     def get_plot(self, kind: str) -> bytes:
@@ -391,14 +446,51 @@ class DesignTools:
         self.model.delete_lens(lens_index)
         return self.get_design()
 
-    def make_plossl(self, lens_index: int) -> dict:
-        """Snap this lens and its identical neighbouring doublet into a Plossl pair."""
+    def replace_lens(
+        self,
+        lens_index: int,
+        part_number: str | None = None,
+        paraxial_focal_length_mm: float | None = None,
+        plossl_pair: str | None = None,
+    ) -> dict:
+        """Swap a lens for a catalogue lens (``part_number``) or a paraxial one, in place.
+
+        Give exactly one of ``part_number`` and ``paraxial_focal_length_mm``. The new lens is
+        placed so its rear principal plane is where the old lens's was, so a collimated beam
+        focuses in about the same place; a locked gap in front keeps the front vertex, and
+        one behind keeps the back vertex. It takes over the old lens's assembly, the lock
+        behind it, and (catalogue for catalogue) whether it is flipped. It is refused if it
+        would overlap a neighbour. For a lens of a Plossl pair, ``plossl_pair`` must be
+        "replace_both" (two of the new part, still a Plossl pair) or "split" (split the pair,
+        replace this lens only). To find lenses of the same focal length, use search_lenses.
+        """
         self._check_lens_index(lens_index)
-        if self.model.plossl_partner(lens_index) is None:
-            raise ValueError(
-                "This lens has no Plossl partner: the neighbour must be the same positive "
-                "catalogue lens, close by, and not already paired."
-            )
+        if (part_number is None) == (paraxial_focal_length_mm is None):
+            raise ValueError("Give exactly one of part_number and paraxial_focal_length_mm")
+        if plossl_pair not in (None, "replace_both", "split"):
+            raise ValueError('plossl_pair must be "replace_both", "split" or null')
+        if plossl_pair == "replace_both":
+            if part_number is None:
+                raise ValueError("A Plossl pair can only be replaced with a catalogue lens")
+            self._catalog_entry(part_number)
+            self.model.replace_plossl_pair(lens_index, part_number)
+            return self.get_design()
+        if paraxial_focal_length_mm is not None:
+            new_lens = self.model.make_paraxial_lens(paraxial_focal_length_mm)
+        else:
+            new_lens = self.model.make_lens(self._catalog_entry(str(part_number)).part_number)
+        self.model.replace_lens(lens_index, new_lens, split_plossl_pair=plossl_pair == "split")
+        return self.get_design()
+
+    def make_plossl(self, lens_index: int) -> dict:
+        """Turn one lens into a Plossl pair: two copies of it facing each other, 1 mm apart.
+
+        The pair is centred on the optical centre of the original lens and becomes an
+        assembly, "Plossl pair", at lens indices ``lens_index`` and ``lens_index + 1``; later
+        lenses' indices go up by one. The lens must be a real (not paraxial), positive lens
+        in no assembly, with room for the pair. A locked gap either side keeps its length.
+        """
+        self._check_lens_index(lens_index)
         self.model.make_plossl(lens_index)
         return self.get_design()
 
@@ -478,11 +570,17 @@ class DesignTools:
         offset_mm: float | None = None,
         wavelength_nm: float | None = None,
         colour: str | None = None,
+        height_x_mm: float | None = None,
+        height_y_mm: float | None = None,
+        numerical_aperture: float | None = None,
     ) -> dict:
         """Change any of a field's properties; the ones left out stay as they are.
 
-        A field's diameter, offset, angle and vergence are those at the source plane (see
-        ``set_source_gap``), which by default is at the first lens.
+        A beam (kind "beam") has a diameter, angle, vergence and offset, all at the source
+        plane (see ``set_source_gap``), which by default is at the first lens. An object
+        point (kind "object_point", see ``set_finite_object``) has heights on the source
+        plane and an object-space numerical aperture. Only a field's own kind of property
+        can be set. Both have a wavelength and colour.
 
         ``colour`` is a hex colour such as ``"#ff8800"``, or ``"wavelength"`` to draw the field
         in the colour of its wavelength (the default).
@@ -494,12 +592,26 @@ class DesignTools:
             "vergence_dioptres": vergence_dioptres,
             "offset_mm": offset_mm,
             "wavelength_nm": wavelength_nm,
+            "height_x_mm": height_x_mm,
+            "height_y_mm": height_y_mm,
+            "numerical_aperture": numerical_aperture,
         }
+        light = self.model.state.fields[field_index]
+        kind = _field_properties(light)["kind"]
         for name, value in numbers.items():
-            if value is not None and not math.isfinite(value):
+            if value is None:
+                continue
+            if name not in _FIELD_PROPERTY_NAMES[kind]:
+                raise ValueError(
+                    f"Field {field_index} is of kind {kind!r}, which has no {name}; "
+                    "use set_finite_object to change the kind of every field"
+                )
+            if not math.isfinite(value):
                 raise ValueError(f"{name} must be a finite number")
         if diameter_mm is not None and diameter_mm <= 0:
             raise ValueError("diameter_mm must be positive")
+        if numerical_aperture is not None and not 0 < numerical_aperture < 1:
+            raise ValueError("numerical_aperture must be between 0 and 1")
         if wavelength_nm is not None and wavelength_nm <= 0:
             raise ValueError("wavelength_nm must be positive")
         if colour is not None and colour != WAVELENGTH_COLOUR and not is_hex_colour(colour):
@@ -507,19 +619,24 @@ class DesignTools:
                 f"colour must be a hex colour such as '#ff8800', or {WAVELENGTH_COLOUR!r}"
             )
 
-        beam = self.model.state.fields[field_index]
-        if diameter_mm is not None:
-            beam.diameter_mm = diameter_mm
-        if angle_deg is not None:
-            beam.angle_deg = angle_deg
-        if vergence_dioptres is not None:
-            beam.vergence_dioptres = vergence_dioptres
-        if offset_mm is not None:
-            beam.offset_mm = offset_mm
-        if wavelength_nm is not None:
-            beam.wavelength_nm = wavelength_nm
+        for name, value in numbers.items():
+            if value is not None:
+                setattr(light, name, float(value))
         if colour is not None:
-            beam.colour = None if colour == WAVELENGTH_COLOUR else colour
+            light.colour = None if colour == WAVELENGTH_COLOUR else colour
+        return self.get_design()
+
+    def set_finite_object(self, finite: bool = True) -> dict:
+        """Make every field a point of a finite object (``finite``), or a beam.
+
+        Beams are light from an object at infinity: each field is an angle and a width. A
+        finite object sits on the source plane (the object plane): each field is a point at
+        a height there, sending a cone of numerical aperture ``numerical_aperture`` towards
+        the first lens, as the sample of a microscope does. Each field keeps its chief-ray
+        angle, wavelength and colour. If the source plane is on the first lens, it is
+        unlocked and moved to that lens's front focal plane (or as far as there is room).
+        """
+        self.model.set_finite_object(finite)
         return self.get_design()
 
     def add_field(self) -> dict:
@@ -593,12 +710,67 @@ class DesignTools:
         self.model.autofocus()
         return self.get_design()
 
+    def optimise_gap(
+        self,
+        lens_index: int,
+        goal: str,
+        apply: bool = True,
+        lock: bool = False,
+        flip_if_better: bool = False,
+        measure_after_lens_index: int | None = None,
+    ) -> dict:
+        """Find (and by default set) the gap behind a lens that best meets a goal.
+
+        ``goal`` is "collimate" (the rays leaving the last lens, or the lens given by
+        ``measure_after_lens_index``, are parallel; merit is their RMS angle in µrad; later
+        lenses and the image plane move together) or "focus" (the
+        smallest RMS spot on the image plane, which stays put; merit in µm). Real rays of the
+        selected field are used. ``lens_index`` -1 means the gap from the source plane. The
+        gap must be unlocked and not the gap to the image plane (use autofocus for that).
+        Gaps that clip rays are never chosen. The result's ``optimisation`` gives the gap
+        and merit before and after, and ``at_bound`` (true if the best gap is at an end of
+        the allowed range, so there may be no real solution). With ``apply`` false the bench
+        is not changed; with ``lock`` true the gap is locked afterwards.
+
+        ``measure_after_lens_index`` (collimate only) names a lens behind the gap after which
+        the light is measured; lenses behind it are ignored. Give ``lens_index + 1`` (0 for
+        the source gap) to collimate the light leaving the next lens, e.g. to put a source at
+        the first lens's focus before placing the others. By default it is the last lens.
+
+        Each lens next to the gap is also tried turned round (a lens the wrong way round
+        cannot be fixed by spacing). If that is clearly better, ``flip_lens_index``,
+        ``flipped_gap_mm`` and ``flipped_merit`` say so; with ``flip_if_better`` true that
+        lens is then flipped and its gap applied. Lenses are never flipped otherwise.
+        """
+        if lens_index != SOURCE_GAP_INDEX:
+            self._check_lens_index(lens_index)
+        if measure_after_lens_index is not None:
+            self._check_lens_index(measure_after_lens_index)
+        result = self.model.optimise_gap(lens_index, goal, measure_after_lens_index)
+        if apply:
+            flip = bool(flip_if_better) and result.flip_lens_index is not None
+            self.model.apply_gap_optimisation(result, lock=bool(lock), flip=flip)
+        optimisation = {
+            name: _number(value) if isinstance(value, float) else value
+            for name, value in asdict(result).items()
+        }
+        return {**self.get_design(), "optimisation": optimisation}
+
     # ------------------------------------------------------------------ files
 
-    def new_design(self, discard_unsaved: bool = False) -> dict:
-        """Start again with an empty bench (no lenses, one default field)."""
+    def new_design(self, discard_unsaved: bool = False, example: str | None = None) -> dict:
+        """Start again with an empty bench (no lenses, one default field), or an example.
+
+        ``example`` names a design to start from instead: "Basic microscope" (two paraxial
+        lenses, objective f = 10 mm and tube lens f = 200 mm, imaging a finite object).
+        """
         self._check_nothing_to_lose(discard_unsaved)
-        self.model.new_design()
+        if example is None:
+            self.model.new_design()
+        elif example in EXAMPLES:
+            self.model.new_design_from_example(example)
+        else:
+            raise ValueError(f"There is no example {example!r}; there are {list(EXAMPLES)}")
         return self.get_design()
 
     def save_project(self, file_path: str | None = None, forget_import: bool = False) -> dict:

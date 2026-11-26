@@ -94,7 +94,6 @@ def test_deleting_a_lens_removes_the_locks_either_side(three_lenses):
 
 def test_a_plossl_pair_is_locked_and_splitting_it_unlocks_it():
     model = OpticalModel()
-    model.add_lens("ACT508-200-A")
     model.make_plossl(0)
     assert model.air_gaps()[0].locked and model.air_gaps()[0].in_assembly
     with pytest.raises(ValueError, match="always locked"):

@@ -37,8 +37,11 @@ entry to "Retired".
 ### Ideal-lens OPD error off axis
 - **Where:** no code workaround; the wavefront quantities (RMS WFE, Strehl, PSF, MTF) are wrong
   off axis for ideal (paraxial) lenses. See `log.md`, 2026-11-23 entry "Optiland as the optics engine".
+  They are also wrong on axis for a finite object (e.g. 0.27 waves rms at 2f-2f, NA 0.05), so
+  the MTF of an ideal-lens design with object points (#29) is low although its spot is perfect.
 - **Upstream status:** open, issue
-  [#1248](https://github.com/optiland/optiland/issues/1248).
+  [#1248](https://github.com/optiland/optiland/issues/1248). The finite-object case is drafted
+  as a comment on it (Rob to post).
 - **Remove when:** a release fixes it; add a physics check against a known value.
 
 

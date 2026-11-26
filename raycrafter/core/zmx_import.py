@@ -51,6 +51,7 @@ from raycrafter.core.prescription import (
 )
 from raycrafter.core.state import (
     AXIS_START_Z,
+    AnyField,
     BeamField,
     ImportedSource,
     OpticalState,
@@ -695,7 +696,7 @@ def _blocks_rays(aperture: ClearAperture, ray_extent: RayExtent, surface_number:
 
 def _fields_from_optic(
     optic, first_lens_z: float, first_lens_surface: int | None, notes: list[str]
-) -> tuple[list[BeamField], float]:
+) -> tuple[list[AnyField], float]:
     """RayCrafter fields from the file's aperture, object, stop, field angles and wavelengths.
 
     Each beam is described at the source plane (see ``BeamField``), which is put at the stop
@@ -779,7 +780,7 @@ def _fields_from_optic(
 
     wavelengths_um = [float(wavelength.value) for wavelength in optic.wavelengths.wavelengths]
     primary_um = float(optic.wavelengths.primary_wavelength.value)
-    fields = [beam(angle, primary_um) for angle in angles]
+    fields: list[AnyField] = [beam(angle, primary_um) for angle in angles]
     fields += [beam(0.0, wavelength) for wavelength in wavelengths_um if wavelength != primary_um]
     if len(angles) > 1 and len(wavelengths_um) > 1:
         notes.append(

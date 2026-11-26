@@ -28,7 +28,8 @@ from PyQt6.QtWidgets import (
 )
 
 from raycrafter.core.model import OpticalModel
-from raycrafter.core.state import OpticalState
+from raycrafter.core.plot_geometry import field_name, field_position_text
+from raycrafter.core.state import ObjectPoint, OpticalState
 from raycrafter.gui.field_editor import colour_swatch
 
 COLUMNS = ["Index", "Item", "z (mm)", "Details"]
@@ -69,12 +70,15 @@ def lens_rows(state: OpticalState) -> list[tuple[str, int, list[str]]]:
 def field_rows(state: OpticalState) -> list[tuple[str, int, list[str]]]:
     """One (kind, index, cell texts) per field, for the field section of the list."""
     rows = []
-    for index, beam in enumerate(state.fields):
-        details = (
-            f"{beam.diameter_mm:g} mm wide, {beam.angle_deg:g}°, {beam.wavelength_nm:g} nm"
-            + (", selected" if index == state.selected_field_index else "")
+    for index, light in enumerate(state.fields):
+        if isinstance(light, ObjectPoint):
+            where = f"{field_position_text(light)}, NA {light.numerical_aperture:g}"
+        else:
+            where = f"{light.diameter_mm:g} mm wide, {light.angle_deg:g}°"
+        details = f"{where}, {light.wavelength_nm:g} nm" + (
+            ", selected" if index == state.selected_field_index else ""
         )
-        rows.append((FIELD, index, [str(index), f"Field {index}", "", details]))
+        rows.append((FIELD, index, [str(index), field_name(index), "", details]))
     return rows
 
 

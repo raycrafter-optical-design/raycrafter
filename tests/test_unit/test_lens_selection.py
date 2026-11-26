@@ -8,6 +8,7 @@ from raycrafter.lenscatalog.selection import (
     LensFilter,
     available_coatings,
     diameter_label,
+    diameter_span_mm,
     focal_length_span_mm,
     group_for_tree,
 )
@@ -61,6 +62,19 @@ def test_focal_length_span(entries):
     shortest, longest = focal_length_span_mm(entries)
     assert 0 < shortest < 10 < 1000 <= longest
     assert focal_length_span_mm([]) is None
+
+
+def test_diameter_range_and_span(entries):
+    """#70: the aperture filter of the lens browser."""
+    narrowest, widest = diameter_span_mm(entries)
+    assert 0 < narrowest < 12.7 < 50.8 <= widest
+    assert diameter_span_mm([]) is None
+    lens_filter = LensFilter(coating=None, diameter_range_mm=(20.0, 30.0))
+    shown = lens_filter.apply(entries)
+    assert shown and all(20.0 <= entry.clear_diameter_mm <= 30.0 for entry in shown)
+    # Each range can be left out, so a slider's limits can come from the other filters.
+    outside = [entry for entry in entries if not 20.0 <= entry.clear_diameter_mm <= 30.0]
+    assert lens_filter.matches(outside[0], check_diameter=False)
 
 
 def test_tree_is_ordered_by_category_diameter_sign_and_focal_length(entries):

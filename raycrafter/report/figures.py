@@ -27,8 +27,13 @@ from raycrafter.core.analysis import (
     ThroughFocusResult,
     airy_radius,
 )
+from raycrafter.core.distortion import DistortionResult, compute_distortion
+from raycrafter.core.fields import chief_ray_angle_deg, field_height_mm
 from raycrafter.core.plot_geometry import (
     axis_ranges,
+    distortion_limit_percent,
+    distortion_title,
+    grid_polylines,
     largest_magnitude,
     lens_surface_arcs,
     ray_fan_limit_um,
@@ -44,6 +49,7 @@ SQUARE_FIGURE_SIZE = (4.6, 4.4)  # inches; the three plots in the middle row of 
 WIDE_FIGURE_SIZE = (6.6, 3.9)  # the two plots in the bottom row
 SQUARE_MARGINS = dict(left=0.17, right=0.97, top=0.97, bottom=0.14)
 WIDE_MARGINS = dict(left=0.11, right=0.98, top=0.97, bottom=0.16)
+GRID_MARGINS = dict(left=0.17, right=0.97, top=0.92, bottom=0.14)  # room for a title
 
 _figure_counter = 0  # gives each SVG its own id prefix, so inline SVGs on one page cannot clash
 
@@ -319,6 +325,54 @@ def draw_field_curvature(curvature: FieldCurvatureResult, current_angle: float) 
     return figure
 
 
+def draw_distortion_grid(result: DistortionResult) -> Figure:
+    """The ideal grid (grey, dashed) and where its points really land, seen face-on.
+
+    The largest distortion is written above the plot, or why there is no grid.
+    """
+    figure, axes = new_axes(SQUARE_FIGURE_SIZE, GRID_MARGINS, "image x (mm)", "image y (mm)")
+    axes.set_title(distortion_title(result), fontsize=10, color=palette.TEXT)
+    ideal_x, ideal_y = grid_polylines(result.ideal_x, result.ideal_y)
+    axes.plot(ideal_x, ideal_y, color=palette.AIRY, linewidth=1, linestyle="--", label="ideal")
+    image_x, image_y = grid_polylines(result.image_x, result.image_y)
+    axes.plot(image_x, image_y, color=palette.TANGENTIAL, linewidth=1.3, label="image")
+    axes.plot(
+        result.image_x.ravel(),
+        result.image_y.ravel(),
+        color=palette.TANGENTIAL,
+        linestyle="none",
+        marker="o",
+        markersize=2.5,
+    )
+    half_width = (largest_magnitude(ideal_x, ideal_y, image_x, image_y) or 1.0) * 1.08
+    axes.set_xlim(-half_width, half_width)
+    axes.set_ylim(-half_width, half_width)
+    axes.set_aspect("equal")
+    return figure
+
+
+def draw_distortion_curve(result: DistortionResult, current_height_mm: float) -> Figure:
+    """Distortion against object height; a dashed line marks the current field's height."""
+    figure, axes = new_axes(WIDE_FIGURE_SIZE, WIDE_MARGINS, "distortion (%)", "object height (mm)")
+    axes.axvline(0, color=palette.FAINT, linewidth=1)
+    if result.has_grid:
+        axes.axhline(current_height_mm, color=palette.FAINT, linewidth=1, linestyle="--")
+        axes.set_ylim(0, result.heights[-1] * 1.02)
+    else:
+        axes.set_title(result.unavailable_reason, fontsize=10, color=palette.TEXT)
+    axes.plot(
+        result.height_distortion_percent,
+        result.heights,
+        color=palette.TANGENTIAL,
+        linewidth=2,
+        marker="o",
+        markersize=3,
+    )
+    limit = distortion_limit_percent(result)
+    axes.set_xlim(-limit, limit)
+    return figure
+
+
 # The plots that can be asked for by name (by scripts and AI agents), as in the GUI's panels.
 PLOT_KINDS = (
     "ray_diagram",
@@ -327,6 +381,8 @@ PLOT_KINDS = (
     "mtf",
     "ray_fan",
     "field_curvature",
+    "grid_distortion",
+    "distortion",
 )
 
 
@@ -334,7 +390,8 @@ def draw_named_plot(state: OpticalState, kind: str) -> Figure:
     """Run the analysis behind one of PLOT_KINDS on ``state`` and draw it.
 
     MTF, ray fan, through-focus and field curvature show the selected field; the ray and
-    spot diagrams show every field.
+    spot diagrams show every field. The two distortion plots cover the whole field of view,
+    at the selected field's wavelength.
 
     Raises
     ------
@@ -356,6 +413,11 @@ def draw_named_plot(state: OpticalState, kind: str) -> Figure:
         return draw_mtf(analysis.compute_mtf(state))
     if kind == "ray_fan":
         return draw_ray_fan(analysis.compute_ray_fan(state))
-    return draw_field_curvature(
-        analysis.compute_field_curvature(state), state.selected_field.angle_deg
-    )
+    if kind == "field_curvature":
+        return draw_field_curvature(
+            analysis.compute_field_curvature(state),
+            chief_ray_angle_deg(state, state.selected_field),
+        )
+    if kind == "grid_distortion":
+        return draw_distortion_grid(compute_distortion(state))
+    return draw_distortion_curve(compute_distortion(state), field_height_mm(state.selected_field))

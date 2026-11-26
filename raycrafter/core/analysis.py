@@ -26,7 +26,12 @@ from optiland.optic import Optic
 from optiland.rays import RealRays
 from scipy.optimize import minimize_scalar
 
-from raycrafter.core.optic_builder import build_optic, build_optic_for_beam
+from raycrafter.core.fields import source_to_lens_mm
+from raycrafter.core.optic_builder import (
+    build_optic,
+    build_optic_for_beam,
+    build_optic_for_object,
+)
 from raycrafter.core.ray_launch import (
     beam_at_first_lens,
     join_rays,
@@ -34,10 +39,10 @@ from raycrafter.core.ray_launch import (
     pupil_points,
     trace_rays,
 )
-from raycrafter.core.state import BeamField, OpticalState
+from raycrafter.core.state import AnyField, BeamField, ObjectPoint, OpticalState
 
 SPOT_RINGS = 6  # hexapolar rings for the spot diagram (127 rays)
-SIDE_VIEW_RAYS = 5  # rays across the beam diameter for the side view
+SIDE_VIEW_RAYS = 5  # rays across the beam for the side view (odd: the middle is the chief ray)
 MTF_RAYS = 128
 FIELD_CURVATURE_MAX_ANGLE = 10.0  # degrees
 FIELD_CURVATURE_POINTS = 11
@@ -86,7 +91,7 @@ class SpotResult:
 
 @dataclass
 class RayPaths:
-    """Ray polylines for drawing: arrays of shape (n_points, n_rays) of absolute z and y.
+    """Ray polylines for drawing: arrays of shape (n_points, n_rays) of x, y and absolute z.
 
     Each ray starts at the start of the axis and has a point at every surface. A ray blocked
     by a lens rim ends where it meets that lens; its later points are NaN.
@@ -94,6 +99,7 @@ class RayPaths:
 
     z: np.ndarray
     y: np.ndarray
+    x: np.ndarray  # out of the side view, which does not use it
 
 
 @dataclass
@@ -102,6 +108,9 @@ class SystemSummary:
 
     effective_focal_length: float  # mm
     back_focal_length: float  # mm, last lens vertex to the back focal point
+    # Paraxial transverse magnification from the object plane to the image plane; None for an
+    # object at infinity (beams), NaN when the object is on the first lens.
+    magnification: float | None = None
 
 
 @dataclass
@@ -125,6 +134,9 @@ class FastTrace:
     paths: list[RayPaths]  # one per field
     summary: SystemSummary | None  # None when there are no lenses
     selected_field_index: int
+    # Per field, the (x, y) mm where its chief ray (the real ray through the centre of its
+    # pupil) meets the image plane: the real image height. NaN if the chief ray is blocked.
+    chief_ray_image_points: list[tuple[float, float]]
 
     @property
     def spot(self) -> SpotResult:
@@ -271,21 +283,21 @@ def airy_radius(spot: SpotResult) -> float | None:
 
 
 def _trace_field(
-    state: OpticalState, optic: Optic, beam: BeamField, distribution: str, ray_count: int
+    state: OpticalState, optic: Optic, beam: AnyField, distribution: str, ray_count: int
 ) -> RealRays:
     """Launch one field's rays in the given pattern (see ``ray_launch.pupil_points``), trace them."""
     pupil_x, pupil_y = pupil_points(distribution, ray_count)
     return trace_rays(optic, launch_rays(state, beam, optic, pupil_x, pupil_y))
 
 
-def _trace_spot(state: OpticalState, optic: Optic, beam: BeamField) -> SpotResult:
+def _trace_spot(state: OpticalState, optic: Optic, beam: AnyField) -> SpotResult:
     """Trace a hexapolar spot for one field."""
     rays = _trace_field(state, optic, beam, "hexapolar", SPOT_RINGS)
     return spot_from_rays(rays, beam.wavelength_um)
 
 
 def _ray_paths(state: OpticalState, optic: Optic, which: slice) -> RayPaths:
-    """Absolute z, y along the rays ``which`` of the most recent trace, for the side view.
+    """x, y and absolute z along the rays ``which`` of the most recent trace, for drawing.
 
     Row 0 of Optiland's per-surface arrays is the (object) surface at infinity, which leaves
     the rays where they were launched, at the start of the axis; row 1 is the first lens
@@ -294,10 +306,11 @@ def _ray_paths(state: OpticalState, optic: Optic, which: slice) -> RayPaths:
     """
     # Optiland keeps the per-surface ray positions of the most recent trace on its surfaces.
     z_local = np.array(optic.surfaces.z[:, which], dtype=float)
+    x_local = np.array(optic.surfaces.x[:, which], dtype=float)
     y_local = np.array(optic.surfaces.y[:, which], dtype=float)
-    slope_local = np.asarray(optic.surfaces.M[:, which], dtype=float) / np.asarray(
-        optic.surfaces.N[:, which], dtype=float
-    )
+    direction_z = np.asarray(optic.surfaces.N[:, which], dtype=float)
+    slope_x = np.asarray(optic.surfaces.L[:, which], dtype=float) / direction_z
+    slope_y = np.asarray(optic.surfaces.M[:, which], dtype=float) / direction_z
     intensity = np.asarray(optic.surfaces.intensity[:, which], dtype=float)
 
     # Optiland stops a blocked ray where it meets the surface's mathematical continuation
@@ -313,16 +326,18 @@ def _ray_paths(state: OpticalState, optic: Optic, which: slice) -> RayPaths:
             rim_z = float(surface.geometry.cs.z + surface.geometry.sag(0.0, surface.aperture.r_max))
             previous = surface_index - 1
             z_local[surface_index, ray_index] = rim_z
-            y_local[surface_index, ray_index] = y_local[previous, ray_index] + slope_local[
-                previous, ray_index
-            ] * (rim_z - z_local[previous, ray_index])
-        z_local[surface_index + 1 :, ray_index] = np.nan
-        y_local[surface_index + 1 :, ray_index] = np.nan
+            distance_z = rim_z - z_local[previous, ray_index]
+            for position, slope in ((x_local, slope_x), (y_local, slope_y)):
+                position[surface_index, ray_index] = (
+                    position[previous, ray_index] + slope[previous, ray_index] * distance_z
+                )
+        for coordinate in (z_local, x_local, y_local):
+            coordinate[surface_index + 1 :, ray_index] = np.nan
 
     # Shift z so that the first surface sits at the first lens (or the start of the axis).
     first_vertex_z = float(optic.surfaces[1].geometry.cs.z)
     z_absolute = z_local - first_vertex_z + state.first_surface_z()
-    return RayPaths(z=z_absolute, y=y_local)
+    return RayPaths(z=z_absolute, y=y_local, x=x_local)
 
 
 def _system_summary(state: OpticalState, optic: Optic) -> SystemSummary | None:
@@ -330,19 +345,24 @@ def _system_summary(state: OpticalState, optic: Optic) -> SystemSummary | None:
 
     Optiland reports the back focal point relative to the image surface, so the back focal
     length is measured from the last lens vertex using the image plane position. Both are
-    at the selected field's wavelength (the primary wavelength of ``build_optic``).
+    at the selected field's wavelength (the primary wavelength of ``build_optic``). For a
+    finite object the paraxial magnification is added; ``build_optic`` has put Optiland's
+    object at the source plane for it.
     """
     if not state.lenses:
         return None
     paraxial = optic.paraxial
     # An afocal system (e.g. two lenses a typed gap apart that makes a beam expander) has no
     # focal point: both lengths are then infinite, which is the answer rather than a fault.
-    with np.errstate(divide="ignore"):
+    # An object on the first lens has no paraxial marginal ray, so no magnification (NaN).
+    with np.errstate(divide="ignore", invalid="ignore"):
         back_focal_point_z = state.image_z + float(paraxial.F2())
         effective_focal_length = float(paraxial.f2())
+        magnification = float(paraxial.magnification()) if state.has_finite_object else None
     return SystemSummary(
         effective_focal_length=effective_focal_length,
         back_focal_length=float(back_focal_point_z - state.last_back_z()),
+        magnification=magnification,
     )
 
 
@@ -365,14 +385,44 @@ def trace_fast(state: OpticalState) -> FastTrace:
         join_rays([launch_rays(state, beam, optic, pupil_x, pupil_y) for beam in state.fields]),
     )
 
-    spots, paths = [], []
+    getting_through = transmitted(rays)
+    spots, paths, chief_ray_image_points = [], [], []
     for field_number, beam in enumerate(state.fields):
         first_ray = field_number * pupil_x.size
         spot_rays = slice(first_ray, first_ray + spot_x.size)
         fan_rays = slice(spot_rays.stop, first_ray + pupil_x.size)
         spots.append(spot_from_rays(rays, beam.wavelength_um, spot_rays))
         paths.append(_ray_paths(state, optic, fan_rays))
-    return FastTrace(spots, paths, _system_summary(state, optic), state.selected_field_index)
+        chief_ray = spot_rays.stop + SIDE_VIEW_RAYS // 2  # the middle of the fan
+        if getting_through[chief_ray]:
+            chief_ray_image_points.append((float(rays.x[chief_ray]), float(rays.y[chief_ray])))
+        else:
+            chief_ray_image_points.append((float("nan"), float("nan")))
+    return FastTrace(
+        spots,
+        paths,
+        _system_summary(state, optic),
+        state.selected_field_index,
+        chief_ray_image_points,
+    )
+
+
+def trace_ray_bundles(state: OpticalState, rings: int) -> list[RayPaths]:
+    """Every field's rays in a hexapolar pattern of ``rings`` rings, as paths in 3D.
+
+    For the 3D views (``raycrafter.core.scene``), which show the whole width of each beam,
+    not just the fan in the plane of the side view.
+    """
+    optic = build_optic(state)
+    pupil_x, pupil_y = pupil_points("hexapolar", rings)
+    trace_rays(
+        optic,
+        join_rays([launch_rays(state, beam, optic, pupil_x, pupil_y) for beam in state.fields]),
+    )
+    return [
+        _ray_paths(state, optic, slice(start, start + pupil_x.size))
+        for start in range(0, len(state.fields) * pupil_x.size, pupil_x.size)
+    ]
 
 
 def trace_spot(state: OpticalState) -> SpotResult:
@@ -454,13 +504,15 @@ def compute_ray_fan(state: OpticalState) -> RayFanResult:
 
 
 def compute_f_number(state: OpticalState) -> FNumberResult | None:
-    """The f-number from the transmitted beam diameter; None when there are no lenses.
+    """The f-number from the transmitted beam diameter; None without lenses or beams.
 
     The beam is the selected field, put on axis (see ``transmitted_beam_diameter``). This
     needs an extra trace, so it is not part of ``trace_fast``: the GUI computes it only
-    once nothing is being dragged.
+    once nothing is being dragged. A finite object has no beam diameter, so it gets None;
+    its image-side NA is in the spot (``SpotResult.numerical_aperture``).
     """
-    if not state.lenses:
+    beam = state.selected_field
+    if not state.lenses or not isinstance(beam, BeamField):
         return None
     optic = build_optic(state)
     transmitted_diameter_mm = _measure_transmitted_diameter(state, optic)
@@ -472,7 +524,7 @@ def compute_f_number(state: OpticalState) -> FNumberResult | None:
     return FNumberResult(
         f_number=f_number,
         transmitted_beam_diameter=transmitted_diameter_mm,
-        beam_is_clipped=transmitted_diameter_mm < state.selected_field.diameter_mm,
+        beam_is_clipped=transmitted_diameter_mm < beam.diameter_mm,
     )
 
 
@@ -490,9 +542,17 @@ def _measure_transmitted_diameter(state: OpticalState, optic: Optic) -> float:
 
     A dense fan of rays across the selected field's beam, put on axis, is traced, and the
     widest ray that gets through sets the diameter (0 if none does). The fan is symmetric,
-    so the larger edge is used.
+    so the larger edge is used. Only a beam has a diameter.
+
+    Raises
+    ------
+    TypeError
+        If the selected field is an object point.
     """
-    on_axis_beam = replace(state.selected_field, angle_deg=0.0, offset_mm=0.0)
+    beam = state.selected_field
+    if not isinstance(beam, BeamField):
+        raise TypeError("Only a beam has a transmitted diameter; this field is an object point")
+    on_axis_beam = replace(beam, angle_deg=0.0, offset_mm=0.0)
     fan = _trace_field(state, optic, on_axis_beam, "line_y", PUPIL_PROBE_RAYS)
     pupil = np.linspace(-1.0, 1.0, PUPIL_PROBE_RAYS)
     getting_through = transmitted(fan)
@@ -510,23 +570,21 @@ def compute_mtf(state: OpticalState) -> MtfResult:
     This uses Optiland's own object and pupil model (``build_optic_for_beam``), which cannot
     describe a field's offset: the MTF is for the beam centred on the first lens. A source
     plane in front of the first lens is allowed for by carrying the beam forward to the lens
-    (``ray_launch.beam_at_first_lens``).
+    (``ray_launch.beam_at_first_lens``). An object point is described exactly, by its height
+    and object-space NA (``build_optic_for_object``); its chief ray is aimed at the centre of
+    the first lens there too.
 
     Optiland's MTF needs the ray through the edge of the pupil, so when a lens rim cuts the
     beam the MTF is computed for the part of the beam that gets through on axis (which is
     what the lens actually transmits). If the beam is cut further at the field's angle
-    (vignetting), Optiland cannot compute the MTF and the result is empty.
+    (vignetting), or a rim cuts an object point's cone, Optiland cannot compute the MTF and
+    the result is empty.
     """
     no_result = MtfResult(np.empty(0), np.empty(0), np.empty(0), np.empty(0))
-    beam = state.selected_field
-    beam_at_lens = beam_at_first_lens(state, beam)
-    # Both diameters are at the source plane; the beam's width scales the same way to the lens.
-    width_scale = beam_at_lens.diameter_mm / beam.diameter_mm
-    beam_diameter_mm = min(beam.diameter_mm, transmitted_beam_diameter(state)) * width_scale
-    if beam_diameter_mm <= 0.0:
-        return no_result
     try:
-        optic = build_optic_for_beam(state, beam_at_lens, beam_diameter_mm=beam_diameter_mm)
+        optic = _optic_for_mtf(state)
+        if optic is None:
+            return no_result
         mtf = FFTMTF(optic, num_rays=MTF_RAYS)
     except ValueError:
         # Optiland raises "Working F/# could not be calculated due to raytrace errors" when
@@ -545,6 +603,23 @@ def compute_mtf(state: OpticalState) -> MtfResult:
         sagittal=np.asarray(mtf.mtf[0][1], dtype=float)[keep],
         diffraction_limit=ideal,
     )
+
+
+def _optic_for_mtf(state: OpticalState) -> Optic | None:
+    """The system with Optiland's object and pupil set for the selected field's MTF.
+
+    None if no part of the selected beam gets through on axis (see ``compute_mtf``).
+    """
+    light = state.selected_field
+    if isinstance(light, ObjectPoint):
+        return build_optic_for_object(state, light)
+    beam_at_lens = beam_at_first_lens(state, light)
+    # Both diameters are at the source plane; the beam's width scales the same way to the lens.
+    width_scale = beam_at_lens.diameter_mm / light.diameter_mm
+    beam_diameter_mm = min(light.diameter_mm, transmitted_beam_diameter(state)) * width_scale
+    if beam_diameter_mm <= 0.0:
+        return None
+    return build_optic_for_beam(state, beam_at_lens, beam_diameter_mm=beam_diameter_mm)
 
 
 def _best_focus_offset(position: np.ndarray, slope: np.ndarray) -> float:
@@ -570,15 +645,30 @@ def compute_field_curvature(state: OpticalState) -> FieldCurvatureResult:
     sagittal), and its best focus found in closed form (see ``_best_focus_offset``). Zero
     means the image plane is in focus. This is used instead of Optiland's
     ``FieldCurvature`` class (see log.md).
+
+    An object point is moved instead, below the axis, so that its chief ray rises through
+    the same angles (see ``fields.chief_ray_angle_deg``): its height is -d tan(angle) at a
+    distance d in front of the first lens. With the object on the first lens every shift is
+    NaN.
     """
     angles = np.linspace(0.0, FIELD_CURVATURE_MAX_ANGLE, FIELD_CURVATURE_POINTS)
     optic = build_optic(state)
+    selected = state.selected_field
+    distance_mm = source_to_lens_mm(state)
+    if isinstance(selected, ObjectPoint) and distance_mm <= 0.0:
+        no_focus = np.full(angles.size, np.nan)
+        return FieldCurvatureResult(angles, no_focus, no_focus.copy())
 
     tangential, sagittal = [], []
     for angle in angles:
-        beam = replace(state.selected_field, angle_deg=float(angle))
-        fan_y = _trace_field(state, optic, beam, "line_y", FIELD_CURVATURE_FAN_RAYS)
-        fan_x = _trace_field(state, optic, beam, "line_x", FIELD_CURVATURE_FAN_RAYS)
+        swung: AnyField
+        if isinstance(selected, ObjectPoint):
+            height_mm = -distance_mm * float(np.tan(np.radians(angle)))
+            swung = replace(selected, height_x_mm=0.0, height_y_mm=height_mm)
+        else:
+            swung = replace(selected, angle_deg=float(angle))
+        fan_y = _trace_field(state, optic, swung, "line_y", FIELD_CURVATURE_FAN_RAYS)
+        fan_x = _trace_field(state, optic, swung, "line_x", FIELD_CURVATURE_FAN_RAYS)
         keep_y, keep_x = transmitted(fan_y), transmitted(fan_x)
         tangential.append(
             _best_focus_offset(

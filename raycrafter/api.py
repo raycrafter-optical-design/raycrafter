@@ -34,7 +34,8 @@ Conventions
   plain records that do not change when the design does. To change the design, call a
   ``Bench`` method.
 - One field is *selected*. Autofocus works on it, and so do the single-field analyses
-  (through-focus, MTF, ray fan, field curvature) unless you pass ``field_index``.
+  (through-focus, MTF, ray fan, field curvature, distortion) unless you pass
+  ``field_index``.
 
 Example
 -------
@@ -45,7 +46,7 @@ Example
 >>> second
 LensInfo(index=1, part_number='AC254-050-A', front_z_mm=150.0, back_z_mm=161.5, ...)
 >>> bench.set_field(0, diameter_mm=8, wavelength_nm=633)
-FieldInfo(index=0, diameter_mm=8.0, angle_deg=0.0, ...)
+FieldInfo(index=0, kind='beam', diameter_mm=8.0, angle_deg=0.0, ...)
 >>> round(bench.autofocus(), 1)  # image plane to the best focus
 180.7
 >>> summary = bench.summary()
@@ -72,9 +73,11 @@ from matplotlib.figure import Figure
 
 from raycrafter.assembly_methods import AssemblyMethods
 from raycrafter.core import analysis, gaps
+from raycrafter.core.distortion import GRID_POINTS, DistortionResult, compute_distortion
 from raycrafter.core.model import OpticalModel
-from raycrafter.core.state import OpticalState, state_from_dict
+from raycrafter.core.state import BeamField, ObjectPoint, OpticalState, state_from_dict
 from raycrafter.design_files import DesignFileMethods
+from raycrafter.field_methods import FieldMethods
 from raycrafter.gap_methods import GapMethods
 from raycrafter.lenscatalog import thorlabs
 from raycrafter.lenscatalog.catalog import CatalogEntry
@@ -153,23 +156,32 @@ class LensInfo:
 
 @dataclass(frozen=True)
 class FieldInfo:
-    """A snapshot of one field (a beam entering from the left), as in ``Bench.fields``.
+    """A snapshot of one field, as in ``Bench.fields``.
 
-    The beam's diameter, offset, angle and vergence are those at the source plane
-    (``Bench.source_z_mm``), which is at the first lens unless its gap has been changed.
+    A field is a beam entering from the left (``kind`` "beam"), or a point of a finite
+    object on the source plane (``kind`` "object_point", see ``Bench.set_finite_object``).
+    The properties of the other kind are None. A beam's diameter, offset, angle and
+    vergence are those at the source plane (``Bench.source_z_mm``), which is at the first
+    lens unless its gap has been changed.
 
     Attributes
     ----------
     index : int
         The field's number, from 0.
-    diameter_mm : float
+    kind : str
+        "beam" or "object_point"; every field of a design is of the same kind.
+    diameter_mm : float or None
         Beam diameter.
-    angle_deg : float
+    angle_deg : float or None
         Angle of the beam's central ray to the axis (positive rises).
-    vergence_dioptres : float
+    vergence_dioptres : float or None
         Positive is converging, negative diverging, 0 collimated.
-    offset_mm : float
+    offset_mm : float or None
         Height of the beam centre above the axis.
+    height_x_mm, height_y_mm : float or None
+        Where an object point is on the source plane.
+    numerical_aperture : float or None
+        An object point's object-space NA: the sine of the half-angle of its cone of rays.
     wavelength_nm : float
         The wavelength it is traced at.
     colour : str
@@ -181,10 +193,14 @@ class FieldInfo:
     """
 
     index: int
-    diameter_mm: float
-    angle_deg: float
-    vergence_dioptres: float
-    offset_mm: float
+    kind: str
+    diameter_mm: float | None
+    angle_deg: float | None
+    vergence_dioptres: float | None
+    offset_mm: float | None
+    height_x_mm: float | None
+    height_y_mm: float | None
+    numerical_aperture: float | None
     wavelength_nm: float
     colour: str
     colour_follows_wavelength: bool
@@ -202,8 +218,12 @@ class DesignSummary:
     ----------
     effective_focal_length_mm, back_focal_length_mm : float or None
         Of the whole lens train; the back focal length is measured from the last vertex.
+    magnification : float or None
+        Paraxial magnification from the object plane to the image plane, for a finite
+        object; None for beams (an object at infinity).
     f_number : float or None
-        From the part of the beam that gets through every lens, for the selected field.
+        From the part of the beam that gets through every lens, for the selected field;
+        None for a finite object.
     transmitted_beam_diameter_mm : float or None
         How much of the selected field's beam gets through every lens.
     beam_is_clipped : bool or None
@@ -215,22 +235,27 @@ class DesignSummary:
     airy_radius_um : list of float or None
         Airy disc radius, one per field; None for a field that is not focused (parallel
         light reaching the image plane).
+    chief_ray_image_mm : list of tuple of float
+        Where each field's chief ray meets the image plane, (x, y): the real image height.
+        NaN if the chief ray is blocked.
     """
 
     effective_focal_length_mm: float | None
     back_focal_length_mm: float | None
+    magnification: float | None
     f_number: float | None
     transmitted_beam_diameter_mm: float | None
     beam_is_clipped: bool | None
     image_z_mm: float
     rms_spot_radius_um: list[float]
     airy_radius_um: list[float | None]
+    chief_ray_image_mm: list[tuple[float, float]]
 
 
 # ----------------------------------------------------------------------------- the bench
 
 
-class Bench(DesignFileMethods, AssemblyMethods, GapMethods):
+class Bench(DesignFileMethods, AssemblyMethods, GapMethods, FieldMethods):
     """A lens bench: a row of lenses on an optical axis, beams of light and an image plane.
 
     ``Bench()`` makes a headless bench in this process. To drive the open RayCrafter window
@@ -238,7 +263,7 @@ class Bench(DesignFileMethods, AssemblyMethods, GapMethods):
     ``Bench.from_zmx(path)``. Saving, opening, importing and exporting are described in
     ``raycrafter.design_files``; assemblies (such as Plossl pairs) and user parts in
     ``raycrafter.assembly_methods``; the gaps, and the source plane where the beams are
-    defined, in ``raycrafter.gap_methods``.
+    defined, in ``raycrafter.gap_methods``; editing the fields in ``raycrafter.field_methods``.
 
     Parameters
     ----------
@@ -551,107 +576,53 @@ class Bench(DesignFileMethods, AssemblyMethods, GapMethods):
         """
         self._call("delete_lens", lens_index=int(lens_index))
 
-    # ------------------------------------------------------------------ editing fields
-
-    def set_field(
+    def replace_lens(
         self,
-        field_index: int,
-        diameter_mm: float | None = None,
-        angle_deg: float | None = None,
-        vergence_dioptres: float | None = None,
-        offset_mm: float | None = None,
-        wavelength_nm: float | None = None,
-        colour: str | None = None,
-    ) -> FieldInfo:
-        """Change any of a field's properties; those left out stay as they are.
+        lens_index: int,
+        part_number: str | None = None,
+        paraxial_focal_length_mm: float | None = None,
+        plossl_pair: str | None = None,
+    ) -> LensInfo:
+        """Swap a lens for a catalogue lens or a paraxial one, in place; return its snapshot.
+
+        The new lens goes where the old lens's rear principal plane was, so a collimated
+        beam focuses in about the same place; a locked gap in front keeps the front vertex,
+        and one behind keeps the back vertex. It takes over the old lens's assembly and,
+        catalogue lens for catalogue lens, whether it is flipped.
 
         Parameters
         ----------
-        field_index : int
-            Which field (see ``fields``).
-        diameter_mm : float, optional
-            Beam diameter at the source plane (see ``source_gap_mm``); must be positive.
-        angle_deg : float, optional
-            Angle of the beam to the axis (positive rises).
-        vergence_dioptres : float, optional
-            Positive converging, negative diverging, 0 collimated.
-        offset_mm : float, optional
-            Height of the beam centre above the axis at the source plane.
-        wavelength_nm : float, optional
-            Must be positive.
-        colour : str, optional
-            A hex colour such as ``"#ff8800"``, or ``"wavelength"`` to go back to the colour
-            of its wavelength.
+        lens_index : int
+            The lens to replace.
+        part_number : str, optional
+            The catalogue lens to put in its place.
+        paraxial_focal_length_mm : float, optional
+            Or the focal length of an ideal thin lens to put in its place.
+        plossl_pair : str, optional
+            Needed for a lens of a Plossl pair: "replace_both" replaces both lenses with
+            ``part_number`` (it stays a Plossl pair), "split" splits the pair first.
 
-        Returns
-        -------
-        FieldInfo
-            The field after the change.
+        Raises
+        ------
+        ValueError
+            If not exactly one of ``part_number`` and ``paraxial_focal_length_mm`` is given,
+            the lens is in a Plossl pair and ``plossl_pair`` is not given, or the new lens
+            would overlap a neighbour.
 
         Example
         -------
-        >>> bench = Bench()
-        >>> bench.set_field(0, angle_deg=2.0, colour="#ff8800").colour
-        '#ff8800'
+        >>> bench = Bench(empty=True)
+        >>> _ = bench.add_paraxial_lens(200.0)
+        >>> bench.replace_lens(0, "AC254-200-A").part_number
+        'AC254-200-A'
         """
-        changes = {
-            "diameter_mm": diameter_mm,
-            "angle_deg": angle_deg,
-            "vergence_dioptres": vergence_dioptres,
-            "offset_mm": offset_mm,
-            "wavelength_nm": wavelength_nm,
-        }
-        arguments: dict[str, float | str] = {
-            name: float(value) for name, value in changes.items() if value is not None
-        }
-        if colour is not None:
-            arguments["colour"] = colour
-        self._call("set_field", field_index=int(field_index), **arguments)
-        return self.fields[int(field_index)]
-
-    def add_field(self, **changes) -> FieldInfo:
-        """Add a field, a copy of the selected one, and select it.
-
-        Starting from a copy means the new field already suits the bench; pass any of the
-        ``set_field`` properties to change them at once. A new field is drawn in the colour
-        of its wavelength.
-
-        Example
-        -------
-        >>> bench = Bench()
-        >>> new_field = bench.add_field(angle_deg=1.5)
-        >>> new_field.index, new_field.angle_deg, new_field.diameter_mm, new_field.selected
-        (1, 1.5, 10.0, True)
-        """
-        previously_selected = self.selected_field_index
-        self._call("add_field")
-        new_index = len(self._state().fields) - 1
-        if not changes:
-            return self.fields[new_index]
-        try:
-            return self.set_field(new_index, **changes)
-        except (ValueError, TypeError):  # a bad value or property name: leave no half-made field
-            self.remove_fields([new_index])
-            self.select_field(previously_selected)
-            raise
-
-    def remove_fields(self, field_indices: list[int]) -> None:
-        """Remove fields by index. At least one field always remains (the first, if all
-        are listed).
-
-        Example
-        -------
-        >>> bench = Bench()
-        >>> _ = bench.add_field(wavelength_nm=486)
-        >>> bench.remove_fields([0])
-        >>> [field.wavelength_nm for field in bench.fields]
-        [486.0]
-        """
-        self._call("remove_fields", field_indices=[int(index) for index in field_indices])
-
-    def select_field(self, field_index: int) -> None:
-        """Choose the field that autofocus and the single-field analyses use by default."""
-        self._call("select_field", field_index=int(field_index))
+        arguments: dict[str, object] = {"lens_index": int(lens_index), "plossl_pair": plossl_pair}
+        if part_number is not None:
+            arguments["part_number"] = part_number
+        if paraxial_focal_length_mm is not None:
+            arguments["paraxial_focal_length_mm"] = float(paraxial_focal_length_mm)
+        self._call("replace_lens", **arguments)
+        return self.lenses[int(lens_index)]
 
     # ------------------------------------------------------------------ the image plane
 
@@ -713,12 +684,14 @@ class Bench(DesignFileMethods, AssemblyMethods, GapMethods):
         return DesignSummary(
             effective_focal_length_mm=plain(first_order and first_order.effective_focal_length),
             back_focal_length_mm=plain(first_order and first_order.back_focal_length),
+            magnification=plain(first_order and first_order.magnification),
             f_number=plain(f_number and f_number.f_number),
             transmitted_beam_diameter_mm=plain(f_number and f_number.transmitted_beam_diameter),
             beam_is_clipped=None if f_number is None else bool(f_number.beam_is_clipped),
             image_z_mm=float(state.image_z),
             rms_spot_radius_um=[float(spot.rms_radius) * 1000.0 for spot in fast_trace.spots],
             airy_radius_um=[plain(radius and radius * 1000.0) for radius in airy_radii_mm],
+            chief_ray_image_mm=[(float(x), float(y)) for x, y in fast_trace.chief_ray_image_points],
         )
 
     def spots(self) -> list[analysis.SpotResult]:
@@ -782,6 +755,44 @@ class Bench(DesignFileMethods, AssemblyMethods, GapMethods):
         """
         return analysis.compute_field_curvature(self._state(field_index))
 
+    def distortion(
+        self,
+        field_index: int | None = None,
+        reference: str = "chief_ray",
+        grid_points: int = GRID_POINTS,
+    ) -> DistortionResult:
+        """Grid distortion of a finite object, at one field's wavelength (default: selected).
+
+        A square grid of object points, its corners as far from the axis as the farthest
+        object point, is compared with a scaled copy of itself on the image plane (see
+        ``raycrafter.core.distortion``). The result has the ``magnification``, the grid
+        (``object_x``, ``image_x``, ``ideal_x`` and the same for y, in mm),
+        ``grid_distortion_percent``, ``max_distortion_percent``, and
+        ``height_distortion_percent`` against object ``heights``. With beams, or no object
+        point off the axis, the arrays are empty and ``unavailable_reason`` says why.
+
+        Parameters
+        ----------
+        field_index : int, optional
+            Whose wavelength (and NA, for centroids) to use.
+        reference : str
+            ``"chief_ray"`` or ``"centroid"``: how each image point is located.
+        grid_points : int
+            Object points along each side of the grid.
+
+        Raises
+        ------
+        ValueError
+            If ``reference`` or ``grid_points`` is not allowed.
+
+        Example
+        -------
+        >>> bench = Bench()
+        >>> bench.distortion().unavailable_reason  # a beam has no object grid
+        'Needs a finite object (object points)'
+        """
+        return compute_distortion(self._state(field_index), reference, grid_points)
+
     def plot(self, kind: str, field_index: int | None = None) -> Figure:
         """Draw one analysis as a matplotlib ``Figure``, as the GUI and the report show it.
 
@@ -789,7 +800,8 @@ class Bench(DesignFileMethods, AssemblyMethods, GapMethods):
         ----------
         kind : str
             One of ``"ray_diagram"``, ``"spot_diagram"``, ``"through_focus"``, ``"mtf"``,
-            ``"ray_fan"``, ``"field_curvature"`` (``PLOT_KINDS``).
+            ``"ray_fan"``, ``"field_curvature"``, ``"grid_distortion"``, ``"distortion"``
+            (``PLOT_KINDS``).
         field_index : int, optional
             The field for the single-field plots; the selected one if left out.
 
@@ -887,15 +899,25 @@ class Bench(DesignFileMethods, AssemblyMethods, GapMethods):
     @staticmethod
     def _field_info(state: OpticalState, index: int) -> FieldInfo:
         """The snapshot of field ``index`` in ``state``."""
-        beam = state.fields[index]
+        light = state.fields[index]
+        beam = light if isinstance(light, BeamField) else None
+        point = light if isinstance(light, ObjectPoint) else None
+
+        def plain(value) -> float | None:  # None stays None
+            return None if value is None else float(value)
+
         return FieldInfo(
             index=index,
-            diameter_mm=float(beam.diameter_mm),
-            angle_deg=float(beam.angle_deg),
-            vergence_dioptres=float(beam.vergence_dioptres),
-            offset_mm=float(beam.offset_mm),
-            wavelength_nm=float(beam.wavelength_nm),
-            colour=beam.display_colour(),
-            colour_follows_wavelength=beam.colour is None,
+            kind="beam" if beam is not None else "object_point",
+            diameter_mm=plain(beam and beam.diameter_mm),
+            angle_deg=plain(beam and beam.angle_deg),
+            vergence_dioptres=plain(beam and beam.vergence_dioptres),
+            offset_mm=plain(beam and beam.offset_mm),
+            height_x_mm=plain(point and point.height_x_mm),
+            height_y_mm=plain(point and point.height_y_mm),
+            numerical_aperture=plain(point and point.numerical_aperture),
+            wavelength_nm=float(light.wavelength_nm),
+            colour=light.display_colour(),
+            colour_follows_wavelength=light.colour is None,
             selected=index == state.selected_field_index,
         )
