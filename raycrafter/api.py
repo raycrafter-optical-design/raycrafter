@@ -72,6 +72,7 @@ from matplotlib.figure import Figure
 from raycrafter.core import analysis, gaps
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.state import OpticalState, state_from_dict
+from raycrafter.design_files import DesignFileMethods
 from raycrafter.lenscatalog import thorlabs
 from raycrafter.lenscatalog.catalog import CatalogEntry
 from raycrafter.lenscatalog.selection import search_catalog
@@ -219,12 +220,13 @@ class DesignSummary:
 # ----------------------------------------------------------------------------- the bench
 
 
-class Bench:
+class Bench(DesignFileMethods):
     """A lens bench: a row of lenses on an optical axis, beams of light and an image plane.
 
     ``Bench()`` makes a headless bench in this process. To drive the open RayCrafter window
     instead, use ``Bench.connect()``; to start from a file, ``Bench.from_project(path)`` or
-    ``Bench.from_zmx(path)``.
+    ``Bench.from_zmx(path)``. Saving, opening, importing and exporting are described in
+    ``raycrafter.design_files``.
 
     Parameters
     ----------
@@ -420,17 +422,6 @@ class Bench:
     def selected_field_index(self) -> int:
         """The field that autofocus and the single-field analyses use (see ``select_field``)."""
         return self._state().selected_field_index
-
-    @property
-    def has_unsaved_changes(self) -> bool:
-        """True if the design differs from the one last saved, opened, imported or started."""
-        return self._call("get_design")["has_unsaved_changes"]
-
-    @property
-    def project_path(self) -> Path | None:
-        """The project file last saved or opened, where ``save_project`` saves by default."""
-        project_file = self._call("get_design")["project_file"]
-        return None if project_file is None else Path(project_file)
 
     def state(self) -> OpticalState:
         """A copy of the complete design as RayCrafter stores it, every surface included.
@@ -861,87 +852,6 @@ class Bench:
             webbrowser.open(report_path.as_uri())
         return report_path
 
-    # ------------------------------------------------------------------ files
-
-    def new_design(self, discard_unsaved: bool = False) -> None:
-        """Start again with no lenses and one default field.
-
-        Raises
-        ------
-        ValueError
-            If there are unsaved changes and ``discard_unsaved`` is False.
-        """
-        self._call("new_design", discard_unsaved=discard_unsaved)
-
-    def save_project(self, file_path: str | Path | None = None) -> Path:
-        """Save the whole design as a RayCrafter project file and return where it went.
-
-        A project keeps everything (all fields, Plossl pairs, part details, and the Zemax
-        file a design was imported from). Without ``file_path`` it saves to
-        ``project_path``; ``.raycrafter`` is added to a name with no extension.
-
-        Raises
-        ------
-        ValueError
-            If no path is given and the design has no project file yet.
-
-        Example
-        -------
-        >>> Bench().save_project("my_design.raycrafter")  # doctest: +SKIP
-        """
-        absolute_path = None if file_path is None else _absolute(file_path)
-        return Path(self._call("save_project", file_path=absolute_path)["saved_to"])
-
-    def load_project(self, file_path: str | Path, discard_unsaved: bool = False) -> None:
-        """Replace the design with the one in a RayCrafter project file.
-
-        Raises
-        ------
-        ValueError
-            If the file is not a valid project, or there are unsaved changes and
-            ``discard_unsaved`` is False.
-        """
-        self._call("load_project", file_path=_absolute(file_path), discard_unsaved=discard_unsaved)
-
-    def load_zmx(self, file_path: str | Path, discard_unsaved: bool = False) -> list[str]:
-        """Replace the design with the one in a Zemax .zmx file (an import).
-
-        The imported design has no project file until ``save_project`` is called.
-
-        Returns
-        -------
-        list of str
-            Notes on anything RayCrafter simplified or could not represent.
-
-        Raises
-        ------
-        ValueError
-            If the file cannot be read, or there are unsaved changes and ``discard_unsaved``
-            is False.
-
-        Example
-        -------
-        >>> notes = bench.load_zmx("my_design.zmx", discard_unsaved=True)  # doctest: +SKIP
-        """
-        result = self._call(
-            "load_zmx", file_path=_absolute(file_path), discard_unsaved=discard_unsaved
-        )
-        return result["notes"]
-
-    def save_zmx(self, file_path: str | Path) -> Path:
-        """Export the design as a Zemax .zmx file and return where it went.
-
-        This does not count as saving the design, as a ZMX file keeps only the selected
-        field and no Plossl pairs; use ``save_project`` for that.
-
-        Example
-        -------
-        >>> Bench().save_zmx("my_design.zmx")  # doctest: +SKIP
-        """
-        absolute_path = _absolute(file_path)
-        self._call("save_zmx", file_path=absolute_path)
-        return Path(absolute_path)
-
     # ------------------------------------------------------------------ internals
 
     def _call(self, tool_name: str, **arguments) -> dict:
@@ -1021,9 +931,3 @@ class Bench:
             colour_follows_wavelength=beam.colour is None,
             selected=index == state.selected_field_index,
         )
-
-
-def _absolute(file_path: str | Path) -> str:
-    """The absolute form of a path, so a connected window (whose working folder differs from
-    the script's) reads and writes the file the script means."""
-    return str(Path(file_path).expanduser().resolve())

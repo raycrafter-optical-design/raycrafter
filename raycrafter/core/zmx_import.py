@@ -132,19 +132,15 @@ def load_zmx(file_path: str, catalog: dict[str, CatalogEntry]) -> ZmxImport:
             if not lens.is_paraxial and lens.part_number.startswith("Imported"):
                 lens.is_negative = is_diverging(lens)
 
-    # The file itself is kept with the design (see ImportedSource).
-    imported_from = ImportedSource.from_bytes(
+    state = OpticalState(lenses=grouping.lenses, image_z=grouping.image_z, fields=fields)
+    # The file itself, and the bench as imported, are kept with the design (ImportedSource).
+    state.imported_from = ImportedSource.from_bytes(
         file_format="zmx",
         file_name=Path(file_path).name,
         content=Path(file_path).read_bytes(),
         imported_by=raycrafter_version(),
+        imported_design=state,
         notes=notes,
-    )
-    state = OpticalState(
-        lenses=grouping.lenses,
-        image_z=grouping.image_z,
-        fields=fields,
-        imported_from=imported_from,
     )
     return ZmxImport(state, notes)
 

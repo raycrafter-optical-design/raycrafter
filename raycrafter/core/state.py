@@ -10,8 +10,9 @@ processes (a script and the RayCrafter window).
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 
 import raycrafter
 from raycrafter.core.prescription import LensSurface, flipped_prescription, lens_thickness
@@ -163,8 +164,13 @@ class ImportedSource:
 
     Importing is lossy and the importer keeps improving, so the original file is kept with
     the design (and in its project file): the design can then be imported again later, and
-    import problems can be reproduced. It is never loaded in place of the design. Once the
-    bench has been edited it no longer describes it.
+    import problems can be reproduced. It is never loaded in place of the design.
+
+    Once the bench has been edited, the file no longer describes it. So the bench exactly as
+    the importer made it is kept too (``imported_design``). Comparing the current bench with
+    it tells whether the user has changed anything (``OpticalState.modified_since_import``),
+    and comparing a fresh import of the file with it shows what a newer importer does
+    differently.
 
     Attributes
     ----------
@@ -179,6 +185,9 @@ class ImportedSource:
         Hex SHA-256 of the bytes, to check the copy is intact.
     imported_by : str
         The RayCrafter version that imported it, e.g. ``"RayCrafter 0.0.3"``.
+    imported_design : OpticalState
+        The bench as the importer made it, before any edits (its own ``imported_from`` is
+        None).
     notes : tuple of str
         The notes on what the import simplified, as the user was shown them.
     """
@@ -188,6 +197,7 @@ class ImportedSource:
     content_base64: str
     sha256: str
     imported_by: str
+    imported_design: OpticalState
     notes: tuple[str, ...] = ()
 
     @classmethod
@@ -197,15 +207,20 @@ class ImportedSource:
         file_name: str,
         content: bytes,
         imported_by: str,
+        imported_design: OpticalState,
         notes: list[str] | tuple[str, ...] = (),
     ) -> ImportedSource:
-        """Make the record from the file's bytes, encoding them and computing the hash."""
+        """Make the record from the file's bytes, encoding them and computing the hash.
+
+        ``imported_design`` is copied, so later edits to the bench do not change it.
+        """
         return cls(
             file_format=file_format,
             file_name=file_name,
             content_base64=base64.b64encode(content).decode("ascii"),
             sha256=hashlib.sha256(content).hexdigest(),
             imported_by=imported_by,
+            imported_design=copy.deepcopy(replace(imported_design, imported_from=None)),
             notes=tuple(notes),
         )
 
@@ -260,6 +275,16 @@ class OpticalState:
         first = 1 + sum(lens.surface_count for lens in self.lenses[:lens_index])
         return first, first + self.lenses[lens_index].surface_count - 1
 
+    def modified_since_import(self) -> bool | None:
+        """True if the bench differs from the one imported; None if it was not imported.
+
+        Which field is selected does not count, as it does not for unsaved changes.
+        """
+        if self.imported_from is None:
+            return None
+        current = replace(self, imported_from=None, selected_field_index=0)
+        return current != replace(self.imported_from.imported_design, selected_field_index=0)
+
     def beam_reference_z(self) -> float:
         """z of the plane where each field's diameter and offset are defined (mm).
 
@@ -290,11 +315,15 @@ def state_from_dict(data: dict) -> OpticalState:
     ]
     fields = [BeamField(**field_data) for field_data in data["fields"]]
     source_data = data.get("imported_from")
-    imported_from = (
-        None
-        if source_data is None
-        else ImportedSource(**{**source_data, "notes": tuple(source_data["notes"])})
-    )
+    imported_from = None
+    if source_data is not None:
+        imported_from = ImportedSource(
+            **{
+                **source_data,
+                "imported_design": state_from_dict(source_data["imported_design"]),
+                "notes": tuple(source_data["notes"]),
+            }
+        )
     return OpticalState(
         **{**data, "lenses": lenses, "fields": fields, "imported_from": imported_from},
     )

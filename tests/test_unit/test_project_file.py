@@ -2,6 +2,7 @@
 
 import copy
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -135,6 +136,49 @@ def test_the_embedded_file_imports_again_with_its_part_metadata(imported_model, 
     ]
 
 
+def test_the_design_as_imported_is_kept_and_shows_later_edits(imported_model, tmp_path):
+    state = imported_model.state
+    assert state.modified_since_import() is False
+    imported_model.select_field(0)  # choosing a field is not a change
+    assert state.modified_since_import() is False
+
+    state.image_z += 5.0
+    assert state.modified_since_import() is True
+    loaded = saved_and_loaded(state, tmp_path)
+    assert loaded.modified_since_import() is True
+    assert loaded.imported_from.imported_design.image_z == pytest.approx(state.image_z - 5.0)
+    assert loaded.imported_from.imported_design.imported_from is None
+
+
+def test_a_design_not_imported_has_no_import_to_compare_with(model):
+    assert model.state.modified_since_import() is None
+
+
+def test_reimporting_the_embedded_file_reproduces_the_design_as_imported(imported_model, tmp_path):
+    """What a regression test of the importer does: same file, same importer, same bench."""
+    source = imported_model.state.imported_from
+    imported_model.delete_lens(0)  # the user's edits do not matter
+    copy_path = tmp_path / "copy" / source.file_name
+    copy_path.parent.mkdir()
+    copy_path.write_bytes(source.content())
+    reimported = load_zmx(str(copy_path), imported_model.catalog).state
+    assert replace(reimported, imported_from=None) == source.imported_design
+
+
+def test_saving_with_forget_import_drops_the_record(imported_model, tmp_path):
+    project_path = tmp_path / "design.raycrafter"
+    imported_model.save_project(project_path, forget_import=True)
+    assert imported_model.state.imported_from is None
+    assert not imported_model.has_unsaved_changes()
+    assert load_project(project_path).imported_from is None
+
+
+def test_a_failed_save_keeps_the_import_record(imported_model, tmp_path):
+    with pytest.raises(OSError):
+        imported_model.save_project(tmp_path / "missing" / "design.raycrafter", forget_import=True)
+    assert imported_model.state.imported_from is not None
+
+
 def test_new_design_forgets_the_imported_file(imported_model):
     imported_model.new_design()
     assert imported_model.state.imported_from is None
@@ -168,11 +212,19 @@ def edited_project(model, change) -> dict:
         (lambda data: data["lenses"].reverse(), "in order along the axis"),
         (lambda data: data["lenses"][0].update(flipped=1), "true or false"),
         (lambda data: data.update(image_z_mm="far"), "should be a number"),
+        (
+            lambda data: data["imported_from"]["imported_design"].pop("fields"),
+            "imported_design is missing fields",
+        ),
+        (
+            lambda data: data["imported_from"]["imported_design"]["fields"].clear(),
+            "imported design has no fields",
+        ),
     ],
 )
-def test_bad_project_data_is_refused_with_a_reason(model, change, message):
+def test_bad_project_data_is_refused_with_a_reason(imported_model, change, message):
     with pytest.raises(ProjectFileError, match=message):
-        project_from_dict(edited_project(model, change))
+        project_from_dict(edited_project(imported_model, change))
 
 
 def test_a_damaged_imported_file_is_refused(imported_model):

@@ -549,7 +549,9 @@ class OpticalModel:
         self.mark_saved()
         self.clear_undo_history()
 
-    def save_project(self, file_path: str | Path | None = None) -> Path:
+    def save_project(
+        self, file_path: str | Path | None = None, forget_import: bool = False
+    ) -> Path:
         """Save the whole design as a RayCrafter project file, and count it as saved.
 
         Parameters
@@ -557,6 +559,10 @@ class OpticalModel:
         file_path : str or Path, optional
             Where to save. Defaults to ``project_path``, the file last saved or opened.
             ``project_file.FILE_EXTENSION`` is added if the name has no extension.
+        forget_import : bool
+            If True, drop the record of the file the design was imported from
+            (``OpticalState.imported_from``), so that from now on it is a design of its own
+            rather than an import. The record is dropped only if the save succeeds.
 
         Returns
         -------
@@ -575,7 +581,9 @@ class OpticalModel:
         target = Path(file_path)
         if not target.suffix:
             target = target.with_suffix(project_file.FILE_EXTENSION)
-        project_file.save_project(self.state, target)
+        state_to_save = replace(self.state, imported_from=None) if forget_import else self.state
+        project_file.save_project(state_to_save, target)
+        self.state.imported_from = state_to_save.imported_from
         self.project_path = target
         self.mark_saved()
         return target

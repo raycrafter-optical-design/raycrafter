@@ -10,8 +10,9 @@
   dimensions below the lenses to type that distance.
 - Right-click a lens for Flip (F), Delete (Del or Backspace) and Make / Split Plossl.
 - The RayCrafter menu has About and Quit. The File menu (``raycrafter.gui.file_actions``) has
-  New, Open, Save, Save As, Import ZMX and Export ZMX; New, Open, Import and Quit ask first
-  if the design has changed since it was last saved, opened or imported.
+  New, Open, Save, Save As, Save Without Original ZMX, Import ZMX and Export ZMX. New, Open,
+  Import and Quit ask first if the design has changed since it was last saved, opened or
+  imported.
 - The Edit menu has Undo and Redo. One action (a whole drag, a typed value) is one step; New,
   Open and Import clear the history.
 - "Add field" opens the field window (``raycrafter.gui.field_editor``), where beams are
@@ -291,15 +292,7 @@ class MainWindow(QMainWindow):
             role=QAction.MenuRole.QuitRole,
         )
 
-        file_menu = menu_bar.addMenu("File")
-        files = self.files
-        add_action(file_menu, "New", files.new_design, shortcut=QKeySequence.StandardKey.New)
-        add_action(file_menu, "Open...", files.open_project, shortcut=QKeySequence.StandardKey.Open)
-        add_action(file_menu, "Save", files.save, shortcut=QKeySequence.StandardKey.Save)
-        add_action(file_menu, "Save As...", files.save_as, shortcut=QKeySequence.StandardKey.SaveAs)
-        file_menu.addSeparator()
-        add_action(file_menu, "Import ZMX...", files.import_zmx)
-        add_action(file_menu, "Export ZMX...", files.export_zmx)
+        self.files.build_menu(menu_bar.addMenu("File"))
 
         edit_menu = menu_bar.addMenu(EDIT_MENU_TITLE)
         self.undo_action = add_action(

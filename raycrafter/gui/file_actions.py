@@ -4,7 +4,11 @@ A design is saved as a RayCrafter project (``raycrafter.core.project_file``), wh
 everything. A Zemax file is a lossy exchange format: Import ZMX replaces the design with the
 file's system, and Export ZMX writes the system out but does not count as saving the design,
 so quitting after an export still asks to save. The window title shows the project file's
-name, and macOS-style marks it as modified when there are unsaved changes.
+name, and marks it as modified when there are unsaved changes.
+
+An imported design keeps the original ZMX file and the bench as imported, in its project
+file too. "Save Without Original ZMX" saves the project without them, so from then on the
+design is no longer an import.
 
 New, Open, Import ZMX and Quit ask first if the design has unsaved changes.
 """
@@ -14,7 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtWidgets import QFileDialog, QMessageBox
+from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtWidgets import QFileDialog, QMenu, QMessageBox
 
 from raycrafter.core.project_file import FILE_EXTENSION, ProjectFileError
 from raycrafter.core.zmx_import import ZmxImportError
@@ -39,6 +44,28 @@ class FileActions:
 
     def __init__(self, window: MainWindow) -> None:
         self.window = window
+        self.save_without_import_action: QAction | None = None  # set by build_menu
+
+    def build_menu(self, file_menu: QMenu) -> None:
+        """Fill the window's File menu with these actions."""
+
+        def add_action(text: str, slot, shortcut=None) -> QAction:
+            action = file_menu.addAction(text)
+            action.triggered.connect(slot)
+            if shortcut is not None:
+                action.setShortcut(QKeySequence(shortcut))
+            return action
+
+        add_action("New", self.new_design, QKeySequence.StandardKey.New)
+        add_action("Open...", self.open_project, QKeySequence.StandardKey.Open)
+        add_action("Save", self.save, QKeySequence.StandardKey.Save)
+        add_action("Save As...", self.save_as, QKeySequence.StandardKey.SaveAs)
+        self.save_without_import_action = add_action(
+            "Save Without Original ZMX...", self.save_without_import
+        )
+        file_menu.addSeparator()
+        add_action("Import ZMX...", self.import_zmx)
+        add_action("Export ZMX...", self.export_zmx)
 
     @property
     def model(self):
@@ -132,9 +159,44 @@ class FileActions:
             file_path += FILE_EXTENSION
         return self._save_to(Path(file_path))
 
-    def _save_to(self, file_path: Path) -> bool:
+    def save_without_import(self) -> bool:
+        """File > Save Without Original ZMX: Save As, dropping the record of the import.
+
+        The project then keeps neither the original ZMX file nor the bench as imported, and
+        the design stops being an import. The user is asked first, as this cannot be undone
+        from the saved file.
+
+        Returns
+        -------
+        bool
+            True if the design was saved.
+        """
+        source = self.model.state.imported_from
+        if source is None:
+            return self.save_as()
+        answer = QMessageBox.question(
+            self.window,
+            "Save without the original ZMX",
+            f"The project will no longer keep {source.file_name} or the design as it was "
+            "imported, so it cannot be compared with the import or imported again. "
+            "Save without them?",
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if answer != QMessageBox.StandardButton.Save:
+            return False
+        file_path, _selected_filter = QFileDialog.getSaveFileName(
+            self.window, "Save RayCrafter project", self._suggested_path(), PROJECT_FILTER
+        )
+        if not file_path:
+            return False  # dialog cancelled
+        if not file_path.lower().endswith(FILE_EXTENSION):
+            file_path += FILE_EXTENSION
+        return self._save_to(Path(file_path), forget_import=True)
+
+    def _save_to(self, file_path: Path, forget_import: bool = False) -> bool:
         try:
-            self.model.save_project(file_path)
+            self.model.save_project(file_path, forget_import=forget_import)
         except Exception as error:  # show any problem (e.g. permissions) instead of crashing
             QMessageBox.critical(
                 self.window, "Save failed", f"Could not save {file_path}:\n{error}"
@@ -211,6 +273,8 @@ class FileActions:
         # on macOS).
         self.window.setWindowTitle(f"{name}[*] - RayCrafter")
         self.window.setWindowModified(self.model.has_unsaved_changes())
+        if self.save_without_import_action is not None:
+            self.save_without_import_action.setEnabled(self.model.state.imported_from is not None)
 
     def _show_replaced_design(self) -> None:
         self.window.show_replaced_design()

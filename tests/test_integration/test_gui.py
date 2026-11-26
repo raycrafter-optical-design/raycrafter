@@ -450,7 +450,8 @@ def test_file_menu_new_save_open_import_and_export(
     assert menu_titles == ["RayCrafter", "File", EDIT_MENU_TITLE, "Help"]
     file_menu = window.menuBar().actions()[1].menu()
     assert [action.text() for action in file_menu.actions() if action.text()] == [
-        "New", "Open...", "Save", "Save As...", "Import ZMX...", "Export ZMX...",
+        "New", "Open...", "Save", "Save As...", "Save Without Original ZMX...",
+        "Import ZMX...", "Export ZMX...",
     ]  # fmt: skip
     assert not window.model.has_unsaved_changes()  # the start-up bench counts as saved
     assert window.windowTitle() == "Untitled[*] - RayCrafter"
@@ -493,12 +494,20 @@ def test_file_menu_new_save_open_import_and_export(
     assert not window.model.has_unsaved_changes()
 
     # Import ZMX brings in the exported system, which has no project file yet.
+    save_without_import = window.files.save_without_import_action
+    assert not save_without_import.isEnabled()
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (str(zmx_path), ""))
     window.files.import_zmx()
     assert window.model.project_path is None
     assert window.model.state.imported_from.file_name == "design.zmx"
     assert window.windowTitle() == "Untitled[*] - RayCrafter"
     assert not window.model.has_unsaved_changes()
+    assert save_without_import.isEnabled()
+
+    # Save Without Original ZMX asks first, then saves a design that is no longer an import.
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Save)
+    assert window.files.save_without_import()
+    assert window.model.state.imported_from is None and not save_without_import.isEnabled()
     window.close()
 
 

@@ -272,3 +272,11 @@ embedded, documented. "Lock focus" is not stored. After Import ZMX the design co
 **Why:** The import is lossy and still improving, so the source allows re-import later,
 reproducible import bugs and importer regression tests. Storing only a path/hash was rejected
 as files move. Rob agreed.
+
+## 2026-11-26: Imported projects keep the design as imported, until forgotten (#40)
+**Decision:** `imported_from` also stores the bench exactly as the importer made it, so
+RayCrafter can tell whether the design was changed since import and what a newer importer
+does differently. "Save Without Original ZMX" (`save_project(forget_import=True)`) drops the
+record, and the design stops being an import. Bench file methods live in `design_files.py`.
+**Why:** After edits the original file alone says only where a design started. A hash of the
+imported bench was rejected: it says that something changed, not what. Rob's choice.

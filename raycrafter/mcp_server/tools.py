@@ -105,8 +105,8 @@ class DesignTools:
         """The whole design: lenses along the axis, fields, image plane, unsaved flag.
 
         ``project_file`` is the RayCrafter project the design was last saved to or opened
-        from (null if none), and ``imported_from`` the name of the Zemax file it was
-        imported from (null if it was not).
+        from (null if none). ``imported_from`` names the Zemax file the design was imported
+        from and says whether the bench has been changed since (null if not imported).
 
         Each lens's ``gap_after_mm`` is the air gap from its back vertex to the next lens's
         front vertex, or to the image plane behind the last lens. ``vendor`` and
@@ -150,7 +150,12 @@ class DesignTools:
             "image_z_mm": _number(state.image_z),
             "has_unsaved_changes": self.model.has_unsaved_changes(),
             "project_file": str(self.model.project_path) if self.model.project_path else None,
-            "imported_from": state.imported_from.file_name if state.imported_from else None,
+            "imported_from": None
+            if state.imported_from is None
+            else {
+                "file_name": state.imported_from.file_name,
+                "modified_since_import": state.modified_since_import(),
+            },
         }
 
     def search_lenses(
@@ -451,14 +456,16 @@ class DesignTools:
         self.model.new_design()
         return self.get_design()
 
-    def save_project(self, file_path: str | None = None) -> dict:
+    def save_project(self, file_path: str | None = None, forget_import: bool = False) -> dict:
         """Save the whole design as a RayCrafter project (.raycrafter), keeping everything.
 
         Without ``file_path`` it saves to the project file last saved or opened. This is how
-        to save a design: a Zemax file (``save_zmx``) loses fields and Plossl pairs.
+        to save a design: a Zemax file (``save_zmx``) loses fields and Plossl pairs. With
+        ``forget_import`` the project no longer keeps the Zemax file the design was imported
+        from, nor the design as imported; only do this if the user asks.
         """
         try:
-            saved_path = self.model.save_project(file_path)
+            saved_path = self.model.save_project(file_path, forget_import=forget_import)
         except OSError as error:
             raise ValueError(f"Could not save {file_path}: {error}") from error
         return {"saved_to": str(saved_path)}

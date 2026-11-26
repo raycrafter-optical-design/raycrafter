@@ -1,8 +1,9 @@
 """Save and load a RayCrafter project file (``.raycrafter``): the whole design, as JSON.
 
 A project file holds everything a ZMX file cannot: every field, Plossl pairs, the part
-metadata of each lens, and (for a design imported from a ZMX file) the original file. The
-format is described, with an example, in issue #40.
+metadata of each lens, and, for a design imported from a ZMX file, the original file and
+the bench as it was imported (see ``ImportedSource``). The format is described, with an
+example, in issue #40.
 
 Every key is named here, separately from the attribute names in ``raycrafter.core.state``,
 so that renaming something in the code does not change the file format. Loading is strict:
@@ -42,17 +43,9 @@ FORMAT_VERSION = 1
 # layout. Empty until version 2 exists.
 _UPGRADES: dict[int, Callable[[dict], dict]] = {}
 
-TOP_LEVEL_KEYS = [
-    "format",
-    "format_version",
-    "written_by",
-    "lenses",
-    "next_group",
-    "fields",
-    "selected_field",
-    "image_z_mm",
-    "imported_from",
-]
+# The keys of a design: the project's own, and the imported bench inside imported_from.
+DESIGN_KEYS = ["lenses", "next_group", "fields", "selected_field", "image_z_mm"]
+TOP_LEVEL_KEYS = ["format", "format_version", "written_by", *DESIGN_KEYS, "imported_from"]
 PART_KEYS = ["vendor", "part_number", "mount_type", "clear_diameter_mm"]
 GLASS_LENS_KEYS = ["type", "part", "front_z_mm", "flipped", "group", "surfaces"]
 PARAXIAL_LENS_KEYS = ["type", "part", "front_z_mm", "focal_length_mm"]
@@ -65,7 +58,15 @@ FIELD_KEYS = [
     "wavelength_nm",
     "colour",
 ]
-SOURCE_KEYS = ["format", "file_name", "sha256", "imported_by", "notes", "content_base64"]
+SOURCE_KEYS = [
+    "format",
+    "file_name",
+    "sha256",
+    "imported_by",
+    "notes",
+    "imported_design",
+    "content_base64",
+]
 
 
 class ProjectFileError(ValueError):
@@ -111,12 +112,19 @@ def project_to_dict(state: OpticalState) -> dict:
         "format": FORMAT_NAME,
         "format_version": FORMAT_VERSION,
         "written_by": raycrafter_version(),
+        **_design_to_dict(state),
+        "imported_from": _source_to_dict(state.imported_from),
+    }
+
+
+def _design_to_dict(state: OpticalState) -> dict:
+    """The lenses, fields and image plane (everything but the file header and the source)."""
+    return {
         "lenses": [_lens_to_dict(lens) for lens in state.lenses],
         "next_group": state.next_group_id,
         "fields": [_field_to_dict(beam) for beam in state.fields],
         "selected_field": state.selected_field_index,
         "image_z_mm": state.image_z,
-        "imported_from": _source_to_dict(state.imported_from),
     }
 
 
@@ -172,7 +180,8 @@ def _source_to_dict(source: ImportedSource | None) -> dict | None:
         "sha256": source.sha256,
         "imported_by": source.imported_by,
         "notes": list(source.notes),
-        "content_base64": source.content_base64,
+        "imported_design": _design_to_dict(source.imported_design),
+        "content_base64": source.content_base64,  # last, as it is long
     }
 
 
@@ -222,34 +231,39 @@ def project_from_dict(data: object) -> OpticalState:
         raise ProjectFileError("This is not a RayCrafter project file.")
     data = _upgraded(data)
     _check_keys(data, TOP_LEVEL_KEYS, "the project")
+    state = _design_from_dict(data, prefix="")
+    state.imported_from = _source_from_dict(data["imported_from"])
+    return state
 
+
+def _design_from_dict(data: dict, prefix: str) -> OpticalState:
+    """The design in ``data`` (whose keys are already checked); ``prefix`` locates errors."""
     lenses = [
-        _lens_from_dict(lens_data, f"lens {index}")
-        for index, lens_data in enumerate(_list(data["lenses"], "lenses"))
+        _lens_from_dict(lens_data, f"{prefix}lens {index}")
+        for index, lens_data in enumerate(_list(data["lenses"], f"{prefix}lenses"))
     ]
     front_positions = [lens.z for lens in lenses]
     if front_positions != sorted(front_positions):
-        raise ProjectFileError("The lenses must be listed in order along the axis.")
+        raise ProjectFileError(f"The {prefix}lenses must be listed in order along the axis.")
 
     fields = [
-        _field_from_dict(field_data, f"field {index}")
-        for index, field_data in enumerate(_list(data["fields"], "fields"))
+        _field_from_dict(field_data, f"{prefix}field {index}")
+        for index, field_data in enumerate(_list(data["fields"], f"{prefix}fields"))
     ]
     if not fields:
-        raise ProjectFileError("The project has no fields; there must be at least one.")
-    selected_field = _integer(data["selected_field"], "selected_field")
+        raise ProjectFileError(f"The {prefix}design has no fields; there must be at least one.")
+    selected_field = _integer(data["selected_field"], f"{prefix}selected_field")
     if not 0 <= selected_field < len(fields):
         raise ProjectFileError(
-            f"selected_field is {selected_field}, but there are {len(fields)} field(s)."
+            f"{prefix}selected_field is {selected_field}, but there are {len(fields)} field(s)."
         )
 
     return OpticalState(
         lenses=lenses,
-        next_group_id=_integer(data["next_group"], "next_group"),
+        next_group_id=_integer(data["next_group"], f"{prefix}next_group"),
         fields=fields,
         selected_field_index=selected_field,
-        image_z=_number(data["image_z_mm"], "image_z_mm"),
-        imported_from=_source_from_dict(data["imported_from"]),
+        image_z=_number(data["image_z_mm"], f"{prefix}image_z_mm"),
     )
 
 
@@ -355,12 +369,17 @@ def _source_from_dict(data: object) -> ImportedSource | None:
     if not isinstance(data, dict):
         raise ProjectFileError(f"{where} is not a JSON object.")
     _check_keys(data, SOURCE_KEYS, where)
+    design_data = data["imported_design"]
+    if not isinstance(design_data, dict):
+        raise ProjectFileError(f"{where} imported_design is not a JSON object.")
+    _check_keys(design_data, DESIGN_KEYS, f"{where} imported_design")
     source = ImportedSource(
         file_format=_text(data["format"], f"{where} format"),
         file_name=_text(data["file_name"], f"{where} file_name"),
         content_base64=_text(data["content_base64"], f"{where} content_base64"),
         sha256=_text(data["sha256"], f"{where} sha256"),
         imported_by=_text(data["imported_by"], f"{where} imported_by"),
+        imported_design=_design_from_dict(design_data, prefix="imported "),
         notes=tuple(
             _text(note, f"{where} note") for note in _list(data["notes"], f"{where} notes")
         ),
