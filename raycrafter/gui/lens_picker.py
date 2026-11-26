@@ -120,7 +120,8 @@ class LensPickerDialog(QDialog):
         header.setStretchLastSection(True)  # the product family takes the remaining width
 
         self.coating_combo = QComboBox()
-        self.coating_combo.setView(QListView())  # see MainWindow: the native popup ignores CSS
+        # A plain list view: the native macOS popup ignores the style sheet (see FieldEditor).
+        self.coating_combo.setView(QListView())
         self.coating_combo.addItem("Suits the beams", SUITS_BEAMS)  # see set_design_wavelengths
         self.coating_combo.addItem(ALL_COATINGS, None)
         for coating in available_coatings(self.entries):

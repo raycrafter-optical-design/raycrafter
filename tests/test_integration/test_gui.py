@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QPoint, QPointF, Qt  # noqa: E402
 from PyQt6.QtGui import QDesktopServices, QWheelEvent  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
-from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
+from PyQt6.QtWidgets import QApplication, QFileDialog, QListView, QMessageBox  # noqa: E402
 
 from raycrafter.gui.about_dialog import DOCS_URL, PROJECT_URL, AboutDialog  # noqa: E402
 from raycrafter.gui.analysis_panels import MtfPanel  # noqa: E402
@@ -1187,3 +1187,13 @@ def test_new_from_example_opens_the_microscope_with_its_readouts(application):
     window.update_mtf_tab()
     assert "y = +0.50 mm" in window.mtf_panel.getPlotItem().titleLabel.text
     assert "Magnification" in build_report_html(window.model)
+
+
+def test_drop_downs_use_a_styled_list_rather_than_the_native_popup(application):
+    # The native macOS popup ignores the style sheet, so the highlighted item's text could
+    # not be read, and it moves the list so that the items jump about as one is picked.
+    window = MainWindow()
+    window.open_field_editor()
+    assert type(window.field_editor.light_kind_box.view()) is QListView
+    picker = LensPickerDialog(window.model.catalog, parent=window)
+    assert type(picker.coating_combo.view()) is QListView

@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -187,6 +188,10 @@ class FieldEditor(QDialog):
         self.remove_button.setToolTip("Remove the selected fields")
 
         self.light_kind_box = QComboBox()
+        # A plain list view instead of the native macOS popup. The native popup ignores the
+        # style sheet (the highlighted item's text was unreadable) and moves the list so that
+        # the current item sits over the box, so the items jumped about as one was picked.
+        self.light_kind_box.setView(QListView())
         self.light_kind_box.addItems(LIGHT_KINDS)
         self.light_kind_box.setToolTip(
             "Beams: light from an object at infinity, each field an angle and a width.\n"
