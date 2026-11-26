@@ -745,6 +745,7 @@ def test_undo_keys_work_from_a_field_box_and_spun_values_undo_together(applicati
 def click_gap_label(window, lens_index: int) -> None:
     centre = window.side_view.gap_dimensions.label_scene_centre(lens_index)
     window.side_view.on_scene_clicked(FakeClick(centre))
+    QApplication.processEvents()  # the gap box opens just after the click
 
 
 def test_clicking_a_gap_and_typing_sets_it(application):

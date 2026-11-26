@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QCursor, QFont, QTextOption
 
 from raycrafter import palette
@@ -732,7 +732,10 @@ class SideView(pg.PlotWidget):
         if placement is None:
             gap = self.gap_dimensions.gap_at(event.scenePos())
             if gap is not None:
-                self.open_gap_editor(gap)
+                # Open the box once the mouse release has been handled: on Linux, focus
+                # moving at the end of the release otherwise reached the new box as a
+                # focus-out, which accepts and closes it at once.
+                QTimer.singleShot(0, lambda: self.open_gap_editor(gap))
             return
         self.move_ghost(placement, event.scenePos())  # the ghost may lag a fast click
         if not (placement.fits and placement.is_visible()):
