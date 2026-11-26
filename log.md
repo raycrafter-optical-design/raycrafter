@@ -316,3 +316,12 @@ keeps the front vertex, one behind keeps the back vertex; an overlap is refused.
 of a Plossl pair the user replaces both or splits the pair. The picker's coating filter
 defaults to "suits the beams" (uncoated always suits); "same f" means same sign, within ±10%.
 **Why:** Rob's choice, for teaching. Keeping the front vertex or centre shifts the focus.
+
+## 2026-11-26: Gap optimisation uses our own rays and a 1-D search (#38, #56)
+**Decision:** "Collimate output" and "Focus" scan the allowed gap range with RayCrafter's own
+launched rays of the selected field, then refine with SciPy's bounded scalar minimiser. The
+Optiland system is built once per search; trials change thicknesses (`updater.set_thickness`).
+Gaps that clip rays are never chosen. A flip of a neighbouring lens is suggested when it gives
+at most half the merit and is better by at least 5 µrad or 1 µm.
+**Why:** Optiland's optimiser ignores a field's offset (#10) and is unbounded; one variable
+needs no more than a scan. Rebuilding per trial took about 1 s per search; this takes 0.1 s.
