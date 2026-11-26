@@ -6,7 +6,8 @@ the lens in front of it. It has no Qt code.
 
 A gap can be locked, so that it keeps its length while the rest of the design is edited.
 Lenses joined by locked gaps form a *block* that moves as one (``block_indices``); a lens on
-its own is a block of one. The gap inside a Plossl pair is always locked. A locked gap to
+its own is a block of one. The gaps inside an assembly (such as a Plossl pair) are always
+locked. A locked gap to
 the image plane makes the image plane move with the last lens.
 """
 
@@ -38,8 +39,8 @@ class AirGap:
         z of the next lens's front vertex, or of the image plane (mm).
     to_image : bool
         True for the gap between the last lens and the image plane.
-    in_plossl_pair : bool
-        True for the gap inside a Plossl pair, which is always locked.
+    in_assembly : bool
+        True for a gap inside an assembly (such as a Plossl pair), which is always locked.
     locked : bool
         True if the gap is locked, so that it cannot be changed.
     """
@@ -48,7 +49,7 @@ class AirGap:
     start_z: float
     end_z: float
     to_image: bool
-    in_plossl_pair: bool
+    in_assembly: bool
     locked: bool
 
     @property
@@ -70,9 +71,9 @@ def air_gaps(state: OpticalState) -> list[AirGap]:
                 start_z=lens.back_z,
                 end_z=state.image_z if next_lens is None else next_lens.z,
                 to_image=to_image,
-                in_plossl_pair=next_lens is not None
-                and lens.group_id is not None
-                and lens.group_id == next_lens.group_id,
+                in_assembly=next_lens is not None
+                and lens.assembly_id is not None
+                and lens.assembly_id == next_lens.assembly_id,
                 locked=state.image_gap_locked if to_image else lens.locked_to_next,
             )
         )
@@ -114,12 +115,12 @@ def set_gap_locked(state: OpticalState, lens_index: int, locked: bool) -> None:
     IndexError
         If there is no such lens.
     ValueError
-        If asked to unlock the gap inside a Plossl pair, which is always locked.
+        If asked to unlock a gap inside an assembly, which is always locked.
     """
     _check_lens_index(state, lens_index)
     gap = air_gaps(state)[lens_index]
-    if gap.in_plossl_pair and not locked:
-        raise ValueError("The gap inside a Plossl pair is always locked: split the pair first")
+    if gap.in_assembly and not locked:
+        raise ValueError("The gaps inside an assembly are always locked: split it first")
     if gap.to_image:
         state.image_gap_locked = locked
     else:
@@ -176,13 +177,13 @@ def set_gap(state: OpticalState, lens_index: int, gap_mm: float) -> None:
     IndexError
         If there is no such lens.
     ValueError
-        If the gap is locked (always so inside a Plossl pair), is not a number, or is smaller
+        If the gap is locked (always so inside an assembly), is not a number, or is smaller
         than ``minimum_gap_mm``. Nothing is changed then.
     """
     _check_lens_index(state, lens_index)
     gap = air_gaps(state)[lens_index]
-    if gap.in_plossl_pair:
-        raise ValueError("The gap inside a Plossl pair is fixed: split the pair to change it")
+    if gap.in_assembly:
+        raise ValueError("The gaps inside an assembly are fixed: split it to change them")
     if gap.locked:
         raise ValueError("This gap is locked: unlock it to change it")
     if not math.isfinite(gap_mm):

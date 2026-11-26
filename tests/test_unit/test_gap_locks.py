@@ -96,10 +96,10 @@ def test_a_plossl_pair_is_locked_and_splitting_it_unlocks_it():
     model = OpticalModel()
     model.add_lens("ACT508-200-A")
     model.make_plossl(0)
-    assert model.air_gaps()[0].locked and model.air_gaps()[0].in_plossl_pair
+    assert model.air_gaps()[0].locked and model.air_gaps()[0].in_assembly
     with pytest.raises(ValueError, match="always locked"):
         model.set_gap_locked(0, False)
-    model.split_plossl(0)
+    model.split_assembly(0)
     assert not model.air_gaps()[0].locked
     assert model.block_indices(0) == [0]
 

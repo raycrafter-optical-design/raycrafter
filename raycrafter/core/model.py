@@ -2,10 +2,12 @@
 
 ``OpticalModel`` owns the bench state (``raycrafter.core.state``) and the list of lenses
 that can be placed. It provides the editing operations: add, insert, delete, move and swap
-lenses, set and lock the air gaps between them, make or split Plossl pairs, add or remove
-fields, and undo and redo. It also gives access to the analyses (``raycrafter.core.analysis``), to
-saving and opening project files (``raycrafter.core.project_file``) and to Zemax import and
-export, applied to its current state. It has no Qt code.
+lenses, set and lock the air gaps between them, group lenses into assemblies (such as Plossl
+pairs), flip them and save them as user parts (``raycrafter.core.user_parts``), add or
+remove fields, and undo and redo. It also gives access to the analyses
+(``raycrafter.core.analysis``), to saving and opening project files
+(``raycrafter.core.project_file``) and to Zemax import and export, applied to its current
+state. It has no Qt code.
 
 Example
 -------
@@ -24,10 +26,19 @@ from pathlib import Path
 
 import numpy as np
 
-from raycrafter.core import analysis, gaps, optic_builder, project_file, zmx_import
+from raycrafter.core import (
+    analysis,
+    assemblies,
+    gaps,
+    optic_builder,
+    project_file,
+    user_parts,
+    zmx_import,
+)
 from raycrafter.core.history import UndoHistory
 from raycrafter.core.prescription import prescription_from_zmx_text
 from raycrafter.core.state import AXIS_START_Z, BeamField, OpticalState, PlacedLens
+from raycrafter.core.user_parts import UserPart
 from raycrafter.lenscatalog import thorlabs
 from raycrafter.lenscatalog.catalog import CatalogEntry
 
@@ -64,6 +75,9 @@ class OpticalModel:
     project_path : Path or None
         The project file last saved or opened, where ``save_project`` saves by default;
         None for a new or imported design.
+    parts_folder : Path
+        Where user parts are saved and read (``user_parts.default_parts_folder()`` unless
+        changed).
 
     Notes
     -----
@@ -82,6 +96,7 @@ class OpticalModel:
             self.state
         )  # the start-up bench counts as saved
         self.project_path: Path | None = None  # the project file last saved or opened
+        self.parts_folder: Path = user_parts.default_parts_folder()
         self.history = UndoHistory(self.state)
 
     # --------------------------------------------------------------- adding and removing
@@ -217,27 +232,60 @@ class OpticalModel:
         ValueError
             If the lens would land in a locked gap, splitting it; nothing is changed then.
         """
+        return self.insert_lenses([new_lens], max_image_z)[0]
+
+    def insert_lenses(
+        self,
+        new_lenses: list[PlacedLens],
+        max_image_z: float = np.inf,
+        assembly_name: str | None = None,
+    ) -> list[int]:
+        """Put a run of lenses (e.g. a user part) on the bench at their own z, as one block.
+
+        As ``insert_lens``, for lenses that follow each other without overlapping. Two or
+        more lenses become an assembly called ``assembly_name``.
+
+        Returns
+        -------
+        list of int
+            The indices of the new lenses.
+
+        Raises
+        ------
+        ValueError
+            If the lenses would land in a locked gap or overlap a lens on the bench; nothing
+            is changed then.
+        """
         lenses = self.state.lenses
-        new_index = sum(1 for lens in lenses if lens.z < new_lens.z)
+        new_index = sum(1 for lens in lenses if lens.z < new_lenses[0].z)
         if new_index == len(lenses):
             if lenses:
                 self._refuse_if_image_gap_locked("add a lens behind the last one")
         elif new_index > 0 and lenses[new_index - 1].locked_to_next:
             raise ValueError("That gap is locked: unlock it to put a lens in it")
-        lenses.insert(new_index, new_lens)
+        # Allow for rounding, as a lens may be placed exactly touching its neighbours.
+        previous_back_z = lenses[new_index - 1].back_z if new_index > 0 else -np.inf
+        next_front_z = lenses[new_index].z if new_index < len(lenses) else np.inf
+        if new_lenses[0].z < previous_back_z - 1e-9 or new_lenses[-1].back_z > next_front_z + 1e-9:
+            raise ValueError("The new lenses would overlap a lens on the bench")
+
+        lenses[new_index:new_index] = new_lenses
+        new_indices = list(range(new_index, new_index + len(new_lenses)))
+        if len(new_lenses) > 1:
+            assemblies.make_assembly(self.state, new_indices[0], new_indices[-1], assembly_name)
 
         minimum_image_z = self.state.last_back_z() + gaps.MIN_IMAGE_GAP_MM
         if self.state.image_z < minimum_image_z:
-            pushed_image_z = min(new_lens.back_z + IMAGE_CLEARANCE_MM, max_image_z)
+            pushed_image_z = min(new_lenses[-1].back_z + IMAGE_CLEARANCE_MM, max_image_z)
             self.state.image_z = max(pushed_image_z, minimum_image_z)
-        return new_index
+        return new_indices
 
     def delete_lens(self, lens_index: int) -> None:
         """Remove one lens, and the locks on the gaps either side of it.
 
-        Its Plossl partner, if any, becomes a normal lens.
+        Its assembly, if any, is dissolved; the other gaps inside it stay locked.
         """
-        self.split_plossl(lens_index)
+        assemblies.split_assembly(self.state, lens_index, unlock=False)
         lenses = self.state.lenses
         if lens_index > 0:
             lenses[lens_index - 1].locked_to_next = False
@@ -248,11 +296,11 @@ class OpticalModel:
     def flip_lens(self, lens_index: int) -> None:
         """Turn one lens around.
 
-        Lenses in a Plossl pair cannot be flipped on their own, and a paraxial lens is the
-        same both ways round, so neither changes.
+        Lenses in an assembly cannot be flipped on their own (see ``flip_assembly``), and a
+        paraxial lens is the same both ways round, so neither changes.
         """
         lens = self.state.lenses[lens_index]
-        if lens.group_id is None and not lens.is_paraxial:
+        if lens.assembly_id is None and not lens.is_paraxial:
             lens.flipped = not lens.flipped
 
     # ---------------------------------------------------------------- air gaps
@@ -275,14 +323,6 @@ class OpticalModel:
             raise ValueError(f"The gap to the image plane is locked: unlock it to {action}")
 
     # ---------------------------------------------------------------- moving
-
-    def group_indices(self, lens_index: int) -> list[int]:
-        """Indices of the lenses in this lens's Plossl pair (just itself if it is in none)."""
-        lenses = self.state.lenses
-        group_id = lenses[lens_index].group_id
-        if group_id is None:
-            return [lens_index]
-        return [index for index, lens in enumerate(lenses) if lens.group_id == group_id]
 
     def block_indices(self, lens_index: int) -> list[int]:
         """Indices of the lenses that move with this one: those joined to it by locked gaps."""
@@ -383,19 +423,73 @@ class OpticalModel:
         lenses[low : high + 1] = right_block + left_block
         return list(range(low)) + right_members + left_members + list(range(high + 1, len(lenses)))
 
+    # ---------------------------------------------------------------- assemblies
+
+    def assembly_indices(self, lens_index: int) -> list[int]:
+        """Indices of the lenses in this lens's assembly (just itself if it is in none)."""
+        return assemblies.assembly_indices(self.state, lens_index)
+
+    def assembly_name(self, lens_index: int) -> str | None:
+        """The name of this lens's assembly, or None if it is in none."""
+        return assemblies.assembly_name(self.state, lens_index)
+
+    def make_assembly(self, first_index: int, last_index: int, name: str | None = None) -> int:
+        """Group a run of neighbouring lenses into an assembly (see ``assemblies``)."""
+        return assemblies.make_assembly(self.state, first_index, last_index, name)
+
+    def split_assembly(self, lens_index: int) -> None:
+        """Dissolve this lens's assembly and unlock the gaps inside it."""
+        assemblies.split_assembly(self.state, lens_index)
+
+    def flip_assembly(self, lens_index: int) -> list[int]:
+        """Turn this lens's assembly round as a whole; returns the new order of old indices."""
+        return assemblies.flip_assembly(self.state, lens_index)
+
+    def save_assembly_as_part(self, lens_index: int, name: str, overwrite: bool = False) -> Path:
+        """Save this lens's assembly as a user part in ``parts_folder``; return the file.
+
+        Raises
+        ------
+        ValueError
+            If the lens is in no assembly, the name is blank, or (unless ``overwrite``)
+            there is already a part of that name.
+        """
+        if self.state.lenses[lens_index].assembly_id is None:
+            raise ValueError("Only an assembly can be saved as a user part")
+        members = self.assembly_indices(lens_index)
+        part = user_parts.part_from_lenses(name, [self.state.lenses[index] for index in members])
+        return user_parts.save_part(part, self.parts_folder, overwrite)
+
+    def user_parts(self) -> list[UserPart]:
+        """The user parts in ``parts_folder``, sorted by name (unreadable files are skipped)."""
+        return user_parts.load_parts(self.parts_folder)[0]
+
+    def user_part(self, name: str) -> UserPart:
+        """The user part with this name.
+
+        Raises
+        ------
+        ValueError
+            If there is none.
+        """
+        for part in self.user_parts():
+            if part.name == name:
+                return part
+        raise ValueError(f"There is no user part called {name!r}")
+
     # ---------------------------------------------------------------- Plossl pairs
 
     def plossl_partner(self, lens_index: int) -> int | None:
         """Index of a lens this one could form a Plossl pair with, or None.
 
-        The partner must be an immediate neighbour, be the same part, and not already be in a
-        pair; the gap between the two must be at most PLOSSL_SEARCH_WIDTHS lens
+        The partner must be an immediate neighbour, be the same part, and be in no
+        assembly; the gap between the two must be at most PLOSSL_SEARCH_WIDTHS lens
         thicknesses. Only positive catalogue lenses can form a Plossl pair (a Plossl is made
         of doublets, so paraxial lenses are excluded).
         """
         lenses = self.state.lenses
         lens = lenses[lens_index]
-        if lens.group_id is not None or lens.is_negative or lens.is_paraxial:
+        if lens.assembly_id is not None or lens.is_negative or lens.is_paraxial:
             return None
         for other_index in (lens_index - 1, lens_index + 1):
             if not 0 <= other_index < len(lenses):
@@ -405,7 +499,7 @@ class OpticalModel:
             gap = right.z - left.back_z
             if (
                 other.part_number == lens.part_number
-                and other.group_id is None
+                and other.assembly_id is None
                 and gap <= PLOSSL_SEARCH_WIDTHS * lens.thickness
             ):
                 return other_index
@@ -419,8 +513,9 @@ class OpticalModel:
         positive element is at its back, and the right lens so its positive element is at
         its front. The right lens is then moved so the closest points of the two facing
         surfaces are PLOSSL_GAP_MM apart, and everything downstream (later lenses and the
-        image plane) shifts with it, even if the gap between the two was locked. The gap
-        between them is then locked. Does nothing if the lens has no partner.
+        image plane) shifts with it, even if the gap between the two was locked. The two
+        then form an assembly named ``assemblies.PLOSSL_NAME``. Does nothing if the lens has
+        no partner.
         """
         partner_index = self.plossl_partner(lens_index)
         if partner_index is None:
@@ -440,9 +535,7 @@ class OpticalModel:
         minimum_image_z = self.state.last_back_z() + gaps.MIN_IMAGE_GAP_MM
         self.state.image_z = max(self.state.image_z + shift, minimum_image_z)
 
-        left.group_id = right.group_id = self.state.next_group_id
-        self.state.next_group_id += 1
-        left.locked_to_next = True
+        assemblies.make_assembly(self.state, left_index, right_index, assemblies.PLOSSL_NAME)
 
     @staticmethod
     def _plossl_front_z(left: PlacedLens, right: PlacedLens) -> float:
@@ -453,17 +546,6 @@ class OpticalModel:
         to the required gap.
         """
         return left.back_z + PLOSSL_GAP_MM - gaps.closest_sag_difference_mm(left, right)
-
-    def split_plossl(self, lens_index: int) -> None:
-        """Dissolve the lens's Plossl pair, unlocking the gap inside it.
-
-        The two lenses then move independently again, unless other locked gaps join them.
-        """
-        members = self.group_indices(lens_index)
-        for index in members:
-            self.state.lenses[index].group_id = None
-        if len(members) > 1:
-            self.state.lenses[members[0]].locked_to_next = False
 
     # ---------------------------------------------------------------- fields
 
@@ -667,7 +749,7 @@ class OpticalModel:
         """Export the current system to a Zemax .zmx file.
 
         This does not count as saving the design: a ZMX file keeps only the selected field
-        and no Plossl pairs or part metadata, so the design would be lost on quitting.
+        and no assemblies or part metadata, so the design would be lost on quitting.
         """
         optic_builder.save_zmx(self.state, file_path)
 

@@ -33,10 +33,7 @@ def model() -> OpticalModel:
     bench_model.flip_lens(1)
     for _ in range(2):
         bench_model.add_lens("AC254-050-A")
-    for lens in bench_model.state.lenses[2:4]:
-        lens.group_id = 1
-    bench_model.state.lenses[2].locked_to_next = True  # a Plossl pair's gap is always locked
-    bench_model.state.next_group_id = 2
+    bench_model.make_assembly(2, 3, "Plossl pair")  # as make_plossl names it
     bench_model.insert_lens(bench_model.make_paraxial_lens(-80.0, z=900.0))
     bench_model.state.image_z = 1000.0
     bench_model.set_gap_locked(0, True)
@@ -234,11 +231,25 @@ def test_bad_project_data_is_refused_with_a_reason(imported_model, change, messa
         project_from_dict(edited_project(imported_model, change))
 
 
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda data: data["assemblies"].clear(), "used by a lens but not listed"),
+        (lambda data: data["lenses"][3].update(assembly=None), "two or more neighbouring"),
+        (lambda data: data.update(next_assembly=0), "above every assembly id"),
+        (lambda data: data["assemblies"][0].pop("name"), "missing name"),
+    ],
+)
+def test_bad_assemblies_are_refused(model, change, message):
+    with pytest.raises(ProjectFileError, match=message):
+        project_from_dict(edited_project(model, change))
+
+
 def test_an_unlocked_plossl_pair_is_refused(model):
     def unlock_pair(data):
         data["lenses"][2]["locked_to_next"] = False
 
-    with pytest.raises(ProjectFileError, match="Lens 2 is in a Plossl pair"):
+    with pytest.raises(ProjectFileError, match="inside the assembly 'Plossl pair' must all be"):
         project_from_dict(edited_project(model, unlock_pair))
 
 

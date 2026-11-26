@@ -1,9 +1,10 @@
 """Save and load a RayCrafter project file (``.raycrafter``): the whole design, as JSON.
 
-A project file holds everything a ZMX file cannot: every field, Plossl pairs, locked gaps,
-the part metadata of each lens, and, for a design imported from a ZMX file, the original file and
+A project file holds everything a ZMX file cannot: every field, assemblies (such as Plossl
+pairs), locked gaps, the part metadata of each lens, and, for a design imported from a ZMX file, the original file and
 the bench as it was imported (see ``ImportedSource``). The format is described, with an
-example, in issue #40.
+example, in issue #40. User parts (``raycrafter.core.user_parts``) store their lenses in the
+same form, through ``lens_to_dict`` and ``lens_from_dict``.
 
 Every key is named here, separately from the attribute names in ``raycrafter.core.state``,
 so that renaming something in the code does not change the file format. Loading is strict:
@@ -46,7 +47,8 @@ _UPGRADES: dict[int, Callable[[dict], dict]] = {}
 # The keys of a design: the project's own, and the imported bench inside imported_from.
 DESIGN_KEYS = [
     "lenses",
-    "next_group",
+    "assemblies",
+    "next_assembly",
     "fields",
     "selected_field",
     "image_z_mm",
@@ -54,16 +56,13 @@ DESIGN_KEYS = [
 ]
 TOP_LEVEL_KEYS = ["format", "format_version", "written_by", *DESIGN_KEYS, "imported_from"]
 PART_KEYS = ["vendor", "part_number", "mount_type", "clear_diameter_mm"]
-GLASS_LENS_KEYS = [
-    "type",
-    "part",
-    "front_z_mm",
-    "flipped",
-    "group",
-    "locked_to_next",
-    "surfaces",
-]
-PARAXIAL_LENS_KEYS = ["type", "part", "front_z_mm", "focal_length_mm", "locked_to_next"]
+# A lens has the common keys, plus those of its type. On the bench it also has the keys that
+# join it to its neighbours, which a lens in a user part does not.
+COMMON_LENS_KEYS = ["type", "part", "front_z_mm"]
+GLASS_LENS_KEYS = ["flipped", "surfaces"]
+PARAXIAL_LENS_KEYS = ["focal_length_mm"]
+BENCH_LENS_KEYS = ["assembly", "locked_to_next"]
+ASSEMBLY_KEYS = ["id", "name"]
 SURFACE_KEYS = ["radius_mm", "thickness_after_mm", "material_after"]
 FIELD_KEYS = [
     "diameter_mm",
@@ -135,8 +134,12 @@ def project_to_dict(state: OpticalState) -> dict:
 def _design_to_dict(state: OpticalState) -> dict:
     """The lenses, fields and image plane (everything but the file header and the source)."""
     return {
-        "lenses": [_lens_to_dict(lens) for lens in state.lenses],
-        "next_group": state.next_group_id,
+        "lenses": [lens_to_dict(lens) for lens in state.lenses],
+        "assemblies": [
+            {"id": assembly_id, "name": name}
+            for assembly_id, name in sorted(state.assembly_names.items())
+        ],
+        "next_assembly": state.next_assembly_id,
         "fields": [_field_to_dict(beam) for beam in state.fields],
         "selected_field": state.selected_field_index,
         "image_z_mm": state.image_z,
@@ -144,38 +147,40 @@ def _design_to_dict(state: OpticalState) -> dict:
     }
 
 
-def _lens_to_dict(lens: PlacedLens) -> dict:
+def lens_to_dict(lens: PlacedLens, on_bench: bool = True) -> dict:
+    """One lens as a dictionary ready for JSON.
+
+    With ``on_bench`` False, for a lens in a user part, the keys that join the lens to its
+    neighbours (its assembly and lock) are left out.
+    """
     part = {
         "vendor": lens.vendor,
         "part_number": lens.part_number,
         "mount_type": lens.mount_type,
         "clear_diameter_mm": 2.0 * lens.semi_aperture,
     }
-    if lens.paraxial_focal_length_mm is not None:
-        return {
-            "type": "paraxial",
-            "part": part,
-            "front_z_mm": lens.z,
-            "focal_length_mm": lens.paraxial_focal_length_mm,
-            "locked_to_next": lens.locked_to_next,
-        }
-    return {
-        "type": "lens",
+    data: dict = {
+        "type": "lens" if lens.paraxial_focal_length_mm is None else "paraxial",
         "part": part,
         "front_z_mm": lens.z,
-        "flipped": lens.flipped,
-        "group": lens.group_id,
-        "locked_to_next": lens.locked_to_next,
-        # The catalogue orientation; ``flipped`` is applied when the lens is used.
-        "surfaces": [
-            {
-                "radius_mm": None if math.isinf(surface.radius) else surface.radius,
-                "thickness_after_mm": surface.thickness_after,
-                "material_after": surface.material_after,
-            }
-            for surface in lens.surfaces
-        ],
     }
+    if on_bench:
+        data["assembly"] = lens.assembly_id
+        data["locked_to_next"] = lens.locked_to_next
+    if lens.paraxial_focal_length_mm is not None:
+        data["focal_length_mm"] = lens.paraxial_focal_length_mm
+        return data
+    data["flipped"] = lens.flipped
+    # The catalogue orientation; ``flipped`` is applied when the lens is used.
+    data["surfaces"] = [
+        {
+            "radius_mm": None if math.isinf(surface.radius) else surface.radius,
+            "thickness_after_mm": surface.thickness_after,
+            "material_after": surface.material_after,
+        }
+        for surface in lens.surfaces
+    ]
+    return data
 
 
 def _field_to_dict(beam: BeamField) -> dict:
@@ -257,13 +262,18 @@ def project_from_dict(data: object) -> OpticalState:
 def _design_from_dict(data: dict, prefix: str) -> OpticalState:
     """The design in ``data`` (whose keys are already checked); ``prefix`` locates errors."""
     lenses = [
-        _lens_from_dict(lens_data, f"{prefix}lens {index}")
+        lens_from_dict(lens_data, f"{prefix}lens {index}")
         for index, lens_data in enumerate(_list(data["lenses"], f"{prefix}lenses"))
     ]
     front_positions = [lens.z for lens in lenses]
     if front_positions != sorted(front_positions):
         raise ProjectFileError(f"The {prefix}lenses must be listed in order along the axis.")
+    assembly_names = _assembly_names_from_list(data["assemblies"], prefix)
+    next_assembly_id = _integer(data["next_assembly"], f"{prefix}next_assembly")
+    if any(assembly_id >= next_assembly_id for assembly_id in assembly_names):
+        raise ProjectFileError(f"{prefix}next_assembly must be above every assembly id.")
     _check_locks(lenses, prefix)
+    _check_assemblies(lenses, assembly_names, prefix)
 
     fields = [
         _field_from_dict(field_data, f"{prefix}field {index}")
@@ -279,7 +289,8 @@ def _design_from_dict(data: dict, prefix: str) -> OpticalState:
 
     return OpticalState(
         lenses=lenses,
-        next_group_id=_integer(data["next_group"], f"{prefix}next_group"),
+        next_assembly_id=next_assembly_id,
+        assembly_names=assembly_names,
         fields=fields,
         selected_field_index=selected_field,
         image_z=_number(data["image_z_mm"], f"{prefix}image_z_mm"),
@@ -287,20 +298,50 @@ def _design_from_dict(data: dict, prefix: str) -> OpticalState:
     )
 
 
+def _assembly_names_from_list(data: object, prefix: str) -> dict[int, str]:
+    """The assembly names by id, from the file's list of assemblies."""
+    names = {}
+    for index, assembly_data in enumerate(_list(data, f"{prefix}assemblies")):
+        where = f"{prefix}assembly {index}"
+        if not isinstance(assembly_data, dict):
+            raise ProjectFileError(f"{where} is not a JSON object.")
+        _check_keys(assembly_data, ASSEMBLY_KEYS, where)
+        assembly_id = _integer(assembly_data["id"], f"{where} id")
+        if assembly_id in names:
+            raise ProjectFileError(f"Assembly id {assembly_id} is listed twice.")
+        names[assembly_id] = _text(assembly_data["name"], f"{where} name")
+    return names
+
+
 def _check_locks(lenses: list[PlacedLens], prefix: str) -> None:
-    """Refuse locks that cannot be: the last lens locked to a next one, or an unlocked pair."""
+    """Refuse the last lens being locked to a next one, which does not exist."""
     if lenses and lenses[-1].locked_to_next:
         raise ProjectFileError(
             f"The last {prefix}lens has locked_to_next set, but there is no lens after it "
             "(the gap to the image plane is image_gap_locked)."
         )
-    for index, (lens, next_lens) in enumerate(zip(lenses, lenses[1:])):
-        same_pair = lens.group_id is not None and lens.group_id == next_lens.group_id
-        if same_pair and not lens.locked_to_next:
-            where = f"{prefix}lens {index}"
+
+
+def _check_assemblies(
+    lenses: list[PlacedLens], assembly_names: dict[int, str], prefix: str
+) -> None:
+    """Refuse assemblies that cannot be: unnamed, not neighbours, or with an unlocked gap.
+
+    Each assembly listed must have two or more lenses, in one run, with every gap between
+    them locked.
+    """
+    for assembly_id in set(lens.assembly_id for lens in lenses) - {None}:
+        if assembly_id not in assembly_names:
+            raise ProjectFileError(f"Assembly {assembly_id} is used by a lens but not listed.")
+    for assembly_id, name in assembly_names.items():
+        members = [index for index, lens in enumerate(lenses) if lens.assembly_id == assembly_id]
+        if len(members) < 2 or members != list(range(members[0], members[-1] + 1)):
             raise ProjectFileError(
-                f"{where[0].upper()}{where[1:]} is in a Plossl pair with the next lens, so "
-                "locked_to_next must be true."
+                f"The {prefix}assembly {name!r} must be two or more neighbouring lenses."
+            )
+        if not all(lenses[index].locked_to_next for index in members[:-1]):
+            raise ProjectFileError(
+                f"The gaps inside the {prefix}assembly {name!r} must all be locked."
             )
 
 
@@ -321,16 +362,21 @@ def _upgraded(data: dict) -> dict:
     return data
 
 
-def _lens_from_dict(data: object, where: str) -> PlacedLens:
+def lens_from_dict(data: object, where: str, on_bench: bool = True) -> PlacedLens:
+    """Rebuild one lens from ``lens_to_dict`` output (with the same ``on_bench``).
+
+    Raises
+    ------
+    ProjectFileError
+        If the data is not a valid lens; the message names ``where`` (e.g. "lens 2").
+    """
     if not isinstance(data, dict):
         raise ProjectFileError(f"{where} is not a JSON object.")
     lens_type = data.get("type")
-    if lens_type == "paraxial":
-        _check_keys(data, PARAXIAL_LENS_KEYS, where)
-    elif lens_type == "lens":
-        _check_keys(data, GLASS_LENS_KEYS, where)
-    else:
+    if lens_type not in ("lens", "paraxial"):
         raise ProjectFileError(f'{where} has type {lens_type!r}; expected "lens" or "paraxial".')
+    type_keys = GLASS_LENS_KEYS if lens_type == "lens" else PARAXIAL_LENS_KEYS
+    _check_keys(data, COMMON_LENS_KEYS + type_keys + (BENCH_LENS_KEYS if on_bench else []), where)
 
     part = data["part"]
     if not isinstance(part, dict):
@@ -362,9 +408,10 @@ def _lens_from_dict(data: object, where: str) -> PlacedLens:
             for number, surface in enumerate(surfaces)
         ]
         lens.flipped = _boolean(data["flipped"], f"{where} flipped")
-        group = data["group"]
-        lens.group_id = None if group is None else _integer(group, f"{where} group")
-    lens.locked_to_next = _boolean(data["locked_to_next"], f"{where} locked_to_next")
+    if on_bench:
+        assembly = data["assembly"]
+        lens.assembly_id = None if assembly is None else _integer(assembly, f"{where} assembly")
+        lens.locked_to_next = _boolean(data["locked_to_next"], f"{where} locked_to_next")
     # Not stored, as it follows from the prescription.
     lens.is_negative = is_diverging(lens)
     return lens

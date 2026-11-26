@@ -53,8 +53,8 @@ def lens_rows(state: OpticalState) -> list[tuple[str, int, list[str]]]:
         details = part_details(state, index)
         if lens.flipped:
             details.append("flipped")
-        if lens.group_id is not None:
-            details.append(f"Plossl pair {lens.group_id}")
+        if lens.assembly_id is not None:
+            details.append(f"in {state.assembly_names[lens.assembly_id]} ({lens.assembly_id})")
         if lens.is_paraxial:
             details.append("ideal thin lens")
         if lens.locked_to_next:

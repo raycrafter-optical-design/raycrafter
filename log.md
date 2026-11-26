@@ -289,3 +289,12 @@ gap moves the image with the last lens and refuses autofocus, "Lock focus" and n
 behind it; typing a locked gap is refused. Rob chose this over replacing `group_id` with locks.
 **Why:** One mechanism for moving things together, while a pair keeps an identity for flipping
 and saving as a part. Refusing follows "Typed gaps are refused rather than adjusted".
+
+## 2026-11-26: Assemblies replace Plossl groups; user parts are files in the user's folder (#43)
+**Decision:** `group_id` became `assembly_id`, with a name per assembly in the state. A Plossl
+pair is an assembly named "Plossl pair". Locking gaps then "Make assembly" groups a block;
+flipping reverses and flips its lenses in place. "Save as user part" writes one JSON file
+(lenses in the project-file form) to the platform data folder (`core/user_parts.py`). Scripts
+lose `plossl_group` and `split_plossl` for `assembly` and `split_assembly` (0.0.x, no alias).
+**Why:** Rob chose the user folder over the project file, so parts are shared between designs.
+Bench assembly methods live in `assembly_methods.py` to keep `api.py` under 1000 lines.

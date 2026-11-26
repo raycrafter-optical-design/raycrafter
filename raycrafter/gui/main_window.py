@@ -9,7 +9,9 @@
   green line to move the image plane (not while "Lock focus" is on or the gap to it is
   locked). Click one of the gap dimensions below the lenses to type that distance;
   right-click it to lock or unlock it. Lenses joined by locked gaps move as one.
-- Right-click a lens for Flip (F), Delete (Del or Backspace) and Make / Split Plossl.
+- Right-click a lens for Flip (F), Delete (Del or Backspace), Make Plossl, and the assembly
+  actions: Make assembly (from lenses joined by locked gaps), Split assembly, and Save as
+  user part. F flips a whole assembly. "Add user part" places a saved part, as one assembly.
 - The RayCrafter menu has About and Quit. The File menu (``raycrafter.gui.file_actions``) has
   New, Open, Save, Save As, Save Without Original ZMX, Import ZMX and Export ZMX. New, Open,
   Import and Quit ask first if the design has changed since it was last saved, opened or
@@ -45,6 +47,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
@@ -197,6 +200,14 @@ class MainWindow(QMainWindow):
         """The framed panel of buttons."""
         self.add_catalogue_lens_button = QPushButton("Add catalogue lens")
         self.add_paraxial_lens_button = QPushButton("Add paraxial lens")
+        self.add_user_part_button = QPushButton("Add user part")
+        self.add_user_part_button.setToolTip(
+            'Place an assembly saved with "Save as user part" (right-click an assembly)'
+        )
+        # The menu is filled each time it opens, so parts saved meanwhile appear in it.
+        self.user_parts_menu = QMenu(self.add_user_part_button)
+        self.user_parts_menu.aboutToShow.connect(self.fill_user_parts_menu)
+        self.add_user_part_button.setMenu(self.user_parts_menu)
         self.paraxial_focal_length_box = QSpinBox()
         self.paraxial_focal_length_box.setRange(*PARAXIAL_FOCAL_LENGTH_RANGE_MM)
         self.paraxial_focal_length_box.setValue(DEFAULT_PARAXIAL_FOCAL_LENGTH_MM)
@@ -223,7 +234,8 @@ class MainWindow(QMainWindow):
 
         # Reminder of where the per-lens actions are, since they are not buttons.
         hint_label = QLabel(
-            "Right-click a lens to flip it (F), delete it (Del) or make a Plossl pair. "
+            "Right-click a lens to flip it (F), delete it (Del), make a Plossl pair or an "
+            "assembly. "
             "Drag a lens past its neighbour to swap their order. Click a gap to type it; "
             "right-click it to lock it."
         )
@@ -252,6 +264,7 @@ class MainWindow(QMainWindow):
         controls.setSpacing(8)
         controls.addWidget(self.add_catalogue_lens_button)
         controls.addLayout(paraxial_row)
+        controls.addWidget(self.add_user_part_button)
         controls.addWidget(self.add_field_button)
         controls.addLayout(autofocus_row)
         controls.addWidget(self.report_button)
@@ -380,19 +393,37 @@ class MainWindow(QMainWindow):
         part_number = self.lens_picker.selected_part_number()
         if part_number is None:
             return
-        self.start_lens_placement(self.model.make_lens(part_number))
+        self.start_lens_placement([self.model.make_lens(part_number)])
 
     def start_paraxial_lens_placement(self) -> None:
         """Let the user place a paraxial lens with the focal length shown beside the button."""
         focal_length_mm = float(self.paraxial_focal_length_box.value())
         if focal_length_mm != 0.0:
-            self.start_lens_placement(self.model.make_paraxial_lens(focal_length_mm))
+            self.start_lens_placement([self.model.make_paraxial_lens(focal_length_mm)])
 
-    def start_lens_placement(self, new_lens: PlacedLens) -> None:
-        """Make a new lens follow the pointer along the axis until a click places it."""
-        self.side_view.start_placement(new_lens)
+    def fill_user_parts_menu(self) -> None:
+        """List the saved user parts in the "Add user part" menu, read afresh from disk."""
+        self.user_parts_menu.clear()
+        parts = self.model.user_parts()
+        if not parts:
+            empty_action = self.user_parts_menu.addAction("No user parts saved yet")
+            empty_action.setEnabled(False)
+        for part in parts:
+            action = self.user_parts_menu.addAction(f"{part.name}\t{part.length_mm:.1f} mm")
+            action.triggered.connect(
+                lambda _checked=False, part=part: self.start_lens_placement(
+                    part.lenses_at(0.0), part.name
+                )
+            )
+
+    def start_lens_placement(
+        self, new_lenses: list[PlacedLens], assembly_name: str | None = None
+    ) -> None:
+        """Make new lenses (one lens, or a user part) follow the pointer until a click."""
+        self.side_view.start_placement(new_lenses, assembly_name)
+        name = assembly_name or new_lenses[0].part_number
         self.statusBar().showMessage(
-            f"Click on the axis to place {new_lens.part_number}. Esc or right-click to cancel."
+            f"Click on the axis to place {name}. Esc or right-click to cancel."
         )
 
     def on_placement_finished(self, placed: bool) -> None:
@@ -413,8 +444,12 @@ class MainWindow(QMainWindow):
         self.request_update()
 
     def flip_lens(self, lens_index: int) -> None:
-        """Turn one lens around (not available inside a Plossl pair)."""
-        self.model.flip_lens(lens_index)
+        """Turn one lens around; a lens in an assembly turns the whole assembly round."""
+        if self.model.state.lenses[lens_index].assembly_id is None:
+            self.model.flip_lens(lens_index)
+        else:
+            self.model.flip_assembly(lens_index)
+            self.side_view.rebuild_lens_graphics()  # the lenses inside it changed order
         self.request_update()
 
     def make_plossl(self, lens_index: int) -> None:
@@ -425,10 +460,47 @@ class MainWindow(QMainWindow):
                 self.model.autofocus()  # the pair has a new focal length: the focus is stale
             self.request_update()
 
-    def split_plossl(self, lens_index: int) -> None:
-        """Release a lens's Plossl pair."""
-        self.model.split_plossl(lens_index)
+    def make_assembly(self, lens_index: int) -> None:
+        """Make the lenses joined to this one by locked gaps into one assembly."""
+        block = self.model.block_indices(lens_index)
+        self.model.make_assembly(block[0], block[-1])
         self.request_update()
+
+    def split_assembly(self, lens_index: int) -> None:
+        """Dissolve a lens's assembly (e.g. a Plossl pair), unlocking the gaps inside it."""
+        self.model.split_assembly(lens_index)
+        self.request_update()
+
+    def save_as_user_part(self, lens_index: int) -> None:
+        """Ask for a name, then save the lens's assembly as a user part.
+
+        If a part of that name exists, ask before replacing it.
+        """
+        name, accepted = QInputDialog.getText(
+            self,
+            "Save as user part",
+            "Name of the new user part:",
+            text=self.model.assembly_name(lens_index) or "",
+        )
+        name = name.strip()
+        if not accepted or not name:
+            return
+        overwrite = False
+        if any(part.name == name for part in self.model.user_parts()):
+            answer = QMessageBox.question(
+                self,
+                "Replace user part?",
+                f"There is already a user part called {name!r}. Replace it?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            overwrite = True
+        try:
+            file_path = self.model.save_assembly_as_part(lens_index, name, overwrite)
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(f"Could not save the part: {error}", STATUS_MESSAGE_MS)
+            return
+        self.statusBar().showMessage(f"Saved user part {name!r} to {file_path}", 8000)
 
     def show_lens_menu(self, lens_index: int, global_position: QPoint) -> None:
         """Pop up the actions for one lens at the pointer."""
@@ -440,20 +512,30 @@ class MainWindow(QMainWindow):
         A tab in an entry's text puts the keyboard shortcut in a right-hand column.
         """
         lens = self.model.state.lenses[lens_index]
-        in_pair = lens.group_id is not None
+        in_assembly = lens.assembly_id is not None
         menu = QMenu(self)
 
-        flip_action = menu.addAction("Flip\tF")
-        flip_action.setEnabled(not in_pair and not lens.is_paraxial)
+        flip_action = menu.addAction("Flip assembly\tF" if in_assembly else "Flip\tF")
+        flip_action.setEnabled(in_assembly or not lens.is_paraxial)
         flip_action.triggered.connect(lambda: self.flip_lens(lens_index))
 
         delete_action = menu.addAction("Delete\tDel")
         delete_action.triggered.connect(lambda: self.delete_lens(lens_index))
 
         menu.addSeparator()
-        if in_pair:
-            split_action = menu.addAction("Split Plossl")
-            split_action.triggered.connect(lambda: self.split_plossl(lens_index))
+        # Lenses joined by locked gaps can be made one assembly, unless they already are.
+        block = self.model.block_indices(lens_index)
+        assembly_action = menu.addAction("Make assembly")
+        assembly_action.setToolTip("Lock the gaps between lenses first to choose which")
+        assembly_action.setEnabled(
+            len(block) > 1 and block != self.model.assembly_indices(lens_index)
+        )
+        assembly_action.triggered.connect(lambda: self.make_assembly(lens_index))
+        if in_assembly:
+            split_action = menu.addAction("Split assembly")
+            split_action.triggered.connect(lambda: self.split_assembly(lens_index))
+            save_action = menu.addAction("Save as user part…")
+            save_action.triggered.connect(lambda: self.save_as_user_part(lens_index))
         else:
             plossl_action = menu.addAction("Make Plossl")
             plossl_action.setEnabled(self.model.plossl_partner(lens_index) is not None)
@@ -477,14 +559,14 @@ class MainWindow(QMainWindow):
     def build_gap_menu(self, lens_index: int) -> QMenu:
         """The context menu for the gap behind one lens: Lock gap, or Unlock gap.
 
-        The gap inside a Plossl pair cannot be unlocked, and the gap to the image plane
+        The gaps inside an assembly cannot be unlocked, and the gap to the image plane
         cannot be locked while "Lock focus" is on, as both would set the image plane.
         """
         gap = self.model.air_gaps()[lens_index]
         menu = QMenu(self)
         if gap.locked:
             action = menu.addAction("Unlock gap")
-            action.setEnabled(not gap.in_plossl_pair)
+            action.setEnabled(not gap.in_assembly)
         else:
             action = menu.addAction("Lock gap")
             action.setEnabled(not (gap.to_image and self.lock_focus_checkbox.isChecked()))

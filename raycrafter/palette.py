@@ -10,8 +10,8 @@ import numpy as np
 LENS = "#3b7dd8"  # blue
 LENS_HOVER = "#1c4f9c"  # darker blue for the lens under the pointer
 PARAXIAL_ARROW = "#1d3e6c"  # arrowheads of a paraxial lens: LENS at half brightness
-PLOSSL = "#7048e8"  # purple: a lens in a Plossl pair
-PLOSSL_HOVER = "#4c2fb0"
+ASSEMBLY = "#7048e8"  # purple: a lens in an assembly (e.g. a Plossl pair)
+ASSEMBLY_HOVER = "#4c2fb0"
 PLOSSL_PREVIEW = "#e03131"  # dashed red outline of a proposed Plossl pair
 GHOST_BLOCKED = "#e03131"  # red: a lens being placed where there is no room for it
 RAY = "#e8a317"  # amber: the rays in the app icon

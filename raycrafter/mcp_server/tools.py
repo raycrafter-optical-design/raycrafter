@@ -39,6 +39,7 @@ READ_ONLY_TOOL_NAMES = [
     "get_through_focus",
     "get_field_curvature",
     "get_plot",
+    "list_user_parts",
 ]
 EDITING_TOOL_NAMES = [  # these change the design, so a window must redraw after them
     "add_lens",
@@ -50,7 +51,11 @@ EDITING_TOOL_NAMES = [  # these change the design, so a window must redraw after
     "flip_lens",
     "delete_lens",
     "make_plossl",
-    "split_plossl",
+    "make_assembly",
+    "split_assembly",
+    "flip_assembly",
+    "save_user_part",
+    "insert_user_part",
     "set_field",
     "add_field",
     "remove_fields",
@@ -113,7 +118,8 @@ class DesignTools:
         front vertex, or to the image plane behind the last lens; ``gap_after_locked`` says
         whether that gap is locked (see ``lock_gap``). ``vendor`` and
         ``mount_type`` are null where unknown. ``surface_range`` holds the numbers of the
-        lens's first and last surface, as in the exported ZMX file.
+        lens's first and last surface, as in the exported ZMX file. ``assembly`` is the id of
+        the assembly the lens is in (null if none), and ``assembly_name`` its name.
         """
         state = self.model.state
         gaps = self.model.air_gaps()
@@ -130,7 +136,8 @@ class DesignTools:
                 "gap_after_locked": gaps[index].locked,
                 "semi_aperture_mm": _number(lens.semi_aperture),
                 "flipped": lens.flipped,
-                "plossl_group": lens.group_id,
+                "assembly": lens.assembly_id,
+                "assembly_name": self.model.assembly_name(index),
                 "paraxial_focal_length_mm": lens.paraxial_focal_length_mm,
             }
             for index, lens in enumerate(state.lenses)
@@ -338,8 +345,8 @@ class DesignTools:
         """Set the air gap behind a lens: back vertex to the next front vertex.
 
         Behind the last lens it is the distance to the image plane. All later lenses and the
-        image plane shift together, so no other gap changes. A locked gap (always so inside a
-        Plossl pair) cannot be set, and surfaces may not overlap.
+        image plane shift together, so no other gap changes. A locked gap (always so inside an
+        assembly) cannot be set, and surfaces may not overlap.
         """
         self._check_lens_index(lens_index)
         self.model.set_gap(lens_index, gap_mm)
@@ -351,20 +358,20 @@ class DesignTools:
         A locked gap keeps its length: lenses joined by locked gaps move together, and
         ``set_gap`` refuses to change it. Behind the last lens it is the gap to the image
         plane, which then moves with the last lens and cannot be autofocused or moved on its
-        own. The gap inside a Plossl pair is always locked.
+        own. The gaps inside an assembly are always locked.
         """
         self._check_lens_index(lens_index)
         self.model.set_gap_locked(lens_index, bool(locked))
         return self.get_design()
 
     def flip_lens(self, lens_index: int) -> dict:
-        """Turn a lens round. Has no effect on paraxial lenses or lenses in a Plossl pair."""
+        """Turn a lens round. No effect on paraxial lenses or lenses in an assembly."""
         self._check_lens_index(lens_index)
         self.model.flip_lens(lens_index)
         return self.get_design()
 
     def delete_lens(self, lens_index: int) -> dict:
-        """Remove a lens. Its Plossl partner, if any, becomes an ordinary lens."""
+        """Remove a lens. Its assembly, if any, is dissolved."""
         self._check_lens_index(lens_index)
         self.model.delete_lens(lens_index)
         return self.get_design()
@@ -380,11 +387,70 @@ class DesignTools:
         self.model.make_plossl(lens_index)
         return self.get_design()
 
-    def split_plossl(self, lens_index: int) -> dict:
-        """Dissolve the Plossl pair this lens belongs to."""
+    def make_assembly(
+        self, first_lens_index: int, last_lens_index: int, name: str | None = None
+    ) -> dict:
+        """Group a run of neighbouring lenses into an assembly that moves and flips as one.
+
+        The gaps between them are locked (their spacing is kept as it is now). Assemblies
+        wholly inside the run are absorbed. The result includes ``assembly``, the new id.
+        """
+        self._check_lens_index(first_lens_index)
+        self._check_lens_index(last_lens_index)
+        assembly_id = self.model.make_assembly(first_lens_index, last_lens_index, name)
+        return {**self.get_design(), "assembly": assembly_id}
+
+    def split_assembly(self, lens_index: int) -> dict:
+        """Dissolve the assembly (e.g. a Plossl pair) this lens is in, unlocking its gaps."""
         self._check_lens_index(lens_index)
-        self.model.split_plossl(lens_index)
+        self.model.split_assembly(lens_index)
         return self.get_design()
+
+    def flip_assembly(self, lens_index: int) -> dict:
+        """Turn this lens's assembly round: its lenses in reverse order, each one flipped.
+
+        It stays in the same stretch of the axis. Lens indices inside it are reversed.
+        """
+        self._check_lens_index(lens_index)
+        if self.model.state.lenses[lens_index].assembly_id is None:
+            raise ValueError("This lens is in no assembly; use flip_lens to flip it")
+        self.model.flip_assembly(lens_index)
+        return self.get_design()
+
+    def save_user_part(self, lens_index: int, name: str, overwrite: bool = False) -> dict:
+        """Save this lens's assembly as a user part, which can be inserted in any design.
+
+        The result includes ``file`` (where it was saved). Refused if a part of that name
+        exists, unless ``overwrite`` is true.
+        """
+        self._check_lens_index(lens_index)
+        file_path = self.model.save_assembly_as_part(lens_index, name, overwrite)
+        return {"file": str(file_path), "user_parts": self.list_user_parts()["user_parts"]}
+
+    def list_user_parts(self) -> dict:
+        """The user parts that can be inserted: name, lens part numbers and length (mm)."""
+        return {
+            "user_parts": [
+                {
+                    "name": part.name,
+                    "lenses": [lens.part_number for lens in part.lenses],
+                    "length_mm": _number(part.length_mm),
+                }
+                for part in self.model.user_parts()
+            ]
+        }
+
+    def insert_user_part(self, name: str, front_z_mm: float) -> dict:
+        """Place a user part (as one assembly) with its front as near ``front_z_mm`` as fits.
+
+        The result includes ``new_lens_indices``.
+        """
+        part = self.model.user_part(name)
+        free_z = self.model.free_front_z(part.length_mm, front_z_mm)
+        if free_z is None:
+            raise ValueError(f"The user part {name!r} does not fit anywhere on the bench")
+        new_indices = self.model.insert_lenses(part.lenses_at(free_z), assembly_name=part.name)
+        return {**self.get_design(), "new_lens_indices": new_indices}
 
     # ------------------------------------------------------------------ editing fields, image
 
@@ -480,7 +546,7 @@ class DesignTools:
         """Save the whole design as a RayCrafter project (.raycrafter), keeping everything.
 
         Without ``file_path`` it saves to the project file last saved or opened. This is how
-        to save a design: a Zemax file (``save_zmx``) loses fields and Plossl pairs. With
+        to save a design: a Zemax file (``save_zmx``) loses fields and assemblies. With
         ``forget_import`` the project no longer keeps the Zemax file the design was imported
         from, nor the design as imported; only do this if the user asks.
         """
@@ -515,7 +581,7 @@ class DesignTools:
         """Export the design to a Zemax .zmx file.
 
         This does not save the design (``has_unsaved_changes`` stays true): a ZMX file keeps
-        only the selected field, and no Plossl pairs. Use ``save_project`` to save it.
+        only the selected field, and no assemblies. Use ``save_project`` to save it.
         """
         try:
             self.model.save_zmx(file_path)

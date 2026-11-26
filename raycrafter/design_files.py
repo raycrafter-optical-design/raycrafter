@@ -8,9 +8,9 @@
 >>> bench.save_zmx("my_design.zmx")  # doctest: +SKIP
 
 A design is saved as a RayCrafter project (``.raycrafter``), which keeps everything: all the
-fields, Plossl pairs, the part details of each lens and, for a design imported from a Zemax
+fields, assemblies, locked gaps, the part details of each lens and, for a design imported from a Zemax
 file, that file and the design as it was imported. A Zemax ``.zmx`` file is for exchanging
-designs with other programs: it keeps only the selected field and no Plossl pairs, so
+designs with other programs: it keeps only the selected field and no assemblies, so
 exporting one does not count as saving the design.
 
 They are kept apart from ``raycrafter.api`` because they concern files rather than optics.
@@ -71,7 +71,7 @@ class DesignFileMethods:
     ) -> Path:
         """Save the whole design as a RayCrafter project file and return where it went.
 
-        A project keeps everything (all fields, Plossl pairs, part details, and the Zemax
+        A project keeps everything (all fields, assemblies, part details, and the Zemax
         file a design was imported from). Without ``file_path`` it saves to
         ``project_path``; ``.raycrafter`` is added to a name with no extension.
 
@@ -132,7 +132,7 @@ class DesignFileMethods:
         """Export the design as a Zemax .zmx file and return where it went.
 
         This does not count as saving the design, as a ZMX file keeps only the selected
-        field and no Plossl pairs; use ``save_project`` for that.
+        field and no assemblies; use ``save_project`` for that.
 
         Example
         -------

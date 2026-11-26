@@ -1,11 +1,11 @@
 """Scripting RayCrafter from Python: ``Bench``, a lens bench you drive with method calls.
 
 A ``Bench`` can do everything the GUI (except undo) and the AI agent tools can: search the lens
-catalogue, place, move, flip and delete lenses, set and lock the gaps between them, make
-Plossl pairs, edit the fields (beams), move the image plane, autofocus, run the analyses, draw
-the plots, write the HTML report, save and open project files, and import and export Zemax
-.zmx files.
-It does not import Qt.
+catalogue, place, move, flip and delete lenses, set and lock the gaps between them, group
+lenses into assemblies (such as Plossl pairs) and save them as user parts, edit the fields
+(beams), move the image plane, autofocus, run the analyses, draw the plots, write the HTML
+report, save and open project files, and import and export Zemax .zmx files. It does not
+import Qt.
 
 There are two kinds of bench:
 
@@ -70,6 +70,7 @@ from typing import cast
 
 from matplotlib.figure import Figure
 
+from raycrafter.assembly_methods import AssemblyMethods
 from raycrafter.core import analysis, gaps
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.state import OpticalState, state_from_dict
@@ -110,8 +111,11 @@ class LensInfo:
         paraxial lens; None for an imported lens that is not in the catalogue.
     flipped : bool
         True if the lens is turned round relative to the catalogue.
-    plossl_group : int or None
-        Lenses that share a number form a Plossl pair and move together.
+    assembly : int or None
+        Lenses that share a number form an assembly (such as a Plossl pair), which moves and
+        flips as one.
+    assembly_name : str or None
+        The name of that assembly, e.g. ``"Plossl pair"``.
     is_paraxial : bool
         True for an ideal, aberration-free thin lens.
     gap_after_mm : float
@@ -136,7 +140,8 @@ class LensInfo:
     clear_diameter_mm: float
     focal_length_mm: float | None
     flipped: bool
-    plossl_group: int | None
+    assembly: int | None
+    assembly_name: str | None
     is_paraxial: bool
     gap_after_mm: float
     gap_after_locked: bool
@@ -224,13 +229,14 @@ class DesignSummary:
 # ----------------------------------------------------------------------------- the bench
 
 
-class Bench(DesignFileMethods):
+class Bench(DesignFileMethods, AssemblyMethods):
     """A lens bench: a row of lenses on an optical axis, beams of light and an image plane.
 
     ``Bench()`` makes a headless bench in this process. To drive the open RayCrafter window
     instead, use ``Bench.connect()``; to start from a file, ``Bench.from_project(path)`` or
     ``Bench.from_zmx(path)``. Saving, opening, importing and exporting are described in
-    ``raycrafter.design_files``.
+    ``raycrafter.design_files``; assemblies (such as Plossl pairs) and user parts in
+    ``raycrafter.assembly_methods``.
 
     Parameters
     ----------
@@ -527,7 +533,7 @@ class Bench(DesignFileMethods):
         Raises
         ------
         ValueError
-            If there is no such lens, the gap is locked (always so inside a Plossl pair), or
+            If there is no such lens, the gap is locked (always so inside an assembly), or
             it is so small that the surfaces would overlap (the image plane needs at least
             1 mm).
 
@@ -551,7 +557,7 @@ class Bench(DesignFileMethods):
         by locked gaps move together, and ``set_gap`` refuses to change it. Behind the last
         lens it is the gap to the image plane, which then moves with the last lens and
         cannot be moved on its own (``set_image_z`` and ``autofocus`` refuse). The gap
-        inside a Plossl pair is always locked.
+        inside an assembly is always locked.
 
         Example
         -------
@@ -571,7 +577,8 @@ class Bench(DesignFileMethods):
     def flip_lens(self, lens_index: int) -> LensInfo:
         """Turn a lens round and return its snapshot.
 
-        Paraxial lenses (the same both ways) and lenses in a Plossl pair are left as they are.
+        Paraxial lenses (the same both ways) and lenses in an assembly are left as they are
+        (see ``flip_assembly``).
 
         Example
         -------
@@ -582,7 +589,7 @@ class Bench(DesignFileMethods):
         return self.lenses[int(lens_index)]
 
     def delete_lens(self, lens_index: int) -> None:
-        """Take a lens off the bench. If it was in a Plossl pair, its partner stays.
+        """Take a lens off the bench. Its assembly, if any, is dissolved.
 
         Example
         -------
@@ -592,34 +599,6 @@ class Bench(DesignFileMethods):
         []
         """
         self._call("delete_lens", lens_index=int(lens_index))
-
-    def make_plossl(self, lens_index: int) -> None:
-        """Snap a lens and an identical neighbour into a Plossl pair.
-
-        The neighbour must be the same positive catalogue lens, no further away than twice
-        its thickness, and not already paired. The two are turned to face each other with
-        their positive elements inside and put 1 mm apart; later lenses and the image plane
-        shift to make room. The pair then moves as one.
-
-        Raises
-        ------
-        ValueError
-            If the lens has no such neighbour.
-
-        Example
-        -------
-        >>> bench = Bench(empty=True)
-        >>> _ = bench.add_lens("AC254-050-A")
-        >>> _ = bench.add_lens("AC254-050-A")
-        >>> bench.make_plossl(0)
-        >>> [lens.plossl_group for lens in bench.lenses]
-        [1, 1]
-        """
-        self._call("make_plossl", lens_index=int(lens_index))
-
-    def split_plossl(self, lens_index: int) -> None:
-        """Undo a Plossl pair so its two lenses move independently. They stay where they are."""
-        self._call("split_plossl", lens_index=int(lens_index))
 
     # ------------------------------------------------------------------ editing fields
 
@@ -942,7 +921,10 @@ class Bench(DesignFileMethods):
             clear_diameter_mm=float(2.0 * lens.semi_aperture),
             focal_length_mm=None if focal_length is None else float(focal_length),
             flipped=lens.flipped,
-            plossl_group=lens.group_id,
+            assembly=lens.assembly_id,
+            assembly_name=None
+            if lens.assembly_id is None
+            else state.assembly_names[lens.assembly_id],
             is_paraxial=lens.is_paraxial,
             gap_after_mm=float(gap.width_mm),
             gap_after_locked=gap.locked,

@@ -7,7 +7,8 @@ shows its part number; that lens is the target of the right-click menu and the k
 shortcuts (handled by the main window). The view edits the model directly when something
 is dragged, then emits ``changed`` so the main window recomputes and redraws.
 
-To insert a lens, the main window calls ``start_placement``: a dashed ghost of the lens then
+To insert a lens (or a user part), the main window calls ``start_placement``: a dashed ghost
+of the lens then
 follows the pointer along the axis, snapped to the nearest gap it fits in (red where it fits
 nowhere). A left click puts it on the bench; Escape or a right click cancels.
 
@@ -22,12 +23,10 @@ can be hovered and dragged a few pixels either side of its line.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QCursor, QFont, QPainter, QTextOption
+from PyQt6.QtGui import QColor, QCursor, QFont, QTextOption
 
 from raycrafter import palette
 from raycrafter.core.analysis import RayPaths
@@ -38,18 +37,20 @@ from raycrafter.core.plot_geometry import (
     DEFAULT_AXIS_Z_RANGE,
     IMAGE_EDGE_GAP_MM,
     axis_ranges,
-    lens_surface_arcs,
     ray_polylines,
 )
 from raycrafter.core.state import PlacedLens
 from raycrafter.gui.gap_dimensions import EDITABLE, FIXED, LOCKED, GapDimensions, GapEditor
-from raycrafter.gui.style import (
-    PLOT_BOTTOM_GAP_PX,
-    colour_with_alpha,
-    join_with_gaps,
-    scaled_font,
-    style_plot,
+from raycrafter.gui.lens_shapes import (
+    LENS_NAME_TRIM_PX,
+    LensGraphics,
+    LensNameTag,
+    LensShape,
+    Placement,
+    ghost_colour,
+    paraxial_grab_margin_mm,
 )
+from raycrafter.gui.style import PLOT_BOTTOM_GAP_PX, join_with_gaps, scaled_font, style_plot
 
 SIDE_PLOT_MIN_HEIGHT_PX = 240  # the side view is never squeezed below this height
 SIDE_PLOT_TOP_GAP_PX = 8  # space between the top edge and the top of the y axis
@@ -57,201 +58,11 @@ SIDE_GRID_CELL_PX = 40  # grid cells are this many screen pixels on each side
 TIMING_FONT_SCALE = 2 / 3  # timing text is this fraction of the axis number size
 LENS_NAME_GAP_PX = 3  # gap between the top of a lens and its name tag
 LENS_NAME_FONT_SCALE = 0.9  # name tag text is this fraction of the default text size
-LENS_NAME_TRIM_PX = 2  # the name tag's box is this much tighter than its text item, top and bottom
-LENS_NAME_CORNER_PX = 4  # corner radius of the name tag
 PLOSSL_PREVIEW_PAD_MM = 1.5  # margin of the dashed rectangle round a proposed Plossl pair
 IMAGE_HOVER_TOLERANCE_PX = 6  # a pointer this close to the image line counts as over it
-LENS_FILL_ALPHA = 70  # fill opacity (0-255) of a lens on the bench
-GHOST_FILL_ALPHA = 35  # fill opacity of a lens being placed
 GHOST_Z_VALUE = 80  # the ghost is drawn above the lenses on the bench
 RAY_WIDTH_PX = 1.3
 HIGHLIGHTED_RAY_WIDTH_PX = 3.0  # the rays of the field selected in the bench viewer
-PARAXIAL_LINE_WIDTH_PX = 3  # a paraxial lens is drawn as a line this thick
-PARAXIAL_ARROW_SIZE_PX = 11  # size of the arrowheads at each end of a paraxial lens
-PARAXIAL_GRAB_HALF_WIDTH_PX = 5  # a paraxial lens can be hovered and dragged this far either side
-
-
-class LensNameTag(pg.TextItem):
-    """White text on a solid, rounded, coloured box.
-
-    pyqtgraph's own TextItem fill is a sharp-cornered rectangle, so the box is drawn here.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(color="w", anchor=(0.5, 1))
-        self.box_colour = QColor(palette.LENS_HOVER)
-
-    def paint(self, painter, *args) -> None:
-        """Let TextItem set the painter up (it draws no fill itself), then draw the box."""
-        super().paint(painter, *args)
-        box = self.textItem.mapToParent(self.textItem.boundingRect()).boundingRect()
-        box.adjust(0, LENS_NAME_TRIM_PX, 0, -LENS_NAME_TRIM_PX)  # the text item has extra margin
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(self.box_colour))
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.drawRoundedRect(box, LENS_NAME_CORNER_PX, LENS_NAME_CORNER_PX)
-
-
-class LensShape:
-    """The pyqtgraph items that draw a lens.
-
-    A catalogue lens is a filled glass body with its outline. A paraxial lens is a thick
-    vertical line with an arrowhead at each end: pointing outwards for a positive lens and
-    inwards for a negative one.
-
-    On its own this is the ghost of a lens being placed; ``LensGraphics`` adds dragging for
-    the lenses on the bench.
-    """
-
-    def __init__(self, plot_item: pg.PlotItem, paraxial: bool = False) -> None:
-        self.plot_item = plot_item
-        self.paraxial = paraxial
-        self.outline = pg.PlotCurveItem(connect="finite")
-
-        if paraxial:
-            self.arrowheads = pg.ScatterPlotItem(
-                size=PARAXIAL_ARROW_SIZE_PX,
-                pen=pg.mkPen(None),
-                brush=pg.mkBrush(palette.PARAXIAL_ARROW),
-            )
-            self.items: list = [self.outline, self.arrowheads]
-        else:
-            # The front and back outlines drive the fill; the outline curve draws the shape.
-            self.front_curve = pg.PlotCurveItem()
-            self.back_curve = pg.PlotCurveItem()
-            self.fill = pg.FillBetweenItem(self.front_curve, self.back_curve)
-            self.items = [self.fill, self.outline]
-        for item in self.items:
-            plot_item.addItem(item)
-
-    def remove(self) -> None:
-        """Take all of this lens's items off the plot."""
-        for item in self.items:
-            self.plot_item.removeItem(item)
-
-    def set_visible(self, visible: bool) -> None:
-        """Show or hide the lens."""
-        for item in self.items:
-            item.setVisible(visible)
-
-    def is_visible(self) -> bool:
-        """True if the lens is drawn."""
-        return self.outline.isVisible()
-
-    def set_z_value(self, z_value: float) -> None:
-        """Stacking order: items with a higher value are drawn on top."""
-        for item in self.items:
-            item.setZValue(z_value)
-
-    def draw(self, lens: PlacedLens, colour: str, dashed: bool = False) -> None:
-        """Draw the lens body and outline at its current position and orientation.
-
-        A dashed outline and fainter fill mark the ghost of a lens that is being placed.
-        """
-        line_style = Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine
-        if self.paraxial:
-            self._draw_paraxial(lens, colour, line_style)
-            return
-
-        edge_y, surface_arcs_z = lens_surface_arcs(lens)
-
-        # The glass body runs from the first surface to the last; internal cemented surfaces
-        # are drawn as lines on top.
-        front_z, back_z = surface_arcs_z[0], surface_arcs_z[-1]
-        self.front_curve.setData(front_z, edge_y)
-        self.back_curve.setData(back_z, edge_y)
-
-        rim_segments_z = [[front_z[0], back_z[0]], [front_z[-1], back_z[-1]]]
-        rim_segments_y = [[edge_y[0]] * 2, [edge_y[-1]] * 2]
-        outline_z, outline_y = join_with_gaps(
-            surface_arcs_z + rim_segments_z, [edge_y] * len(surface_arcs_z) + rim_segments_y
-        )
-        self.outline.setData(outline_z, outline_y)
-
-        self.outline.setPen(pg.mkPen(colour, width=1.8, style=line_style))
-        fill_alpha = GHOST_FILL_ALPHA if dashed else LENS_FILL_ALPHA
-        self.fill.setBrush(pg.mkBrush(colour_with_alpha(colour, fill_alpha)))
-
-    def _draw_paraxial(self, lens: PlacedLens, colour: str, line_style: Qt.PenStyle) -> None:
-        """A vertical line the height of the lens, with an arrowhead at the top and bottom."""
-        half_height = lens.semi_aperture
-        self.outline.setData([lens.z, lens.z], [-half_height, half_height])
-        self.outline.setPen(pg.mkPen(colour, width=PARAXIAL_LINE_WIDTH_PX, style=line_style))
-
-        # pyqtgraph's "t1" is a triangle pointing up and "t" one pointing down.
-        top_symbol, bottom_symbol = ("t", "t1") if lens.is_negative else ("t1", "t")
-        self.arrowheads.setData(
-            x=[lens.z, lens.z], y=[half_height, -half_height], symbol=[top_symbol, bottom_symbol]
-        )
-
-
-class LensGraphics(LensShape):
-    """A lens on the bench: its shape plus an invisible region that lets it be dragged.
-
-    The region spans the lens from front to back vertex. A paraxial lens has no thickness,
-    so its region is widened by ``grab_margin_mm`` on each side to give the pointer
-    something to hold.
-    """
-
-    def __init__(self, plot_item: pg.PlotItem, paraxial: bool = False) -> None:
-        super().__init__(plot_item, paraxial)
-        self.grab_margin_mm = 0.0
-
-        # The region is invisible; it only provides whole-lens dragging along z. pyqtgraph
-        # derives a hover brush from the normal one, and with a transparent brush that came
-        # out solid black, so the hover brush is set explicitly (also transparent; the
-        # hovered lens itself turns darker instead).
-        transparent = pg.mkBrush(0, 0, 0, 0)
-        self.region = pg.LinearRegionItem(values=(0, 1), movable=True, brush=transparent)
-        self.region.setHoverBrush(transparent)
-        for edge_line in self.region.lines:
-            edge_line.setPen(pg.mkPen(None))
-            edge_line.setMovable(False)
-        self.items.append(self.region)
-        plot_item.addItem(self.region)
-
-    def update(self, lens: PlacedLens, colour: str) -> None:
-        """Redraw the lens and move its drag region to match."""
-        self.draw(lens, colour)
-        if self.paraxial:
-            self.grab_margin_mm = paraxial_grab_margin_mm(self.plot_item)
-        self.region.blockSignals(True)
-        self.region.setRegion((lens.z - self.grab_margin_mm, lens.back_z + self.grab_margin_mm))
-        self.region.blockSignals(False)
-
-    def requested_front_z(self) -> float:
-        """Where the user has dragged the lens's front vertex to (mm)."""
-        return float(self.region.getRegion()[0]) + self.grab_margin_mm
-
-
-def paraxial_grab_margin_mm(plot_item: pg.PlotItem) -> float:
-    """How far either side of a paraxial lens (mm) the pointer can be and still hold it."""
-    mm_per_pixel = plot_item.vb.viewPixelSize()[0]
-    return PARAXIAL_GRAB_HALF_WIDTH_PX * mm_per_pixel
-
-
-@dataclass
-class Placement:
-    """A new lens that is following the pointer, waiting for a click to be put on the bench.
-
-    Attributes
-    ----------
-    lens : PlacedLens
-        The new lens (not yet in the model); its z is kept at the ghost's position.
-    ghost : LensShape
-        Its dashed outline on the plot.
-    fits : bool
-        True if the lens fits at the ghost's current position.
-    """
-
-    lens: PlacedLens
-    ghost: LensShape
-    fits: bool = False
-
-
-def ghost_colour(placement: Placement) -> str:
-    """Lens blue where the new lens fits; red where it does not."""
-    return palette.LENS if placement.fits else palette.GHOST_BLOCKED
 
 
 class SideView(pg.PlotWidget):
@@ -301,7 +112,7 @@ class SideView(pg.PlotWidget):
             False  # True from the first drag movement until the mouse is released
         )
 
-        self.placement: Placement | None = None  # set while a new lens follows the pointer
+        self.placement: Placement | None = None  # set while new lenses follow the pointer
         self.gap_editor: GapEditor | None = None  # set while a gap is being typed
 
         # The (min, max) of each axis, in mm; changed only by fit_to_design.
@@ -552,8 +363,8 @@ class SideView(pg.PlotWidget):
 
     def why_gap_is_fixed(self, gap: AirGap) -> str | None:
         """Why this gap cannot be typed, in words for the user; None if it can."""
-        if gap.in_plossl_pair:
-            return "The gap inside a Plossl pair is fixed: split the pair to change it"
+        if gap.in_assembly:
+            return "The gaps inside an assembly are fixed: split it to change them"
         if gap.locked:
             return "This gap is locked: right-click it to unlock it"
         if gap.to_image and self.image_line_locked:
@@ -640,17 +451,17 @@ class SideView(pg.PlotWidget):
         return found_index
 
     def lens_colour(self, index: int) -> str:
-        """Blue (purple in a Plossl pair); darker when it, or a lens joined to it by locked
+        """Blue (purple in an assembly); darker when it, or a lens joined to it by locked
         gaps, is under the pointer or highlighted in the bench viewer."""
-        in_pair = self.model.state.lenses[index].group_id is not None
+        in_assembly = self.model.state.lenses[index].assembly_id is not None
         # Lenses joined by locked gaps move as one, so they are highlighted as one.
         darkened = []
         for marked_index in (self.hovered_index, self.highlighted_lens_index):
             if marked_index is not None and marked_index < len(self.model.state.lenses):
                 darkened += self.model.block_indices(marked_index)
         if index in darkened:
-            return palette.PLOSSL_HOVER if in_pair else palette.LENS_HOVER
-        return palette.PLOSSL if in_pair else palette.LENS
+            return palette.ASSEMBLY_HOVER if in_assembly else palette.LENS_HOVER
+        return palette.ASSEMBLY if in_assembly else palette.LENS
 
     def refresh_lens_colours(self) -> None:
         """Redraw the lenses in their current colours (no re-trace needed), and the name tag."""
@@ -667,13 +478,20 @@ class SideView(pg.PlotWidget):
     def place_name_tag(self) -> None:
         """Show the hovered lens's part number centred above it, a few pixels clear of its top.
 
-        The tag's box is a shade darker than the lens outline. It is hidden when no lens is
-        hovered.
+        A lens in an assembly is labelled with the assembly's name too. The tag's box is a
+        shade darker than the lens outline. It is hidden when no lens is hovered.
         """
-        # While a lens is being placed, the tag names the ghost instead.
-        if self.placement is not None:
-            if self.placement.ghost.is_visible():
-                self._show_name_tag(self.placement.lens, ghost_colour(self.placement))
+        # While lenses are being placed, the tag names the ghost instead.
+        placement = self.placement
+        if placement is not None:
+            if placement.is_visible():
+                self._show_name_tag(
+                    placement.name,
+                    placement.lenses[0].z,
+                    placement.lenses[-1].back_z,
+                    max(lens.semi_aperture for lens in placement.lenses),
+                    ghost_colour(placement),
+                )
             else:
                 self.name_tag.hide()
             return
@@ -685,13 +503,24 @@ class SideView(pg.PlotWidget):
             return
 
         lens = self.model.state.lenses[self.hovered_index]
-        self._show_name_tag(lens, self.lens_colour(self.hovered_index))
+        assembly_name = self.model.assembly_name(self.hovered_index)
+        text = (
+            lens.part_number if assembly_name is None else f"{lens.part_number} · {assembly_name}"
+        )
+        self._show_name_tag(
+            text, lens.z, lens.back_z, lens.semi_aperture, self.lens_colour(self.hovered_index)
+        )
 
-    def _show_name_tag(self, lens: PlacedLens, lens_colour: str) -> None:
-        """Put the name tag above ``lens``, in a box a shade darker than ``lens_colour``."""
+    def _show_name_tag(
+        self, text: str, front_z: float, back_z: float, top_y: float, lens_colour: str
+    ) -> None:
+        """Put the name tag above what runs from ``front_z`` to ``back_z`` and up to ``top_y``.
+
+        Its box is a shade darker than ``lens_colour``.
+        """
         plot_item = self.getPlotItem()
         lens_top_centre = plot_item.mapFromScene(
-            plot_item.vb.mapViewToScene(QPointF(0.5 * (lens.z + lens.back_z), lens.semi_aperture))
+            plot_item.vb.mapViewToScene(QPointF(0.5 * (front_z + back_z), top_y))
         )
 
         # The drawn box is LENS_NAME_TRIM_PX inside the text item at top and bottom, so allow
@@ -702,7 +531,7 @@ class SideView(pg.PlotWidget):
             tag_height - LENS_NAME_TRIM_PX + 2.0,
         )
 
-        self.name_tag.setText(lens.part_number)
+        self.name_tag.setText(text)
         self.name_tag.box_colour = QColor(lens_colour).darker(125)
         self.name_tag.setPos(lens_top_centre.x(), tag_bottom)
         self.name_tag.show()
@@ -753,7 +582,7 @@ class SideView(pg.PlotWidget):
         if watched is self.viewport() and event.type() == QEvent.Type.Leave:
             self.set_hovered_lens(None)
             if self.placement is not None:
-                self.placement.ghost.set_visible(False)
+                self.placement.set_visible(False)
                 self.place_name_tag()
             else:
                 self.viewport().unsetCursor()
@@ -761,18 +590,25 @@ class SideView(pg.PlotWidget):
 
     # ------------------------------------------------------------ placing a new lens
 
-    def start_placement(self, new_lens: PlacedLens) -> None:
-        """Let the user put ``new_lens`` on the axis: its ghost follows the pointer.
+    def start_placement(
+        self, new_lenses: list[PlacedLens], assembly_name: str | None = None
+    ) -> None:
+        """Let the user put new lenses on the axis: their ghost follows the pointer.
 
-        The lens is not in the model until the user clicks. Lenses on the bench cannot be
-        dragged meanwhile, so a click near one places the new lens rather than moving it.
+        ``new_lenses`` is one lens, or the lenses of a user part (``assembly_name`` is then
+        the part's name), which are placed together as one assembly. They are not in the
+        model until the user clicks. Lenses on the bench cannot be dragged meanwhile, so a
+        click near one places the new lenses rather than moving it.
         """
         self.cancel_placement()  # in case a previous placement is still going on
         self.close_gap_editor()
-        ghost = LensShape(self.getPlotItem(), paraxial=new_lens.is_paraxial)
-        ghost.set_z_value(GHOST_Z_VALUE)
-        ghost.set_visible(False)  # shown once the pointer is over the plot
-        self.placement = Placement(lens=new_lens, ghost=ghost)
+        placement = Placement(lenses=new_lenses, assembly_name=assembly_name)
+        for lens in new_lenses:
+            ghost = LensShape(self.getPlotItem(), paraxial=lens.is_paraxial)
+            ghost.set_z_value(GHOST_Z_VALUE)
+            placement.ghosts.append(ghost)
+        placement.set_visible(False)  # shown once the pointer is over the plot
+        self.placement = placement
 
         for graphics in self.lens_graphics:
             graphics.region.setMovable(False)
@@ -788,29 +624,30 @@ class SideView(pg.PlotWidget):
         """Centre the ghost on the pointer's z, snapped into the nearest gap it fits in.
 
         The ghost is hidden while the pointer is outside the plotting area (e.g. over an
-        axis). Where the lens fits nowhere, the ghost is drawn red under the pointer.
+        axis). Where the lenses fit nowhere, the ghost is drawn red under the pointer.
         """
         view_box = self.getPlotItem().vb
         if not view_box.sceneBoundingRect().contains(scene_position):
-            placement.ghost.set_visible(False)
+            placement.set_visible(False)
             self.place_name_tag()
             return
 
-        lens = placement.lens
         pointer_z = view_box.mapSceneToView(scene_position).x()
-        requested_front_z = pointer_z - lens.thickness / 2.0
+        requested_front_z = pointer_z - placement.length_mm / 2.0
         free_front_z = self.model.free_front_z(
-            lens.thickness, requested_front_z, max_back_z=self.image_max_z() - MIN_IMAGE_GAP_MM
+            placement.length_mm,
+            requested_front_z,
+            max_back_z=self.image_max_z() - MIN_IMAGE_GAP_MM,
         )
         placement.fits = free_front_z is not None
-        lens.z = requested_front_z if free_front_z is None else free_front_z
+        placement.move_to(requested_front_z if free_front_z is None else free_front_z)
 
-        placement.ghost.draw(lens, ghost_colour(placement), dashed=True)
-        placement.ghost.set_visible(True)
+        placement.draw()
+        placement.set_visible(True)
         self.place_name_tag()
 
     def on_scene_clicked(self, event) -> None:
-        """A left click types a gap, or while placing puts the lens where its ghost is."""
+        """A left click types a gap, or while placing puts the lenses where their ghost is."""
         if event.button() != Qt.MouseButton.LeftButton:
             return
         placement = self.placement
@@ -820,10 +657,12 @@ class SideView(pg.PlotWidget):
                 self.open_gap_editor(gap)
             return
         self.move_ghost(placement, event.scenePos())  # the ghost may lag a fast click
-        if not (placement.fits and placement.ghost.is_visible()):
+        if not (placement.fits and placement.is_visible()):
             return
         self._end_placement(placement)
-        self.model.insert_lens(placement.lens, max_image_z=self.image_max_z())
+        self.model.insert_lenses(
+            placement.lenses, max_image_z=self.image_max_z(), assembly_name=placement.assembly_name
+        )
         self.rebuild_lens_graphics()
         self.changed.emit()
         self.placement_finished.emit(True)
@@ -836,7 +675,7 @@ class SideView(pg.PlotWidget):
 
     def _end_placement(self, placement: Placement) -> None:
         """Remove the ghost and make the lenses on the bench draggable again."""
-        placement.ghost.remove()
+        placement.remove()
         self.placement = None
         for graphics in self.lens_graphics:
             graphics.region.setMovable(True)

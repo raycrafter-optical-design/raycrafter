@@ -43,8 +43,10 @@ class PlacedLens:
         z of the front vertex, in mm.
     flipped : bool
         True if the lens is turned around relative to the catalogue.
-    group_id : int or None
-        Lenses that share an id form a Plossl pair. The gap inside a pair is always locked.
+    assembly_id : int or None
+        Lenses that share an id form an assembly (``OpticalState.assembly_names``): a run of
+        neighbouring lenses that moves and flips as one, such as a Plossl pair. The gaps
+        inside an assembly are always locked.
     locked_to_next : bool
         True if the air gap behind this lens, to the next lens, is locked: the two keep
         their spacing and move as one (see ``raycrafter.core.gaps``). Always False for the
@@ -66,7 +68,7 @@ class PlacedLens:
     semi_aperture: float
     z: float
     flipped: bool = False
-    group_id: int | None = None
+    assembly_id: int | None = None
     locked_to_next: bool = False
     is_negative: bool = False
     paraxial_focal_length_mm: float | None = None
@@ -242,8 +244,10 @@ class OpticalState:
     ----------
     lenses : list of PlacedLens
         Ordered left to right along the axis.
-    next_group_id : int
-        The id the next Plossl pair will get.
+    next_assembly_id : int
+        The id the next assembly will get.
+    assembly_names : dict of int to str
+        The name of each assembly, by id, e.g. ``{1: "Plossl pair"}``.
     fields : list of BeamField
         The beams entering the bench. There is always at least one.
     selected_field_index : int
@@ -259,7 +263,8 @@ class OpticalState:
     """
 
     lenses: list[PlacedLens] = field(default_factory=list)
-    next_group_id: int = 1
+    next_assembly_id: int = 1
+    assembly_names: dict[int, str] = field(default_factory=dict)
     fields: list[BeamField] = field(default_factory=lambda: [BeamField()])
     selected_field_index: int = 0
     image_z: float = 310.0
@@ -323,6 +328,8 @@ def state_from_dict(data: dict) -> OpticalState:
         for lens_data in data["lenses"]
     ]
     fields = [BeamField(**field_data) for field_data in data["fields"]]
+    # JSON turns the assembly ids, which are dictionary keys, into text.
+    assembly_names = {int(key): name for key, name in data["assembly_names"].items()}
     source_data = data.get("imported_from")
     imported_from = None
     if source_data is not None:
@@ -334,5 +341,11 @@ def state_from_dict(data: dict) -> OpticalState:
             }
         )
     return OpticalState(
-        **{**data, "lenses": lenses, "fields": fields, "imported_from": imported_from},
+        **{
+            **data,
+            "lenses": lenses,
+            "fields": fields,
+            "assembly_names": assembly_names,
+            "imported_from": imported_from,
+        },
     )

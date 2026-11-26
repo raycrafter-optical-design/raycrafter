@@ -163,7 +163,7 @@ def test_placing_a_lens_with_the_ghost(application):
     existing = window.model.state.lenses[0]
 
     # Pointing at the existing lens snaps the ghost next to it; a click places it there.
-    side_view.start_placement(window.model.make_lens("LA1050"))
+    side_view.start_placement([window.model.make_lens("LA1050")])
     side_view.move_ghost(side_view.placement, scene_point_on_axis(side_view, existing.z + 1.0))
     assert side_view.placement.fits
     side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, existing.z + 1.0)))
@@ -174,7 +174,7 @@ def test_placing_a_lens_with_the_ghost(application):
     assert len(side_view.lens_graphics) == 2
 
     # Escape (here: cancel_placement) leaves the bench unchanged.
-    side_view.start_placement(window.model.make_lens("LA1050"))
+    side_view.start_placement([window.model.make_lens("LA1050")])
     side_view.cancel_placement()
     assert len(window.model.state.lenses) == 2
     assert all(graphics.region.movable for graphics in side_view.lens_graphics)
@@ -190,7 +190,7 @@ def test_placing_hovering_and_dragging_a_paraxial_lens(application):
     # The focal length box sets the new lens; a click on the axis places it.
     window.paraxial_focal_length_box.setValue(-80)
     window.add_paraxial_lens_button.click()
-    assert side_view.placement.lens.paraxial_focal_length_mm == -80.0
+    assert side_view.placement.lenses[0].paraxial_focal_length_mm == -80.0
     side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, 40.0)))
     paraxial_lens = window.model.state.lenses[0]
     assert paraxial_lens.is_paraxial and paraxial_lens.z == pytest.approx(40.0, abs=1.0)
@@ -888,4 +888,45 @@ def test_the_image_gap_cannot_be_locked_while_lock_focus_is_on(application):
     application.processEvents()
     assert not window.lock_focus_checkbox.isChecked()
     assert not window.side_view.image_line.movable
+    window.close()
+
+
+def test_locked_lenses_become_an_assembly_that_flips_saves_and_is_placed_again(
+    application, monkeypatch, tmp_path
+):
+    window = MainWindow()
+    window.model.parts_folder = tmp_path
+    window.show()
+    window.model.add_lens("LA1509-A")
+    window.side_view.rebuild_lens_graphics()
+    window.request_update()
+    application.processEvents()
+
+    menu_texts = lambda: [action.text() for action in window.build_lens_menu(0).actions()]  # noqa: E731
+    make_assembly = window.build_lens_menu(0).actions()[3]
+    assert make_assembly.text() == "Make assembly" and not make_assembly.isEnabled()
+    window.set_gap_locked(0, True)
+    window.build_lens_menu(0).actions()[3].trigger()
+    assert window.model.assembly_name(1) == "Assembly 1"
+    assert "Flip assembly\tF" in menu_texts() and "Split assembly" in menu_texts()
+
+    window.flip_lens(0)  # F on a lens in an assembly flips all of it
+    application.processEvents()
+    assert [lens.part_number for lens in window.model.state.lenses] == ["LA1509-A", "ACT508-200-A"]
+
+    monkeypatch.setattr(
+        "raycrafter.gui.main_window.QInputDialog.getText", lambda *_args, **_kw: ("Pair", True)
+    )
+    window.save_as_user_part(0)
+    assert [part.name for part in window.model.user_parts()] == ["Pair"]
+
+    window.fill_user_parts_menu()
+    window.user_parts_menu.actions()[0].trigger()  # starts placing the part
+    placement = window.side_view.placement
+    assert placement is not None and placement.name == "Pair" and len(placement.ghosts) == 2
+    window.side_view.on_scene_clicked(FakeClick(scene_point_on_axis(window.side_view, 40.0)))
+    assert window.side_view.placement is None
+    assert len(window.model.state.lenses) == 4
+    assert window.model.assembly_name(0) == "Pair" and window.model.assembly_name(1) == "Pair"
+    assert len(window.side_view.lens_graphics) == 4
     window.close()

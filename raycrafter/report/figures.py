@@ -129,7 +129,7 @@ def draw_ray_diagram(state: OpticalState, fast_trace: FastTrace) -> Figure:
 
     # Lenses: a filled glass body between the first and last surface, every surface outlined.
     for lens in state.lenses:
-        colour = palette.PLOSSL if lens.group_id is not None else palette.LENS
+        colour = palette.ASSEMBLY if lens.assembly_id is not None else palette.LENS
         if lens.is_paraxial:
             draw_paraxial_lens(axes, lens)
             continue
