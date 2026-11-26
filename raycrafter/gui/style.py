@@ -19,8 +19,8 @@ from raycrafter import palette
 PLOT_BOTTOM_GAP_PX = 5  # space between each plot's bottom axis label and its border
 PLOT_MIN_SIZE_PX = (280, 260)  # smallest size of each analysis plot
 
-# COMBO_ARROW_PATH is replaced at start-up by the path of a generated image; see
-# write_combo_arrow_image.
+# DOWN_ARROW_PATH and UP_ARROW_PATH are replaced at start-up by the paths of generated
+# images; see write_arrow_image.
 STYLE_SHEET = """
 QWidget { font-size: 13px; }
 QMainWindow { background: #f1f3f5; }
@@ -32,7 +32,7 @@ QPushButton:disabled { color: #adb5bd; background: #f1f3f5; }
 QComboBox { background: white; border: 1px solid #ced4da; border-radius: 4px; padding: 4px 8px; }
 QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 24px;
                        border: none; border-left: 1px solid #dee2e6; }
-QComboBox::down-arrow { image: url(COMBO_ARROW_PATH); width: 10px; height: 10px; }
+QComboBox::down-arrow { image: url(DOWN_ARROW_PATH); width: 10px; height: 10px; }
 QComboBox QAbstractItemView {
     background: white; color: #343a40; border: 1px solid #ced4da; outline: 0;
     selection-background-color: #3b7dd8; selection-color: white;
@@ -57,6 +57,52 @@ QTabBar::tab { background: transparent; color: #868e96; padding: 1px 10px 2px 10
                margin-right: 2px; border-bottom: 2px solid transparent; }
 QTabBar::tab:hover { color: #343a40; }
 QTabBar::tab:selected { color: #343a40; border-bottom: 2px solid #3b7dd8; }
+
+/* The tool palette and the context bar: compact and flat, as in a graphics editor. */
+QToolBar#contextBar { background: #e9ecef; border: none; border-bottom: 1px solid #ced4da;
+                      spacing: 6px; }
+QToolBar#toolPalette { background: #e9ecef; border: none; border-right: 1px solid #ced4da;
+                       spacing: 2px; padding: 4px 7px; }
+QToolBar QLabel { font-size: 11px; color: #495057; }
+QToolBar QLabel#italicF { font-family: 'Times New Roman'; font-style: italic; font-size: 18px;
+                          color: #343a40; }
+QToolBar QToolButton { border: none; border-radius: 5px; padding: 3px; color: #343a40; }
+QToolBar QToolButton:hover { background: #dee2e6; }
+QToolBar QToolButton:checked { background: #cfd4da; }
+QToolBar#contextBar QToolButton { border: 1px solid #ced4da; background: #f8f9fa; padding: 0px; }
+QToolBar#contextBar QToolButton#signButton { font-size: 18px; min-width: 22px; max-width: 22px;
+                                             min-height: 22px; max-height: 22px; }
+QToolBar#contextBar QToolButton#lockFocusButton { min-width: 40px; max-width: 40px;
+                                                  min-height: 28px; max-height: 28px; }
+QToolBar#contextBar QToolButton#lockFocusButton:checked { background: #fff5f5;
+                                                          border-color: #e03131; }
+QToolBar QDoubleSpinBox, QToolBar QComboBox { font-size: 11px; padding: 2px 6px;
+                                              min-height: 18px; }
+/* combobox-popup: 0 drops an ordinary list below the box, tall enough for every item: the
+   macOS style otherwise lays the popup over the box and showed only one row. */
+QToolBar QComboBox { combobox-popup: 0; }
+QToolBar QComboBox::drop-down { width: 16px; border: none; }
+QToolBar QComboBox::down-arrow { width: 9px; height: 9px; }
+QToolBar QComboBox QAbstractItemView { font-size: 11px; }
+QToolBar QComboBox QAbstractItemView::item { padding: 0px 8px; height: 24px; }
+/* Spin box arrows drawn on the border, so the text field keeps its width: Qt's macOS style
+   otherwise collapses a styled spin box's text field to 1 px. */
+QToolBar QDoubleSpinBox { background: white; border: 1px solid #ced4da; border-radius: 4px;
+                          padding-right: 16px; }
+QToolBar QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right;
+    width: 14px; border: none; border-left: 1px solid #dee2e6; border-top-right-radius: 4px; }
+QToolBar QDoubleSpinBox::down-button { subcontrol-origin: border;
+    subcontrol-position: bottom right; width: 14px; border: none;
+    border-left: 1px solid #dee2e6; border-bottom-right-radius: 4px; }
+QToolBar QDoubleSpinBox::up-button:hover, QToolBar QDoubleSpinBox::down-button:hover {
+    background: #e7f0ff; }
+QToolBar QDoubleSpinBox::up-arrow { image: url(UP_ARROW_PATH); width: 7px; height: 7px; }
+QToolBar QDoubleSpinBox::down-arrow { image: url(DOWN_ARROW_PATH); width: 7px; height: 7px; }
+QSlider::groove:horizontal { height: 3px; background: #ced4da; border-radius: 1px; }
+QSlider::sub-page:horizontal { background: #3b7dd8; border-radius: 1px; }
+QSlider::handle:horizontal { background: white; border: 1px solid #868e96; width: 10px;
+                             height: 10px; margin: -4px 0px; border-radius: 5px; }
+QSlider::handle:horizontal:hover { border-color: #3b7dd8; }
 """
 
 
@@ -121,11 +167,12 @@ def make_app_icon() -> QIcon:
     return QIcon(pixmap)
 
 
-def write_combo_arrow_image() -> str:
-    """Draw a small flat down-chevron to a PNG in the temp folder and return its path.
+def write_arrow_image(pointing_up: bool = False) -> str:
+    """Draw a small flat chevron to a PNG in the temp folder and return its path.
 
-    The native macOS combo-box arrow is drawn with shading (dark right and bottom edges). A
-    style sheet can only replace it with an image file, so one is generated here.
+    The native macOS combo-box arrow is drawn with shading (dark right and bottom edges), and
+    a styled spin box loses its arrows. A style sheet can only replace them with image files,
+    so these are generated here.
     """
     size = 20
     pixmap = QPixmap(size, size)
@@ -140,10 +187,14 @@ def write_combo_arrow_image() -> str:
         Qt.PenJoinStyle.RoundJoin,
     )
     painter.setPen(chevron_pen)
-    painter.drawPolyline(QPolygonF([QPointF(4, 7), QPointF(10, 13), QPointF(16, 7)]))
+    if pointing_up:
+        painter.drawPolyline(QPolygonF([QPointF(4, 13), QPointF(10, 7), QPointF(16, 13)]))
+    else:
+        painter.drawPolyline(QPolygonF([QPointF(4, 7), QPointF(10, 13), QPointF(16, 7)]))
     painter.end()
 
-    arrow_path = Path(tempfile.gettempdir()) / "raycrafter_combo_arrow.png"
+    file_name = "raycrafter_up_arrow.png" if pointing_up else "raycrafter_combo_arrow.png"
+    arrow_path = Path(tempfile.gettempdir()) / file_name
     pixmap.save(str(arrow_path))
     return arrow_path.as_posix()
 
@@ -159,8 +210,10 @@ def force_light_colour_scheme(app: QApplication) -> None:
 
 
 def style_sheet() -> str:
-    """The application style sheet, with the generated combo-box arrow filled in."""
-    return STYLE_SHEET.replace("COMBO_ARROW_PATH", write_combo_arrow_image())
+    """The application style sheet, with the generated arrow images filled in."""
+    return STYLE_SHEET.replace("DOWN_ARROW_PATH", write_arrow_image()).replace(
+        "UP_ARROW_PATH", write_arrow_image(pointing_up=True)
+    )
 
 
 def join_with_gaps(x_segments: list, y_segments: list) -> tuple[np.ndarray, np.ndarray]:

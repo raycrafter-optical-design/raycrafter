@@ -100,7 +100,7 @@ class GapOptimiser:
 
     def reason_not_possible(self, lens_index: int, goal: str) -> str | None:
         """Why this gap cannot be optimised for this goal, or None if it can."""
-        if goal == FOCUS and self.window.lock_focus_checkbox.isChecked():
+        if goal == FOCUS and self.window.lock_focus_button.isChecked():
             return 'Turn off "Lock focus" first: it would move the image plane'
         try:
             gap_optimisation.check_can_optimise(self.window.model.state, lens_index, goal)

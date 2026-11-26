@@ -21,6 +21,7 @@ from raycrafter.gui.lens_picker import ALL_COATINGS, SUITS_BEAMS, LensPickerDial
 from raycrafter.gui.main_window import EDIT_MENU_TITLE, MainWindow  # noqa: E402
 from raycrafter.gui.range_slider import RangeSlider  # noqa: E402
 from raycrafter.gui.style import force_light_colour_scheme  # noqa: E402
+from raycrafter.gui.tool_palette import Tool  # noqa: E402
 from raycrafter.report import build_report_html  # noqa: E402
 
 
@@ -233,12 +234,13 @@ def test_placing_hovering_and_dragging_a_paraxial_lens(application):
     application.processEvents()
     side_view = window.side_view
 
-    # The focal length box sets the new lens; a click on the axis places it.
-    window.paraxial_focal_length_box.setValue(-80)
-    window.add_paraxial_lens_button.click()
+    # The context bar's focal length sets the new lens; a click on the axis places it.
+    window.context_bar.set_paraxial_focal_length_mm(-80)
+    window.tool_palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
     assert side_view.placement.lenses[0].paraxial_focal_length_mm == -80.0
     side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, 40.0)))
     paraxial_lens = window.model.state.lenses[0]
+    window.tools.escape()  # back to Move, so the lens can be hovered and dragged
     assert paraxial_lens.is_paraxial and paraxial_lens.z == pytest.approx(40.0, abs=1.0)
 
     # A zero-thickness lens can still be hovered a couple of pixels off its line ...
@@ -255,16 +257,53 @@ def test_placing_hovering_and_dragging_a_paraxial_lens(application):
     graphics.region.setRegion((region_start + 10.0, region_end + 10.0))
     assert paraxial_lens.z == pytest.approx(region_start + 10.0 + graphics.grab_margin_mm)
 
-    # A focal length of zero is not a lens, so the button is switched off.
-    window.paraxial_focal_length_box.setValue(0)
-    assert not window.add_paraxial_lens_button.isEnabled()
+    # A focal length of zero is not a lens, so nothing follows the pointer.
+    window.tool_palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
+    window.context_bar.set_paraxial_focal_length_mm(0)
+    assert side_view.placement is None
+    window.close()
+
+
+def test_add_tools_stay_on_until_escape_or_another_tool(application):
+    """#70: an add tool places lens after lens; Escape or V goes back to Move."""
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    side_view, palette, tools = window.side_view, window.tool_palette, window.tools
+    assert palette.current_tool() == Tool.MOVE
+    assert window.context_bar.pages.currentWidget() is window.context_bar.empty_page.parentWidget()
+
+    palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
+    assert window.context_bar.pages.currentWidget() is (
+        window.context_bar.paraxial_page.parentWidget()
+    )
+    for z_mm in (30.0, 400.0):
+        side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, z_mm)))
+        assert side_view.placement is not None  # a new ghost follows after each click
+    assert sum(lens.is_paraxial for lens in window.model.state.lenses) == 2
+
+    # The ghost takes a new focal length at once, and the tool stays on.
+    window.context_bar.set_paraxial_focal_length_mm(-50)
+    assert side_view.placement.lenses[0].paraxial_focal_length_mm == -50.0
+    assert palette.current_tool() == Tool.ADD_PARAXIAL_LENS
+
+    tools.escape()
+    assert palette.current_tool() == Tool.MOVE and side_view.placement is None
+
+    # A right click (a cancelled placement) ends the tool too; V chooses Move.
+    palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
+    side_view.cancel_placement()
+    assert palette.current_tool() == Tool.MOVE
+    palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
+    QTest.keyClick(window, Qt.Key.Key_V)
+    assert palette.current_tool() == Tool.MOVE and side_view.placement is None
     window.close()
 
 
 def test_field_window_adds_edits_and_removes_fields_live(application):
     window = MainWindow()
     window.show()
-    window.add_field_button.click()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
     editor = window.field_editor
     assert editor.isVisible() and editor.field_list.count() == 1
     assert not editor.remove_button.isEnabled()  # the only field cannot be removed
@@ -312,7 +351,7 @@ def test_bench_viewer_lists_highlights_follows_and_deletes(application):
     window.side_view.rebuild_lens_graphics()
     window.show()
     window.recompute_and_redraw()
-    window.view_bench_button.click()
+    window.view_bench_action.trigger()
     viewer = window.bench_viewer
     assert viewer.isVisible()
 
@@ -391,7 +430,7 @@ def test_field_window_shows_values_outside_its_usual_ranges(application):
     """A -20 D beam (an object 50 mm away, from a ZMX file) was shown, and edited, as -10 D."""
     window = MainWindow()
     window.model.state.selected_field.vergence_dioptres = -20.0
-    window.add_field_button.click()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
     vergence_box = window.field_editor.value_boxes["vergence_dioptres"]
     assert vergence_box.value() == -20.0
     vergence_box.stepUp()
@@ -770,7 +809,7 @@ def test_undo_with_lock_focus_does_not_get_stuck(application):
     window.model.state.image_z = 250.0  # well out of focus
     window.request_update()
     application.processEvents()
-    window.lock_focus_checkbox.setChecked(True)  # refocuses: a step
+    window.lock_focus_button.setChecked(True)  # refocuses: a step
     application.processEvents()
 
     window.undo()  # back to 250 mm, which "Lock focus" at once refocuses
@@ -883,7 +922,7 @@ def test_fixed_and_impossible_gaps_say_why(application):
     window.side_view.set_gap(0, 0.0)  # the image plane cannot touch the lens
     assert "at least" in window.statusBar().currentMessage()
 
-    window.lock_focus_checkbox.setChecked(True)
+    window.lock_focus_button.setChecked(True)
     application.processEvents()
     click_gap_label(window, 0)
     assert window.side_view.gap_editor is None
@@ -932,7 +971,7 @@ def test_a_gap_is_locked_from_its_menu_and_then_refuses_typing(application):
     assert "locked" in window.statusBar().currentMessage()
 
     # The image plane now follows the lens, so "Lock focus" and dragging it are off.
-    assert not window.lock_focus_checkbox.isEnabled()
+    assert not window.lock_focus_button.isEnabled()
     assert not window.side_view.image_line.movable
     window.run_autofocus()
     assert "locked" in window.statusBar().currentMessage()
@@ -940,14 +979,14 @@ def test_a_gap_is_locked_from_its_menu_and_then_refuses_typing(application):
     window.build_gap_menu(0).actions()[0].trigger()  # now "Unlock gap"
     application.processEvents()
     assert not window.model.air_gaps()[0].locked
-    assert window.lock_focus_checkbox.isEnabled() and window.side_view.image_line.movable
+    assert window.lock_focus_button.isEnabled() and window.side_view.image_line.movable
     window.close()
 
 
 def test_the_image_gap_cannot_be_locked_while_lock_focus_is_on(application):
     window = MainWindow()
     window.show()
-    window.lock_focus_checkbox.setChecked(True)
+    window.lock_focus_button.setChecked(True)
     application.processEvents()
     assert not window.build_gap_menu(0).actions()[0].isEnabled()
 
@@ -955,7 +994,7 @@ def test_the_image_gap_cannot_be_locked_while_lock_focus_is_on(application):
     window.model.set_gap_locked(0, True)
     window.show_replaced_design()
     application.processEvents()
-    assert not window.lock_focus_checkbox.isChecked()
+    assert not window.lock_focus_button.isChecked()
     assert not window.side_view.image_line.movable
     window.close()
 
@@ -989,11 +1028,12 @@ def test_locked_lenses_become_an_assembly_that_flips_saves_and_is_placed_again(
     window.save_as_user_part(0)
     assert [part.name for part in window.model.user_parts()] == ["Pair"]
 
-    window.fill_user_parts_menu()
-    window.user_parts_menu.actions()[0].trigger()  # starts placing the part
+    window.tool_palette.tool_actions[Tool.ADD_USER_PART].trigger()  # starts placing the part
     placement = window.side_view.placement
     assert placement is not None and placement.name == "Pair" and len(placement.ghosts) == 2
     window.side_view.on_scene_clicked(FakeClick(scene_point_on_axis(window.side_view, 40.0)))
+    assert window.side_view.placement.name == "Pair"  # the tool stays on: another one follows
+    window.tools.escape()
     assert window.side_view.placement is None
     assert len(window.model.state.lenses) == 4
     assert window.model.assembly_name(0) == "Pair" and window.model.assembly_name(1) == "Pair"
@@ -1046,7 +1086,7 @@ def test_opening_a_project_with_lock_focus_on_leaves_nothing_unsaved(
     window.model.state.image_z += 20.0  # saved away from best focus
     project_path = tmp_path / "design.raycrafter"
     window.model.save_project(project_path)
-    window.lock_focus_checkbox.setChecked(True)
+    window.lock_focus_button.setChecked(True)
     application.processEvents()
 
     monkeypatch.setattr(
@@ -1121,14 +1161,14 @@ def test_collimating_from_the_gap_menu(application, monkeypatch):
     image_gap_texts = [action.text() for action in window.build_gap_menu(1).actions()]
     assert "Collimate output…" not in image_gap_texts  # autofocus does the image gap
 
-    window.lock_focus_checkbox.setChecked(True)
+    window.lock_focus_button.setChecked(True)
     focus_action = next(
         action
         for action in window.build_gap_menu(0).actions()
         if action.text() == "Focus on image plane…"
     )
     assert not focus_action.isEnabled() and "Lock focus" in focus_action.toolTip()
-    window.lock_focus_checkbox.setChecked(False)
+    window.lock_focus_button.setChecked(False)
 
     shown = []
     monkeypatch.setattr(
@@ -1211,7 +1251,7 @@ def test_the_gap_dialog_suggests_flipping_a_lens(application, monkeypatch):
 def test_the_field_window_switches_the_design_to_object_points(application):
     window = MainWindow()
     window.show()
-    window.add_field_button.click()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
     editor = window.field_editor
     assert not editor.form.isRowVisible(editor.value_boxes["numerical_aperture"])
 
@@ -1324,7 +1364,7 @@ def test_generate_report_opens_one_page_that_follows_the_design(application, mon
     monkeypatch.setattr(report_actions, "ReportProcess", QuickReport)
     monkeypatch.setattr(report_actions.webbrowser, "open", opened.append)
     window = MainWindow()
-    window.report_button.click()
+    window.web_report_action.trigger()
     reports = window.reports
     assert opened == [reports.server.url]
 
@@ -1341,7 +1381,7 @@ def test_generate_report_opens_one_page_that_follows_the_design(application, mon
     wait_until(lambda: "lenses: ACT508-200-A" in shown())
 
     with reports.live_report.watching():  # the page is open in the browser
-        window.report_button.click()
+        window.web_report_action.trigger()
         assert len(opened) == 1
         assert "updates itself" in window.statusBar().currentMessage()
 
@@ -1356,7 +1396,7 @@ def test_generate_report_opens_one_page_that_follows_the_design(application, mon
         window.update_slow_plots()
         assert reports.live_report._design_revision == 2
 
-    window.report_button.click()  # the tab was closed, and the report is wanted again
+    window.web_report_action.trigger()  # the tab was closed, and the report is wanted again
     assert len(opened) == 2
 
     server = reports.server
