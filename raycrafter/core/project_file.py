@@ -1,7 +1,7 @@
 """Save and load a RayCrafter project file (``.raycrafter``): the whole design, as JSON.
 
-A project file holds everything a ZMX file cannot: every field, Plossl pairs, the part
-metadata of each lens, and, for a design imported from a ZMX file, the original file and
+A project file holds everything a ZMX file cannot: every field, Plossl pairs, locked gaps,
+the part metadata of each lens, and, for a design imported from a ZMX file, the original file and
 the bench as it was imported (see ``ImportedSource``). The format is described, with an
 example, in issue #40.
 
@@ -44,11 +44,26 @@ FORMAT_VERSION = 1
 _UPGRADES: dict[int, Callable[[dict], dict]] = {}
 
 # The keys of a design: the project's own, and the imported bench inside imported_from.
-DESIGN_KEYS = ["lenses", "next_group", "fields", "selected_field", "image_z_mm"]
+DESIGN_KEYS = [
+    "lenses",
+    "next_group",
+    "fields",
+    "selected_field",
+    "image_z_mm",
+    "image_gap_locked",
+]
 TOP_LEVEL_KEYS = ["format", "format_version", "written_by", *DESIGN_KEYS, "imported_from"]
 PART_KEYS = ["vendor", "part_number", "mount_type", "clear_diameter_mm"]
-GLASS_LENS_KEYS = ["type", "part", "front_z_mm", "flipped", "group", "surfaces"]
-PARAXIAL_LENS_KEYS = ["type", "part", "front_z_mm", "focal_length_mm"]
+GLASS_LENS_KEYS = [
+    "type",
+    "part",
+    "front_z_mm",
+    "flipped",
+    "group",
+    "locked_to_next",
+    "surfaces",
+]
+PARAXIAL_LENS_KEYS = ["type", "part", "front_z_mm", "focal_length_mm", "locked_to_next"]
 SURFACE_KEYS = ["radius_mm", "thickness_after_mm", "material_after"]
 FIELD_KEYS = [
     "diameter_mm",
@@ -125,6 +140,7 @@ def _design_to_dict(state: OpticalState) -> dict:
         "fields": [_field_to_dict(beam) for beam in state.fields],
         "selected_field": state.selected_field_index,
         "image_z_mm": state.image_z,
+        "image_gap_locked": state.image_gap_locked,
     }
 
 
@@ -141,6 +157,7 @@ def _lens_to_dict(lens: PlacedLens) -> dict:
             "part": part,
             "front_z_mm": lens.z,
             "focal_length_mm": lens.paraxial_focal_length_mm,
+            "locked_to_next": lens.locked_to_next,
         }
     return {
         "type": "lens",
@@ -148,6 +165,7 @@ def _lens_to_dict(lens: PlacedLens) -> dict:
         "front_z_mm": lens.z,
         "flipped": lens.flipped,
         "group": lens.group_id,
+        "locked_to_next": lens.locked_to_next,
         # The catalogue orientation; ``flipped`` is applied when the lens is used.
         "surfaces": [
             {
@@ -245,6 +263,7 @@ def _design_from_dict(data: dict, prefix: str) -> OpticalState:
     front_positions = [lens.z for lens in lenses]
     if front_positions != sorted(front_positions):
         raise ProjectFileError(f"The {prefix}lenses must be listed in order along the axis.")
+    _check_locks(lenses, prefix)
 
     fields = [
         _field_from_dict(field_data, f"{prefix}field {index}")
@@ -264,7 +283,25 @@ def _design_from_dict(data: dict, prefix: str) -> OpticalState:
         fields=fields,
         selected_field_index=selected_field,
         image_z=_number(data["image_z_mm"], f"{prefix}image_z_mm"),
+        image_gap_locked=_boolean(data["image_gap_locked"], f"{prefix}image_gap_locked"),
     )
+
+
+def _check_locks(lenses: list[PlacedLens], prefix: str) -> None:
+    """Refuse locks that cannot be: the last lens locked to a next one, or an unlocked pair."""
+    if lenses and lenses[-1].locked_to_next:
+        raise ProjectFileError(
+            f"The last {prefix}lens has locked_to_next set, but there is no lens after it "
+            "(the gap to the image plane is image_gap_locked)."
+        )
+    for index, (lens, next_lens) in enumerate(zip(lenses, lenses[1:])):
+        same_pair = lens.group_id is not None and lens.group_id == next_lens.group_id
+        if same_pair and not lens.locked_to_next:
+            where = f"{prefix}lens {index}"
+            raise ProjectFileError(
+                f"{where[0].upper()}{where[1:]} is in a Plossl pair with the next lens, so "
+                "locked_to_next must be true."
+            )
 
 
 def _upgraded(data: dict) -> dict:
@@ -327,6 +364,7 @@ def _lens_from_dict(data: object, where: str) -> PlacedLens:
         lens.flipped = _boolean(data["flipped"], f"{where} flipped")
         group = data["group"]
         lens.group_id = None if group is None else _integer(group, f"{where} group")
+    lens.locked_to_next = _boolean(data["locked_to_next"], f"{where} locked_to_next")
     # Not stored, as it follows from the prescription.
     lens.is_negative = is_diverging(lens)
     return lens

@@ -1,9 +1,10 @@
 """Scripting RayCrafter from Python: ``Bench``, a lens bench you drive with method calls.
 
 A ``Bench`` can do everything the GUI (except undo) and the AI agent tools can: search the lens
-catalogue, place, move, flip and delete lenses, set the gaps between them, make Plossl pairs,
-edit the fields (beams), move the image plane, autofocus, run the analyses, draw the plots,
-write the HTML report, save and open project files, and import and export Zemax .zmx files.
+catalogue, place, move, flip and delete lenses, set and lock the gaps between them, make
+Plossl pairs, edit the fields (beams), move the image plane, autofocus, run the analyses, draw
+the plots, write the HTML report, save and open project files, and import and export Zemax
+.zmx files.
 It does not import Qt.
 
 There are two kinds of bench:
@@ -116,6 +117,8 @@ class LensInfo:
     gap_after_mm : float
         Air gap from the back vertex to the next lens's front vertex, or to the image plane
         for the last lens (see ``Bench.set_gap``).
+    gap_after_locked : bool
+        True if that gap is locked (see ``Bench.lock_gap``).
     vendor : str or None
         Who makes the lens, e.g. ``"Thorlabs"``; None for an imported or paraxial lens.
     mount_type : str or None
@@ -136,6 +139,7 @@ class LensInfo:
     plossl_group: int | None
     is_paraxial: bool
     gap_after_mm: float
+    gap_after_locked: bool
     vendor: str | None
     mount_type: str | None
     surface_range: tuple[int, int]
@@ -498,10 +502,10 @@ class Bench(DesignFileMethods):
     def move_lens(self, lens_index: int, front_z_mm: float) -> LensInfo:
         """Move a lens towards ``front_z_mm``, as dragging it in the window would.
 
-        A Plossl pair moves together. The lens stops when it meets a neighbour or the image
-        plane, so check the returned ``front_z_mm`` to see where it went. If the request
-        takes the lens past the middle of a neighbour, the two swap places, and the
-        returned snapshot has the lens's new index.
+        Lenses joined by locked gaps (such as a Plossl pair) move together. The lens stops
+        when it meets a neighbour or the image plane, so check the returned ``front_z_mm``
+        to see where it went. If the request takes the lens past the middle of a neighbour,
+        the two swap places, and the returned snapshot has the lens's new index.
 
         Example
         -------
@@ -523,8 +527,9 @@ class Bench(DesignFileMethods):
         Raises
         ------
         ValueError
-            If there is no such lens, the gap is inside a Plossl pair, or it is so small
-            that the surfaces would overlap (the image plane needs at least 1 mm).
+            If there is no such lens, the gap is locked (always so inside a Plossl pair), or
+            it is so small that the surfaces would overlap (the image plane needs at least
+            1 mm).
 
         Example
         -------
@@ -537,6 +542,30 @@ class Bench(DesignFileMethods):
         250.0
         """
         self._call("set_gap", lens_index=int(lens_index), gap_mm=float(gap_mm))
+        return self.lenses[int(lens_index)]
+
+    def lock_gap(self, lens_index: int, locked: bool = True) -> LensInfo:
+        """Lock (or, with ``locked=False``, unlock) the gap behind a lens; return its snapshot.
+
+        A locked gap keeps its length while the rest of the design is edited: lenses joined
+        by locked gaps move together, and ``set_gap`` refuses to change it. Behind the last
+        lens it is the gap to the image plane, which then moves with the last lens and
+        cannot be moved on its own (``set_image_z`` and ``autofocus`` refuse). The gap
+        inside a Plossl pair is always locked.
+
+        Example
+        -------
+        >>> bench = Bench(empty=True)
+        >>> _ = bench.add_paraxial_lens(100.0)
+        >>> _ = bench.add_paraxial_lens(50.0)
+        >>> bench.lock_gap(0).gap_after_locked
+        True
+        >>> bench.move_lens(1, front_z_mm=200.0).front_z_mm  # moves lens 0 too
+        200.0
+        >>> bench.lenses[0].front_z_mm
+        190.0
+        """
+        self._call("lock_gap", lens_index=int(lens_index), locked=bool(locked))
         return self.lenses[int(lens_index)]
 
     def flip_lens(self, lens_index: int) -> LensInfo:
@@ -699,6 +728,8 @@ class Bench(DesignFileMethods):
     def set_image_z(self, image_z_mm: float) -> None:
         """Put the image plane at ``image_z_mm``, which must be behind the last lens.
 
+        Refused if the gap to the image plane is locked (see ``lock_gap``).
+
         Example
         -------
         >>> bench = Bench()
@@ -710,6 +741,8 @@ class Bench(DesignFileMethods):
 
     def autofocus(self) -> float:
         """Move the image plane to the smallest RMS spot of the selected field.
+
+        Refused if the gap to the image plane is locked (see ``lock_gap``).
 
         Returns
         -------
@@ -893,6 +926,7 @@ class Bench(DesignFileMethods):
     def _lens_info(self, state: OpticalState, index: int) -> LensInfo:
         """The snapshot of lens ``index`` in ``state``."""
         lens = state.lenses[index]
+        gap = gaps.air_gaps(state)[index]
         if lens.is_paraxial:
             focal_length = lens.paraxial_focal_length_mm
         elif lens.part_number in self._catalog:
@@ -910,7 +944,8 @@ class Bench(DesignFileMethods):
             flipped=lens.flipped,
             plossl_group=lens.group_id,
             is_paraxial=lens.is_paraxial,
-            gap_after_mm=float(gaps.air_gaps(state)[index].width_mm),
+            gap_after_mm=float(gap.width_mm),
+            gap_after_locked=gap.locked,
             vendor=lens.vendor,
             mount_type=lens.mount_type,
             surface_range=state.surface_range(index),

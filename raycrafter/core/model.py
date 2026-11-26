@@ -2,8 +2,8 @@
 
 ``OpticalModel`` owns the bench state (``raycrafter.core.state``) and the list of lenses
 that can be placed. It provides the editing operations: add, insert, delete, move and swap
-lenses, set the air gaps between them, make or split Plossl pairs, add or remove fields, and
-undo and redo. It also gives access to the analyses (``raycrafter.core.analysis``), to
+lenses, set and lock the air gaps between them, make or split Plossl pairs, add or remove
+fields, and undo and redo. It also gives access to the analyses (``raycrafter.core.analysis``), to
 saving and opening project files (``raycrafter.core.project_file``) and to Zemax import and
 export, applied to its current state. It has no Qt code.
 
@@ -136,7 +136,13 @@ class OpticalModel:
         -------
         PlacedLens
             The new lens.
+
+        Raises
+        ------
+        ValueError
+            If the gap to the image plane is locked, as the new lens would split it.
         """
+        self._refuse_if_image_gap_locked("add a lens behind the last one")
         lenses = self.state.lenses
         front_z = lenses[-1].back_z + LENS_GAP_MM if lenses else INITIAL_LENS_Z
         new_lens = self.make_lens(part_number, front_z)
@@ -151,8 +157,9 @@ class OpticalModel:
 
         The free stretches of axis are the gaps between the lenses on the bench, plus the
         stretch before the first lens (from FIRST_LENS_MIN_Z) and after the last one (up to
-        ``max_back_z``). The gap inside a Plossl pair is not free: a pair is never split.
-        A new lens may touch its neighbours, as a dragged lens may.
+        ``max_back_z``). A locked gap (such as the one inside a Plossl pair) is not free, as
+        a new lens would split it; nor is the stretch behind the last lens if the gap to the
+        image plane is locked. A new lens may touch its neighbours, as a dragged lens may.
 
         Parameters
         ----------
@@ -170,16 +177,16 @@ class OpticalModel:
         """
         lenses = self.state.lenses
 
-        # Occupied stretches of axis, one per block (a single lens or a Plossl pair).
-        occupied = []
-        lens_index = 0
-        while lens_index < len(lenses):
-            members = self.group_indices(lens_index)
-            occupied.append((lenses[members[0]].z, lenses[members[-1]].back_z))
-            lens_index = members[-1] + 1
+        # Occupied stretches of axis, one per block of lenses joined by locked gaps.
+        occupied = [
+            (lenses[members[0]].z, lenses[members[-1]].back_z)
+            for members in gaps.blocks(self.state)
+        ]
 
         gap_starts = [FIRST_LENS_MIN_Z] + [block_back for _front, block_back in occupied]
         gap_ends = [block_front for block_front, _back in occupied] + [max_back_z]
+        if lenses and self.state.image_gap_locked:
+            gap_starts, gap_ends = gap_starts[:-1], gap_ends[:-1]
 
         # In each gap the lens is wide enough for, the closest position to the request;
         # then the closest of those.
@@ -204,9 +211,19 @@ class OpticalModel:
         -------
         int
             The index of the new lens.
+
+        Raises
+        ------
+        ValueError
+            If the lens would land in a locked gap, splitting it; nothing is changed then.
         """
         lenses = self.state.lenses
         new_index = sum(1 for lens in lenses if lens.z < new_lens.z)
+        if new_index == len(lenses):
+            if lenses:
+                self._refuse_if_image_gap_locked("add a lens behind the last one")
+        elif new_index > 0 and lenses[new_index - 1].locked_to_next:
+            raise ValueError("That gap is locked: unlock it to put a lens in it")
         lenses.insert(new_index, new_lens)
 
         minimum_image_z = self.state.last_back_z() + gaps.MIN_IMAGE_GAP_MM
@@ -216,9 +233,17 @@ class OpticalModel:
         return new_index
 
     def delete_lens(self, lens_index: int) -> None:
-        """Remove one lens. Its Plossl partner, if any, becomes a normal lens."""
+        """Remove one lens, and the locks on the gaps either side of it.
+
+        Its Plossl partner, if any, becomes a normal lens.
+        """
         self.split_plossl(lens_index)
-        del self.state.lenses[lens_index]
+        lenses = self.state.lenses
+        if lens_index > 0:
+            lenses[lens_index - 1].locked_to_next = False
+        if lens_index == len(lenses) - 1:
+            self.state.image_gap_locked = False
+        del lenses[lens_index]
 
     def flip_lens(self, lens_index: int) -> None:
         """Turn one lens around.
@@ -240,15 +265,28 @@ class OpticalModel:
         """Set the gap behind a lens, moving everything downstream (see ``gaps.set_gap``)."""
         gaps.set_gap(self.state, lens_index, gap_mm)
 
+    def set_gap_locked(self, lens_index: int, locked: bool) -> None:
+        """Lock or unlock the gap behind a lens (see ``gaps.set_gap_locked``)."""
+        gaps.set_gap_locked(self.state, lens_index, locked)
+
+    def _refuse_if_image_gap_locked(self, action: str) -> None:
+        """Raise ValueError, saying the user cannot do ``action``, if the image gap is locked."""
+        if self.state.lenses and self.state.image_gap_locked:
+            raise ValueError(f"The gap to the image plane is locked: unlock it to {action}")
+
     # ---------------------------------------------------------------- moving
 
     def group_indices(self, lens_index: int) -> list[int]:
-        """Indices of the lenses that move together with this one (just itself if ungrouped)."""
+        """Indices of the lenses in this lens's Plossl pair (just itself if it is in none)."""
         lenses = self.state.lenses
         group_id = lenses[lens_index].group_id
         if group_id is None:
             return [lens_index]
         return [index for index, lens in enumerate(lenses) if lens.group_id == group_id]
+
+    def block_indices(self, lens_index: int) -> list[int]:
+        """Indices of the lenses that move with this one: those joined to it by locked gaps."""
+        return gaps.block_indices(self.state, lens_index)
 
     def _block_centre_z(self, members: list[int]) -> float:
         """z of the middle of a block of adjacent lenses, from its first front to last back."""
@@ -256,13 +294,15 @@ class OpticalModel:
         return 0.5 * (lenses[members[0]].z + lenses[members[-1]].back_z)
 
     def move_lens(self, lens_index: int, requested_front_z: float) -> list[int] | None:
-        """Move a lens (and its Plossl partner) so this lens's front vertex is near the request.
+        """Move a lens (and its block) so this lens's front vertex is near the request.
 
-        If the request carries the group's centre past the centre of the neighbouring lens
-        (or Plossl pair), the two swap places (see ``swap_neighbouring_blocks``). Otherwise
-        the group stays between its neighbours (nothing overlaps), the first lens stays to
-        the right of the start of the axis, and the last lens stays before the image plane;
-        if the allowed range is empty the lens does not move.
+        The block is the lenses joined to this one by locked gaps (``block_indices``), which
+        move as one. If the request carries the block's centre past the centre of the
+        neighbouring block, the two swap places (see ``swap_neighbouring_blocks``).
+        Otherwise the block stays between its neighbours (nothing overlaps), the first lens
+        stays to the right of the start of the axis, and the last lens stays before the
+        image plane; if the allowed range is empty the lens does not move. If the gap to the
+        image plane is locked, the image plane moves with the last block instead.
 
         Returns
         -------
@@ -271,29 +311,33 @@ class OpticalModel:
             anything it keeps per lens. None when the order is unchanged.
         """
         lenses = self.state.lenses
-        members = self.group_indices(lens_index)
+        members = self.block_indices(lens_index)
         first, last = members[0], members[-1]
+        is_last_block = last == len(lenses) - 1
 
         shift_wanted = requested_front_z - lenses[lens_index].z
         wanted_centre_z = self._block_centre_z(members) + shift_wanted
 
         # Dragged past the centre of the next block to the right, or the previous one?
-        if last < len(lenses) - 1:
-            right_members = self.group_indices(last + 1)
+        if not is_last_block:
+            right_members = self.block_indices(last + 1)
             if wanted_centre_z > self._block_centre_z(right_members):
                 return self.swap_neighbouring_blocks(members, right_members)
         if first > 0:
-            left_members = self.group_indices(first - 1)
+            left_members = self.block_indices(first - 1)
             if wanted_centre_z < self._block_centre_z(left_members):
                 return self.swap_neighbouring_blocks(left_members, members)
 
-        group_width = lenses[last].back_z - lenses[first].z
+        block_width = lenses[last].back_z - lenses[first].z
         lowest_front_z = lenses[first - 1].back_z if first > 0 else FIRST_LENS_MIN_Z
-        if last < len(lenses) - 1:
+        image_moves_too = is_last_block and self.state.image_gap_locked
+        if image_moves_too:
+            next_front_z = np.inf
+        elif not is_last_block:
             next_front_z = lenses[last + 1].z
         else:
             next_front_z = self.state.image_z - gaps.MIN_IMAGE_GAP_MM
-        highest_front_z = next_front_z - group_width
+        highest_front_z = next_front_z - block_width
 
         shift_min = lowest_front_z - lenses[first].z
         shift_max = highest_front_z - lenses[first].z
@@ -302,14 +346,16 @@ class OpticalModel:
         shift = float(np.clip(shift_wanted, shift_min, shift_max))
         for index in members:
             lenses[index].z += shift
+        if image_moves_too:
+            self.state.image_z += shift
         return None
 
     def swap_neighbouring_blocks(
         self, left_members: list[int], right_members: list[int]
     ) -> list[int]:
-        """Exchange two adjacent lens groups, so the left one ends up on the right.
+        """Exchange two adjacent blocks of lenses, so the left one ends up on the right.
 
-        Each block keeps its internal spacing. The air gap between them is kept, and the two
+        Each block keeps its internal spacing and locks. The air gap between them is kept, and the two
         together occupy exactly the same stretch of axis as before, so nothing downstream
         (later lenses, the image plane) has to move.
 
@@ -342,8 +388,8 @@ class OpticalModel:
     def plossl_partner(self, lens_index: int) -> int | None:
         """Index of a lens this one could form a Plossl pair with, or None.
 
-        The partner must be an immediate neighbour, be the same part, and not already be
-        grouped; the gap between the two must be at most PLOSSL_SEARCH_WIDTHS lens
+        The partner must be an immediate neighbour, be the same part, and not already be in a
+        pair; the gap between the two must be at most PLOSSL_SEARCH_WIDTHS lens
         thicknesses. Only positive catalogue lenses can form a Plossl pair (a Plossl is made
         of doublets, so paraxial lenses are excluded).
         """
@@ -373,7 +419,8 @@ class OpticalModel:
         positive element is at its back, and the right lens so its positive element is at
         its front. The right lens is then moved so the closest points of the two facing
         surfaces are PLOSSL_GAP_MM apart, and everything downstream (later lenses and the
-        image plane) shifts with it. Does nothing if the lens has no partner.
+        image plane) shifts with it, even if the gap between the two was locked. The gap
+        between them is then locked. Does nothing if the lens has no partner.
         """
         partner_index = self.plossl_partner(lens_index)
         if partner_index is None:
@@ -395,6 +442,7 @@ class OpticalModel:
 
         left.group_id = right.group_id = self.state.next_group_id
         self.state.next_group_id += 1
+        left.locked_to_next = True
 
     @staticmethod
     def _plossl_front_z(left: PlacedLens, right: PlacedLens) -> float:
@@ -407,9 +455,15 @@ class OpticalModel:
         return left.back_z + PLOSSL_GAP_MM - gaps.closest_sag_difference_mm(left, right)
 
     def split_plossl(self, lens_index: int) -> None:
-        """Dissolve the lens's group so its lenses move independently again."""
-        for index in self.group_indices(lens_index):
+        """Dissolve the lens's Plossl pair, unlocking the gap inside it.
+
+        The two lenses then move independently again, unless other locked gaps join them.
+        """
+        members = self.group_indices(lens_index)
+        for index in members:
             self.state.lenses[index].group_id = None
+        if len(members) > 1:
+            self.state.lenses[members[0]].locked_to_next = False
 
     # ---------------------------------------------------------------- fields
 
@@ -463,7 +517,14 @@ class OpticalModel:
     # ---------------------------------------------------------------- optics
 
     def autofocus(self) -> float:
-        """Move the image plane to the smallest RMS spot of the selected field, and return its z."""
+        """Move the image plane to the smallest RMS spot of the selected field, and return its z.
+
+        Raises
+        ------
+        ValueError
+            If the gap to the image plane is locked.
+        """
+        self._refuse_if_image_gap_locked("focus")
         self.state.image_z = analysis.find_best_focus_z(self.state)
         return self.state.image_z
 

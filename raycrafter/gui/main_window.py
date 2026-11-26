@@ -6,8 +6,9 @@
   the box beside it.
 - Hover a lens and it turns a darker shade; that is the lens the actions apply to. Drag a
   lens to slide it along the axis; drag it past a neighbour's centre to swap them. Drag the
-  green line to move the image plane (not while "Lock focus" is on). Click one of the gap
-  dimensions below the lenses to type that distance.
+  green line to move the image plane (not while "Lock focus" is on or the gap to it is
+  locked). Click one of the gap dimensions below the lenses to type that distance;
+  right-click it to lock or unlock it. Lenses joined by locked gaps move as one.
 - Right-click a lens for Flip (F), Delete (Del or Backspace) and Make / Split Plossl.
 - The RayCrafter menu has About and Quit. The File menu (``raycrafter.gui.file_actions``) has
   New, Open, Save, Save As, Save Without Original ZMX, Import ZMX and Export ZMX. New, Open,
@@ -216,13 +217,15 @@ class MainWindow(QMainWindow):
         self.lock_focus_checkbox = QCheckBox("Lock focus")  # off by default
         self.lock_focus_checkbox.setToolTip(
             "Keep the image plane at best focus as lenses or the beams change, "
-            "whenever that focus is in view"
+            "whenever that focus is in view. Not available while the gap to the image "
+            "plane is locked."
         )
 
         # Reminder of where the per-lens actions are, since they are not buttons.
         hint_label = QLabel(
             "Right-click a lens to flip it (F), delete it (Del) or make a Plossl pair. "
-            "Drag a lens past its neighbour to swap their order. Click a gap to type it."
+            "Drag a lens past its neighbour to swap their order. Click a gap to type it; "
+            "right-click it to lock it."
         )
         hint_label.setObjectName("hintLabel")
         hint_label.setWordWrap(True)
@@ -332,6 +335,7 @@ class MainWindow(QMainWindow):
 
         self.side_view.changed.connect(self.request_update)
         self.side_view.lens_menu_requested.connect(self.show_lens_menu)
+        self.side_view.gap_menu_requested.connect(self.show_gap_menu)
         self.side_view.placement_finished.connect(self.on_placement_finished)
         self.side_view.message_requested.connect(
             lambda message: self.statusBar().showMessage(message, STATUS_MESSAGE_MS)
@@ -417,7 +421,8 @@ class MainWindow(QMainWindow):
         """Snap a lens and its identical neighbour into a Plossl pair, then refocus."""
         if self.model.plossl_partner(lens_index) is not None:
             self.model.make_plossl(lens_index)
-            self.model.autofocus()  # the pair has a new focal length, so the old focus is stale
+            if not self.model.state.image_gap_locked:
+                self.model.autofocus()  # the pair has a new focal length: the focus is stale
             self.request_update()
 
     def split_plossl(self, lens_index: int) -> None:
@@ -465,9 +470,43 @@ class MainWindow(QMainWindow):
         menu.aboutToHide.connect(self.side_view.hide_plossl_preview)
         return menu
 
+    def show_gap_menu(self, lens_index: int, global_position: QPoint) -> None:
+        """Pop up the actions for the gap behind one lens at the pointer."""
+        self.build_gap_menu(lens_index).exec(global_position)
+
+    def build_gap_menu(self, lens_index: int) -> QMenu:
+        """The context menu for the gap behind one lens: Lock gap, or Unlock gap.
+
+        The gap inside a Plossl pair cannot be unlocked, and the gap to the image plane
+        cannot be locked while "Lock focus" is on, as both would set the image plane.
+        """
+        gap = self.model.air_gaps()[lens_index]
+        menu = QMenu(self)
+        if gap.locked:
+            action = menu.addAction("Unlock gap")
+            action.setEnabled(not gap.in_plossl_pair)
+        else:
+            action = menu.addAction("Lock gap")
+            action.setEnabled(not (gap.to_image and self.lock_focus_checkbox.isChecked()))
+        action.triggered.connect(lambda: self.set_gap_locked(lens_index, not gap.locked))
+        return menu
+
+    def set_gap_locked(self, lens_index: int, locked: bool) -> None:
+        """Lock or unlock the gap behind a lens, or say why that is not allowed."""
+        try:
+            self.model.set_gap_locked(lens_index, locked)
+        except ValueError as error:
+            self.statusBar().showMessage(str(error), STATUS_MESSAGE_MS)
+            return
+        self.request_update()
+
     def run_autofocus(self) -> None:
-        """Move the image plane to the minimum-RMS-spot position."""
-        self.model.autofocus()
+        """Move the image plane to the minimum-RMS-spot position, unless its gap is locked."""
+        try:
+            self.model.autofocus()
+        except ValueError as error:
+            self.statusBar().showMessage(str(error), STATUS_MESSAGE_MS)
+            return
         self.request_update()
 
     def open_field_editor(self) -> None:
@@ -600,6 +639,21 @@ class MainWindow(QMainWindow):
         self.side_view.set_image_line_locked(locked)
         self.request_update()
 
+    def apply_image_gap_lock(self) -> None:
+        """A locked gap to the image plane and "Lock focus" conflict, so only the lock applies.
+
+        While the gap is locked (e.g. after opening a project or undoing), "Lock focus" is
+        turned off and greyed out. Cheap enough to run on every redraw.
+        """
+        state = self.model.state
+        image_gap_locked = bool(state.lenses) and state.image_gap_locked
+        if image_gap_locked and self.lock_focus_checkbox.isChecked():
+            self.lock_focus_checkbox.blockSignals(True)  # no redraw of its own: one is running
+            self.lock_focus_checkbox.setChecked(False)
+            self.lock_focus_checkbox.blockSignals(False)
+            self.side_view.set_image_line_locked(False)
+        self.lock_focus_checkbox.setEnabled(not image_gap_locked)
+
     def refocus_if_focus_in_view(self) -> None:
         """With "Lock focus" on, move the image plane to best focus if that focus is visible.
 
@@ -625,6 +679,7 @@ class MainWindow(QMainWindow):
         """Re-trace the system; refresh the side view, spot, through-focus and readouts."""
         state = self.model.state
         start = time.perf_counter()
+        self.apply_image_gap_lock()
         if self.lock_focus_checkbox.isChecked():
             self.refocus_if_focus_in_view()
         if not self.is_dragging():

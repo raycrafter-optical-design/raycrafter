@@ -844,3 +844,48 @@ def test_real_mouse_clicks_open_a_gap_and_clicking_away_accepts_it(application):
     assert side_view.gap_editor is None
     assert window.model.air_gaps()[0].width_mm == pytest.approx(150.0)
     window.close()
+
+
+def test_a_gap_is_locked_from_its_menu_and_then_refuses_typing(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+
+    menu = window.build_gap_menu(0)  # the gap to the image plane
+    assert [action.text() for action in menu.actions()] == ["Lock gap"]
+    menu.actions()[0].trigger()
+    application.processEvents()
+    assert window.model.air_gaps()[0].locked
+    assert window.side_view.gap_dimensions.labels[0].shown_as[1] == "locked"
+
+    click_gap_label(window, 0)
+    assert window.side_view.gap_editor is None
+    assert "locked" in window.statusBar().currentMessage()
+
+    # The image plane now follows the lens, so "Lock focus" and dragging it are off.
+    assert not window.lock_focus_checkbox.isEnabled()
+    assert not window.side_view.image_line.movable
+    window.run_autofocus()
+    assert "locked" in window.statusBar().currentMessage()
+
+    window.build_gap_menu(0).actions()[0].trigger()  # now "Unlock gap"
+    application.processEvents()
+    assert not window.model.air_gaps()[0].locked
+    assert window.lock_focus_checkbox.isEnabled() and window.side_view.image_line.movable
+    window.close()
+
+
+def test_the_image_gap_cannot_be_locked_while_lock_focus_is_on(application):
+    window = MainWindow()
+    window.show()
+    window.lock_focus_checkbox.setChecked(True)
+    application.processEvents()
+    assert not window.build_gap_menu(0).actions()[0].isEnabled()
+
+    # A design opened with the image gap locked turns "Lock focus" off.
+    window.model.set_gap_locked(0, True)
+    window.show_replaced_design()
+    application.processEvents()
+    assert not window.lock_focus_checkbox.isChecked()
+    assert not window.side_view.image_line.movable
+    window.close()

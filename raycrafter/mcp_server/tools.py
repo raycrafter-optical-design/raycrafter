@@ -46,6 +46,7 @@ EDITING_TOOL_NAMES = [  # these change the design, so a window must redraw after
     "add_paraxial_lens",
     "move_lens",
     "set_gap",
+    "lock_gap",
     "flip_lens",
     "delete_lens",
     "make_plossl",
@@ -109,7 +110,8 @@ class DesignTools:
         from and says whether the bench has been changed since (null if not imported).
 
         Each lens's ``gap_after_mm`` is the air gap from its back vertex to the next lens's
-        front vertex, or to the image plane behind the last lens. ``vendor`` and
+        front vertex, or to the image plane behind the last lens; ``gap_after_locked`` says
+        whether that gap is locked (see ``lock_gap``). ``vendor`` and
         ``mount_type`` are null where unknown. ``surface_range`` holds the numbers of the
         lens's first and last surface, as in the exported ZMX file.
         """
@@ -125,6 +127,7 @@ class DesignTools:
                 "front_z_mm": _number(lens.z),
                 "back_z_mm": _number(lens.back_z),
                 "gap_after_mm": _number(gaps[index].width_mm),
+                "gap_after_locked": gaps[index].locked,
                 "semi_aperture_mm": _number(lens.semi_aperture),
                 "flipped": lens.flipped,
                 "plossl_group": lens.group_id,
@@ -321,7 +324,7 @@ class DesignTools:
         return self._place(new_lens, front_z_mm, "A paraxial lens does not fit anywhere")
 
     def move_lens(self, lens_index: int, front_z_mm: float) -> dict:
-        """Move a lens (and its Plossl partner) towards ``front_z_mm``.
+        """Move a lens towards ``front_z_mm``, with the lenses joined to it by locked gaps.
 
         The lens stops at its neighbours; dragging it past the middle of a neighbour swaps
         their order. The result includes ``moved_lens_index``, the lens's index afterwards.
@@ -335,11 +338,23 @@ class DesignTools:
         """Set the air gap behind a lens: back vertex to the next front vertex.
 
         Behind the last lens it is the distance to the image plane. All later lenses and the
-        image plane shift together, so no other gap changes. The gap inside a Plossl pair is
-        fixed, and surfaces may not overlap.
+        image plane shift together, so no other gap changes. A locked gap (always so inside a
+        Plossl pair) cannot be set, and surfaces may not overlap.
         """
         self._check_lens_index(lens_index)
         self.model.set_gap(lens_index, gap_mm)
+        return self.get_design()
+
+    def lock_gap(self, lens_index: int, locked: bool = True) -> dict:
+        """Lock (or, with ``locked=False``, unlock) the air gap behind a lens.
+
+        A locked gap keeps its length: lenses joined by locked gaps move together, and
+        ``set_gap`` refuses to change it. Behind the last lens it is the gap to the image
+        plane, which then moves with the last lens and cannot be autofocused or moved on its
+        own. The gap inside a Plossl pair is always locked.
+        """
+        self._check_lens_index(lens_index)
+        self.model.set_gap_locked(lens_index, bool(locked))
         return self.get_design()
 
     def flip_lens(self, lens_index: int) -> dict:
@@ -432,7 +447,12 @@ class DesignTools:
         return self.get_design()
 
     def set_image_z(self, image_z_mm: float) -> dict:
-        """Put the image plane at ``image_z_mm`` (it must be behind the last lens)."""
+        """Put the image plane at ``image_z_mm`` (it must be behind the last lens).
+
+        Refused if the gap to the image plane is locked.
+        """
+        if self.model.state.lenses and self.model.state.image_gap_locked:
+            raise ValueError("The gap to the image plane is locked: unlock it to move the image")
         minimum_z = self.model.state.last_back_z() + 1.0
         if image_z_mm < minimum_z:
             raise ValueError(

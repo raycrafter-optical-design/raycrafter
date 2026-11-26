@@ -280,3 +280,12 @@ does differently. "Save Without Original ZMX" (`save_project(forget_import=True)
 record, and the design stops being an import. Bench file methods live in `design_files.py`.
 **Why:** After edits the original file alone says only where a design started. A hash of the
 imported bench was rejected: it says that something changed, not what. Rob's choice.
+
+## 2026-11-26: Gap locks are a flag per lens; a Plossl pair is a locked pair (#36)
+**Decision:** Each lens has `locked_to_next`, and the state has `image_gap_locked`. Lenses
+joined by locked gaps form a block that drags and swaps as one. `group_id` stays as the identity
+of a Plossl pair (to become the assembly id in #43), whose gap is always locked. A locked image
+gap moves the image with the last lens and refuses autofocus, "Lock focus" and new lenses
+behind it; typing a locked gap is refused. Rob chose this over replacing `group_id` with locks.
+**Why:** One mechanism for moving things together, while a pair keeps an identity for flipping
+and saving as a part. Refusing follows "Typed gaps are refused rather than adjusted".

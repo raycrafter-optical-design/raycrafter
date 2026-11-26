@@ -57,6 +57,10 @@ def lens_rows(state: OpticalState) -> list[tuple[str, int, list[str]]]:
             details.append(f"Plossl pair {lens.group_id}")
         if lens.is_paraxial:
             details.append("ideal thin lens")
+        if lens.locked_to_next:
+            details.append("gap behind locked")
+        elif index == len(state.lenses) - 1 and state.image_gap_locked:
+            details.append("gap to image locked")
         position = f"{lens.z:.1f}" if lens.is_paraxial else f"{lens.z:.1f} – {lens.back_z:.1f}"
         rows.append((LENS, index, [str(index), lens.part_number, position, ", ".join(details)]))
     return rows

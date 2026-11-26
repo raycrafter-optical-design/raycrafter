@@ -12,7 +12,9 @@ follows the pointer along the axis, snapped to the nearest gap it fits in (red w
 nowhere). A left click puts it on the bench; Escape or a right click cancels.
 
 The air gaps are dimensioned along the bottom (``raycrafter.gui.gap_dimensions``). Clicking
-a dimension opens a box in which to type the gap.
+a dimension opens a box in which to type the gap; right-clicking it asks the main window for
+the menu that locks or unlocks it. Lenses joined by locked gaps are dragged, and darkened on
+hover, as one. While the gap to the image plane is locked, the image line cannot be dragged.
 
 A paraxial (ideal thin) lens is drawn as a line with arrowheads. It has no thickness, so it
 can be hovered and dragged a few pixels either side of its line.
@@ -40,7 +42,7 @@ from raycrafter.core.plot_geometry import (
     ray_polylines,
 )
 from raycrafter.core.state import PlacedLens
-from raycrafter.gui.gap_dimensions import GapDimensions, GapEditor
+from raycrafter.gui.gap_dimensions import EDITABLE, FIXED, LOCKED, GapDimensions, GapEditor
 from raycrafter.gui.style import (
     PLOT_BOTTOM_GAP_PX,
     colour_with_alpha,
@@ -268,6 +270,8 @@ class SideView(pg.PlotWidget):
         Something to tell the user, e.g. why a gap cannot be changed.
     lens_menu_requested(int, QPoint)
         The user right-clicked lens ``index`` at the given global screen position.
+    gap_menu_requested(int, QPoint)
+        The user right-clicked the dimension of the gap behind lens ``index``.
     placement_finished(bool)
         Placing a lens ended: True if it was put on the bench, False if cancelled.
     drag_finished
@@ -276,6 +280,7 @@ class SideView(pg.PlotWidget):
 
     changed = pyqtSignal()
     lens_menu_requested = pyqtSignal(int, QPoint)
+    gap_menu_requested = pyqtSignal(int, QPoint)
     placement_finished = pyqtSignal(bool)
     drag_finished = pyqtSignal()
     message_requested = pyqtSignal(str)
@@ -289,6 +294,9 @@ class SideView(pg.PlotWidget):
         self.highlighted_lens_index: int | None = None
         self.highlighted_field_index: int | None = None
         self.image_line_locked = False  # True while "Lock focus" sets the image plane
+        # True while the image line cannot be dragged: "Lock focus" is on or the gap to the
+        # image plane is locked (see update_image_line_movable).
+        self.image_line_fixed = False
         self.lens_drag_active = (
             False  # True from the first drag movement until the mouse is released
         )
@@ -448,6 +456,7 @@ class SideView(pg.PlotWidget):
         self.image_line.setValue(self.model.state.image_z)
         self.image_line.blockSignals(False)
         self.place_image_label()
+        self.update_image_line_movable()
 
         self.refresh_lens_colours()
         self.update_gap_dimensions()
@@ -528,9 +537,13 @@ class SideView(pg.PlotWidget):
 
     def update_gap_dimensions(self) -> None:
         """Redraw the dimension of every air gap."""
-        self.gap_dimensions.update(
-            self.model.air_gaps(), lambda gap: self.why_gap_is_fixed(gap) is None
-        )
+        self.gap_dimensions.update(self.model.air_gaps(), self.gap_label_style)
+
+    def gap_label_style(self, gap: AirGap) -> str:
+        """How a gap's label is drawn (see ``GapDimensions.update``)."""
+        if gap.locked:
+            return LOCKED
+        return EDITABLE if self.why_gap_is_fixed(gap) is None else FIXED
 
     def on_view_resized(self, *_args) -> None:
         """The dimensions are placed in screen pixels, so a new size moves them."""
@@ -541,6 +554,8 @@ class SideView(pg.PlotWidget):
         """Why this gap cannot be typed, in words for the user; None if it can."""
         if gap.in_plossl_pair:
             return "The gap inside a Plossl pair is fixed: split the pair to change it"
+        if gap.locked:
+            return "This gap is locked: right-click it to unlock it"
         if gap.to_image and self.image_line_locked:
             return '"Lock focus" sets the distance to the image plane: turn it off to type it'
         return None
@@ -625,14 +640,14 @@ class SideView(pg.PlotWidget):
         return found_index
 
     def lens_colour(self, index: int) -> str:
-        """Blue (purple in a Plossl pair); darker when it, or its pair, is under the pointer or
-        highlighted in the bench viewer."""
+        """Blue (purple in a Plossl pair); darker when it, or a lens joined to it by locked
+        gaps, is under the pointer or highlighted in the bench viewer."""
         in_pair = self.model.state.lenses[index].group_id is not None
-        # A Plossl pair moves as one, so it is highlighted as one.
+        # Lenses joined by locked gaps move as one, so they are highlighted as one.
         darkened = []
         for marked_index in (self.hovered_index, self.highlighted_lens_index):
             if marked_index is not None and marked_index < len(self.model.state.lenses):
-                darkened += self.model.group_indices(marked_index)
+                darkened += self.model.block_indices(marked_index)
         if index in darkened:
             return palette.PLOSSL_HOVER if in_pair else palette.LENS_HOVER
         return palette.PLOSSL if in_pair else palette.LENS
@@ -694,7 +709,7 @@ class SideView(pg.PlotWidget):
 
     def is_over_image_line(self, scene_position: QPointF) -> bool:
         """True if the pointer is within a few pixels of the image line and it can be dragged."""
-        if self.image_line_locked:
+        if self.image_line_fixed:
             return False
         view_box = self.getPlotItem().vb
         line_scene_x = view_box.mapViewToScene(QPointF(self.image_line.value(), 0.0)).x()
@@ -831,30 +846,45 @@ class SideView(pg.PlotWidget):
     # ------------------------------------------------------------ user interaction
 
     def set_image_line_locked(self, locked: bool) -> None:
-        """Lock focus on: the image plane is set by the software, so the line cannot be dragged.
+        """Lock focus on: the image plane is set by the software, so the line cannot be dragged."""
+        self.image_line_locked = locked
+        self.update_image_line_movable()
+
+    def update_image_line_movable(self) -> None:
+        """Let the image line be dragged unless "Lock focus" is on or its gap is locked.
 
         A line that is not movable gets no hover highlight, so it stays dashed; the arrow
-        cursor is suppressed in ``is_over_image_line``.
+        cursor is suppressed in ``is_over_image_line``. Runs on every redraw, so it changes
+        the line only when the answer changes.
         """
-        self.image_line_locked = locked
-        self.image_line.setMovable(not locked)
+        state = self.model.state
+        fixed = self.image_line_locked or (bool(state.lenses) and state.image_gap_locked)
+        if fixed == self.image_line_fixed:
+            return
+        self.image_line_fixed = fixed
+        self.image_line.setMovable(not fixed)
         self.image_line.setPen(self._image_line_pen())  # clears any hover look
-        if locked:
+        if fixed:
             self.viewport().unsetCursor()
 
     def on_right_click(self, _widget_position) -> None:
-        """Ask for the lens menu if the pointer is over a lens; cancel placing a lens."""
+        """Ask for the gap or lens menu if the pointer is over one; cancel placing a lens."""
         if self.placement is not None:
             self.cancel_placement()
             return
         global_position = QCursor.pos()
         scene_position = self.mapToScene(self.viewport().mapFromGlobal(global_position))
+        gap = self.gap_dimensions.gap_at(scene_position)
+        if gap is not None:
+            self.close_gap_editor()
+            self.gap_menu_requested.emit(gap.lens_index, global_position)
+            return
         lens_index = self.lens_index_at(self.getPlotItem().vb.mapSceneToView(scene_position))
         if lens_index is not None:
             self.lens_menu_requested.emit(lens_index, global_position)
 
     def on_lens_dragged(self, graphics: LensGraphics) -> None:
-        """A lens was dragged: move it (with its Plossl partner), or swap it with a neighbour."""
+        """A lens was dragged: move it and its block, or swap it with a neighbouring block."""
         # pyqtgraph keeps sending drag events to the item under the mouse even after the
         # graphics were rebuilt (e.g. Del pressed mid-drag); that lens is no longer shown.
         if graphics not in self.lens_graphics:

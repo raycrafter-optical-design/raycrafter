@@ -3,6 +3,11 @@
 A gap is measured vertex to vertex: from the back vertex of a lens to the front vertex of the
 next one, or, behind the last lens, to the image plane. Each gap is identified by the index of
 the lens in front of it. It has no Qt code.
+
+A gap can be locked, so that it keeps its length while the rest of the design is edited.
+Lenses joined by locked gaps form a *block* that moves as one (``block_indices``); a lens on
+its own is a block of one. The gap inside a Plossl pair is always locked. A locked gap to
+the image plane makes the image plane move with the last lens.
 """
 
 from __future__ import annotations
@@ -34,7 +39,9 @@ class AirGap:
     to_image : bool
         True for the gap between the last lens and the image plane.
     in_plossl_pair : bool
-        True for the gap inside a Plossl pair, which cannot be changed.
+        True for the gap inside a Plossl pair, which is always locked.
+    locked : bool
+        True if the gap is locked, so that it cannot be changed.
     """
 
     lens_index: int
@@ -42,6 +49,7 @@ class AirGap:
     end_z: float
     to_image: bool
     in_plossl_pair: bool
+    locked: bool
 
     @property
     def width_mm(self) -> float:
@@ -65,9 +73,57 @@ def air_gaps(state: OpticalState) -> list[AirGap]:
                 in_plossl_pair=next_lens is not None
                 and lens.group_id is not None
                 and lens.group_id == next_lens.group_id,
+                locked=state.image_gap_locked if to_image else lens.locked_to_next,
             )
         )
     return gaps
+
+
+def block_indices(state: OpticalState, lens_index: int) -> list[int]:
+    """The indices of the lenses joined to this one by locked gaps, in order (the block).
+
+    The gap to the image plane is not counted: the image plane is not a lens.
+    """
+    _check_lens_index(state, lens_index)
+    lenses = state.lenses
+    first = lens_index
+    while first > 0 and lenses[first - 1].locked_to_next:
+        first -= 1
+    last = lens_index
+    while last < len(lenses) - 1 and lenses[last].locked_to_next:
+        last += 1
+    return list(range(first, last + 1))
+
+
+def blocks(state: OpticalState) -> list[list[int]]:
+    """Every block of lenses joined by locked gaps, left to right (see ``block_indices``)."""
+    found = []
+    lens_index = 0
+    while lens_index < len(state.lenses):
+        members = block_indices(state, lens_index)
+        found.append(members)
+        lens_index = members[-1] + 1
+    return found
+
+
+def set_gap_locked(state: OpticalState, lens_index: int, locked: bool) -> None:
+    """Lock or unlock the gap behind a lens (behind the last lens: the gap to the image plane).
+
+    Raises
+    ------
+    IndexError
+        If there is no such lens.
+    ValueError
+        If asked to unlock the gap inside a Plossl pair, which is always locked.
+    """
+    _check_lens_index(state, lens_index)
+    gap = air_gaps(state)[lens_index]
+    if gap.in_plossl_pair and not locked:
+        raise ValueError("The gap inside a Plossl pair is always locked: split the pair first")
+    if gap.to_image:
+        state.image_gap_locked = locked
+    else:
+        state.lenses[lens_index].locked_to_next = locked
 
 
 def closest_sag_difference_mm(left: PlacedLens, right: PlacedLens) -> float:
@@ -120,13 +176,15 @@ def set_gap(state: OpticalState, lens_index: int, gap_mm: float) -> None:
     IndexError
         If there is no such lens.
     ValueError
-        If the gap is inside a Plossl pair, is not a number, or is smaller than
-        ``minimum_gap_mm``. Nothing is changed then.
+        If the gap is locked (always so inside a Plossl pair), is not a number, or is smaller
+        than ``minimum_gap_mm``. Nothing is changed then.
     """
     _check_lens_index(state, lens_index)
     gap = air_gaps(state)[lens_index]
     if gap.in_plossl_pair:
         raise ValueError("The gap inside a Plossl pair is fixed: split the pair to change it")
+    if gap.locked:
+        raise ValueError("This gap is locked: unlock it to change it")
     if not math.isfinite(gap_mm):
         raise ValueError("A gap must be a finite number of mm")
 

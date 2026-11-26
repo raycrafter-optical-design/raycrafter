@@ -2,7 +2,8 @@
 
 Each air gap is drawn along the bottom of the view as a line with arrowheads between the two
 vertices it runs between, labelled with its length. Labels that would overlap are raised to
-another row. ``GapDimensions.update`` runs on every change, including each step of a drag, so
+another row. A label is coloured by whether the gap can be typed; a locked gap's label is
+also boxed. ``GapDimensions.update`` runs on every change, including each step of a drag, so
 all the lines are one plot item and a label's text is set only when it changes.
 """
 
@@ -31,6 +32,16 @@ LABEL_FONT_SCALE = 0.85
 LABEL_Z_VALUE = 70  # above the lenses, their drag regions and the image line
 MAX_TYPED_GAP_MM = 100000.0
 EDITOR_WIDTH_PX = 100
+
+# How a gap's label is drawn.
+EDITABLE = "editable"  # can be typed
+FIXED = "fixed"  # cannot be typed (e.g. "Lock focus" sets it)
+LOCKED = "locked"  # locked by the user, or inside a Plossl pair
+LABEL_COLOURS = {
+    EDITABLE: palette.GAP_EDITABLE,
+    FIXED: palette.GAP_FIXED,
+    LOCKED: palette.GAP_LOCKED,
+}
 
 
 def gap_text(width_mm: float) -> str:
@@ -63,8 +74,11 @@ class GapDimensions:
             curve.setZValue(-5)  # above the grid, behind the lenses and rays
             plot_item.addItem(curve, ignoreBounds=True)
 
-    def update(self, gaps: list[AirGap], is_editable: Callable[[AirGap], bool]) -> None:
-        """Draw these gaps at the current axis ranges; editable ones are labelled in colour."""
+    def update(self, gaps: list[AirGap], label_style: Callable[[AirGap], str]) -> None:
+        """Draw these gaps at the current axis ranges.
+
+        ``label_style`` gives each gap's look: EDITABLE, FIXED or LOCKED.
+        """
         self.gaps = gaps
         while len(self.labels) < len(gaps):
             self.labels.append(self._new_label())
@@ -78,7 +92,7 @@ class GapDimensions:
 
         lines_z, lines_y, extensions_z, extensions_y = [], [], [], []
         for gap, label in zip(gaps, self.labels):
-            self._set_label_text(label, gap_text(gap.width_mm), is_editable(gap))
+            self._set_label_text(label, gap_text(gap.width_mm), label_style(gap))
 
             # The lowest row in which this label clears the one before it.
             middle_z = 0.5 * (gap.start_z + gap.end_z)
@@ -132,15 +146,20 @@ class GapDimensions:
         label.setFont(scaled_font(label.textItem.font(), LABEL_FONT_SCALE))
         label.textItem.document().setDocumentMargin(LABEL_MARGIN_PX)
         label.setZValue(LABEL_Z_VALUE)
-        label.shown_as = None  # (text, editable) last set, to avoid laying text out again
+        label.shown_as = None  # (text, style) last set, to avoid laying text out again
         self.plot_item.addItem(label, ignoreBounds=True)
         return label
 
     @staticmethod
-    def _set_label_text(label: pg.TextItem, text: str, editable: bool) -> None:
-        if label.shown_as != (text, editable):
-            label.setText(text, color=palette.GAP_EDITABLE if editable else palette.GAP_FIXED)
-            label.shown_as = (text, editable)
+    def _set_label_text(label: pg.TextItem, text: str, style: str) -> None:
+        if label.shown_as == (text, style):
+            return
+        colour = LABEL_COLOURS[style]
+        label.setText(text, color=colour)
+        # pyqtgraph keeps the border pen in ``label.border`` and draws it in ``paint``.
+        label.border = pg.mkPen(colour if style == LOCKED else None)
+        label.update()
+        label.shown_as = (text, style)
 
     @staticmethod
     def _set_curve(curve: pg.PlotCurveItem, segments_z: list, segments_y: list) -> None:

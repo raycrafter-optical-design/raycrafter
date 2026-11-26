@@ -25,7 +25,8 @@ def model() -> OpticalModel:
     """A design using everything a project file holds and a ZMX file cannot.
 
     A catalogue doublet, a flipped plano-convex lens (it has a flat surface), a Plossl pair,
-    a paraxial lens and two fields, the second selected and given its own colour.
+    a paraxial lens and two fields, the second selected and given its own colour. The gap
+    behind the first lens, and the gap to the image plane, are locked.
     """
     bench_model = OpticalModel()
     bench_model.add_lens("LA1509-A")
@@ -34,9 +35,12 @@ def model() -> OpticalModel:
         bench_model.add_lens("AC254-050-A")
     for lens in bench_model.state.lenses[2:4]:
         lens.group_id = 1
+    bench_model.state.lenses[2].locked_to_next = True  # a Plossl pair's gap is always locked
     bench_model.state.next_group_id = 2
     bench_model.insert_lens(bench_model.make_paraxial_lens(-80.0, z=900.0))
     bench_model.state.image_z = 1000.0
+    bench_model.set_gap_locked(0, True)
+    bench_model.set_gap_locked(4, True)  # the last lens: the gap to the image plane
     bench_model.state.fields.append(
         BeamField(diameter_mm=4.0, angle_deg=2.5, vergence_dioptres=-1.0, offset_mm=0.5,
                   wavelength_nm=850.0, colour="#123456")
@@ -99,6 +103,7 @@ def test_the_file_is_plain_json_with_flat_surfaces_as_null(model, tmp_path):
 
 
 def test_diverging_lenses_are_recognised_on_loading(model, tmp_path):
+    model.set_gap_locked(len(model.state.lenses) - 1, False)  # to add a lens behind the last
     model.add_lens("LC1060-A")
     loaded = saved_and_loaded(model.state, tmp_path)
     assert [lens.is_negative for lens in loaded.lenses] == [
@@ -212,6 +217,8 @@ def edited_project(model, change) -> dict:
         (lambda data: data["lenses"].reverse(), "in order along the axis"),
         (lambda data: data["lenses"][0].update(flipped=1), "true or false"),
         (lambda data: data.update(image_z_mm="far"), "should be a number"),
+        (lambda data: data["lenses"][-1].update(locked_to_next=True), "no lens after it"),
+        (lambda data: data.update(image_gap_locked=None), "true or false"),
         (
             lambda data: data["imported_from"]["imported_design"].pop("fields"),
             "imported_design is missing fields",
@@ -225,6 +232,14 @@ def edited_project(model, change) -> dict:
 def test_bad_project_data_is_refused_with_a_reason(imported_model, change, message):
     with pytest.raises(ProjectFileError, match=message):
         project_from_dict(edited_project(imported_model, change))
+
+
+def test_an_unlocked_plossl_pair_is_refused(model):
+    def unlock_pair(data):
+        data["lenses"][2]["locked_to_next"] = False
+
+    with pytest.raises(ProjectFileError, match="Lens 2 is in a Plossl pair"):
+        project_from_dict(edited_project(model, unlock_pair))
 
 
 def test_a_damaged_imported_file_is_refused(imported_model):

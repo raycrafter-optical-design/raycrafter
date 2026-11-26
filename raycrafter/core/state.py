@@ -44,7 +44,11 @@ class PlacedLens:
     flipped : bool
         True if the lens is turned around relative to the catalogue.
     group_id : int or None
-        Lenses that share an id form a Plossl pair and move together.
+        Lenses that share an id form a Plossl pair. The gap inside a pair is always locked.
+    locked_to_next : bool
+        True if the air gap behind this lens, to the next lens, is locked: the two keep
+        their spacing and move as one (see ``raycrafter.core.gaps``). Always False for the
+        last lens; the gap behind it, to the image plane, is ``OpticalState.image_gap_locked``.
     is_negative : bool
         True for a diverging lens (negative focal length). These cannot form a Plossl pair.
     paraxial_focal_length_mm : float or None
@@ -63,6 +67,7 @@ class PlacedLens:
     z: float
     flipped: bool = False
     group_id: int | None = None
+    locked_to_next: bool = False
     is_negative: bool = False
     paraxial_focal_length_mm: float | None = None
     vendor: str | None = None
@@ -246,6 +251,9 @@ class OpticalState:
         fan, field curvature, f-number) use. The spot diagram and side view show every field.
     image_z : float
         z of the image plane, in mm.
+    image_gap_locked : bool
+        True if the gap from the last lens to the image plane is locked: the image plane then
+        moves with the last lens, and cannot be moved on its own (e.g. by autofocus).
     imported_from : ImportedSource or None
         The file the design was imported from, if it was; editing leaves it unchanged.
     """
@@ -255,6 +263,7 @@ class OpticalState:
     fields: list[BeamField] = field(default_factory=lambda: [BeamField()])
     selected_field_index: int = 0
     image_z: float = 310.0
+    image_gap_locked: bool = False
     imported_from: ImportedSource | None = None
 
     @property
