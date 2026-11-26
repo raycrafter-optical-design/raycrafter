@@ -129,9 +129,19 @@ class OpticalModel:
         return placement.make_lens(self.catalog[part_number], front_z)
 
     @staticmethod
-    def make_paraxial_lens(focal_length_mm: float, z: float = INITIAL_LENS_Z) -> PlacedLens:
+    def make_paraxial_lens(
+        focal_length_mm: float,
+        z: float = INITIAL_LENS_Z,
+        diameter_mm: float = 2.0 * placement.PARAXIAL_SEMI_APERTURE_MM,
+    ) -> PlacedLens:
         """An ideal thin lens at ``z`` (see ``placement.make_paraxial_lens``)."""
-        return placement.make_paraxial_lens(focal_length_mm, z)
+        return placement.make_paraxial_lens(focal_length_mm, z, diameter_mm)
+
+    def set_paraxial_lens(
+        self, lens_index: int, focal_length_mm: float, diameter_mm: float
+    ) -> None:
+        """Change a paraxial lens's focal length and diameter (``placement.set_paraxial_lens``)."""
+        placement.set_paraxial_lens(self.state, lens_index, focal_length_mm, diameter_mm)
 
     def add_lens(self, part_number: str) -> PlacedLens:
         """Place a catalogue lens just after the last one and return it (``placement.append_lens``)."""

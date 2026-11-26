@@ -235,8 +235,8 @@ def test_placing_hovering_and_dragging_a_paraxial_lens(application):
     side_view = window.side_view
 
     # The context bar's focal length sets the new lens; a click on the axis places it.
-    window.context_bar.set_paraxial_focal_length_mm(-80)
     window.tool_palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
+    window.context_bar.focal_length.box.setValue(-80)
     assert side_view.placement.lenses[0].paraxial_focal_length_mm == -80.0
     side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, 40.0)))
     paraxial_lens = window.model.state.lenses[0]
@@ -259,7 +259,7 @@ def test_placing_hovering_and_dragging_a_paraxial_lens(application):
 
     # A focal length of zero is not a lens, so nothing follows the pointer.
     window.tool_palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
-    window.context_bar.set_paraxial_focal_length_mm(0)
+    window.context_bar.focal_length.box.setValue(0)
     assert side_view.placement is None
     window.close()
 
@@ -283,7 +283,7 @@ def test_add_tools_stay_on_until_escape_or_another_tool(application):
     assert sum(lens.is_paraxial for lens in window.model.state.lenses) == 2
 
     # The ghost takes a new focal length at once, and the tool stays on.
-    window.context_bar.set_paraxial_focal_length_mm(-50)
+    window.context_bar.focal_length.box.setValue(-50)
     assert side_view.placement.lenses[0].paraxial_focal_length_mm == -50.0
     assert palette.current_tool() == Tool.ADD_PARAXIAL_LENS
 
@@ -297,6 +297,44 @@ def test_add_tools_stay_on_until_escape_or_another_tool(application):
     palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
     QTest.keyClick(window, Qt.Key.Key_V)
     assert palette.current_tool() == Tool.MOVE and side_view.placement is None
+    window.close()
+
+
+def test_a_selected_paraxial_lens_is_edited_from_the_context_bar(application):
+    """#70: click a paraxial lens, then its focal length and diameter sliders change it."""
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    side_view, bar = window.side_view, window.context_bar
+    window.model.insert_lens(window.model.make_paraxial_lens(80.0, z=400.0))
+    side_view.rebuild_lens_graphics()
+    window.recompute_and_redraw()
+    paraxial_index = next(
+        index for index, lens in enumerate(window.model.state.lenses) if lens.is_paraxial
+    )
+
+    side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, 400.0)))
+    assert side_view.selected_index == paraxial_index
+    assert bar.pages.currentWidget() is bar.paraxial_page.parentWidget()
+    assert bar.paraxial_values_mm() == (80.0, pytest.approx(50.8))
+
+    bar.focal_length.slider.setValue(bar.focal_length.slider.maximum())  # 1000 mm
+    bar.diameter.box.setValue(20.0)
+    lens = window.model.state.lenses[paraxial_index]
+    assert lens.paraxial_focal_length_mm == pytest.approx(1000.0)
+    assert lens.semi_aperture == pytest.approx(10.0)
+    bar.sign_button.click()
+    assert lens.paraxial_focal_length_mm == pytest.approx(-1000.0) and lens.is_negative
+
+    # The next lens to be placed keeps its own values; a click on empty space deselects.
+    window.tool_palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
+    assert bar.paraxial_values_mm() == (100.0, pytest.approx(50.8))
+    bar.diameter.box.setValue(12.0)
+    assert side_view.placement.lenses[0].semi_aperture == pytest.approx(6.0)
+    window.tools.escape()
+    side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, 30.0)))
+    assert side_view.selected_index is None
+    assert bar.pages.currentWidget() is bar.empty_page.parentWidget()
     window.close()
 
 

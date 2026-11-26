@@ -23,7 +23,7 @@ INITIAL_LENS_Z = 100.0  # mm, front vertex of the first lens
 LENS_GAP_MM = 10.0  # air gap left between a new lens and its left neighbour
 IMAGE_CLEARANCE_MM = 50.0  # a new lens pushes the image plane at least this far behind it
 FIRST_LENS_MIN_Z = AXIS_START_Z + 20.0  # lenses cannot be dragged closer to the axis start
-PARAXIAL_SEMI_APERTURE_MM = 25.4  # paraxial lenses are the size of a 2-inch optic
+PARAXIAL_SEMI_APERTURE_MM = 25.4  # paraxial lenses are by default the size of a 2-inch optic
 
 
 # ---------------------------------------------------------------------- making lenses
@@ -42,27 +42,61 @@ def make_lens(entry: CatalogEntry, front_z: float = INITIAL_LENS_Z) -> PlacedLen
     )
 
 
-def make_paraxial_lens(focal_length_mm: float, z: float = INITIAL_LENS_Z) -> PlacedLens:
-    """An ideal thin lens of the given focal length at ``z``, not yet on the bench.
+def make_paraxial_lens(
+    focal_length_mm: float,
+    z: float = INITIAL_LENS_Z,
+    diameter_mm: float = 2.0 * PARAXIAL_SEMI_APERTURE_MM,
+) -> PlacedLens:
+    """An ideal thin lens of the given focal length and clear diameter at ``z``.
 
-    A paraxial lens focuses perfectly (no aberrations) and has zero thickness. Its clear
-    aperture is PARAXIAL_SEMI_APERTURE_MM.
+    The lens is not yet on the bench. A paraxial lens focuses perfectly (no aberrations) and
+    has zero thickness. By default it is as wide as a 2-inch optic.
 
     Raises
     ------
     ValueError
-        If the focal length is zero.
+        If the focal length is zero or the diameter is not positive.
     """
-    if focal_length_mm == 0.0:
-        raise ValueError("A paraxial lens needs a non-zero focal length")
-    return PlacedLens(
-        part_number=f"Paraxial f={focal_length_mm:+g} mm",
+    lens = PlacedLens(
+        part_number="",
         surfaces=[],
         semi_aperture=PARAXIAL_SEMI_APERTURE_MM,
         z=z,
-        is_negative=focal_length_mm < 0,
-        paraxial_focal_length_mm=focal_length_mm,
+        is_negative=False,
     )
+    _set_paraxial_properties(lens, focal_length_mm, diameter_mm)
+    return lens
+
+
+def set_paraxial_lens(
+    state: OpticalState, lens_index: int, focal_length_mm: float, diameter_mm: float
+) -> None:
+    """Give a paraxial lens on the bench a new focal length and clear diameter.
+
+    It stays where it is: a paraxial lens has no thickness, so neither change moves it or
+    its neighbours.
+
+    Raises
+    ------
+    ValueError
+        If the lens is not paraxial, the focal length is zero or the diameter not positive.
+    """
+    lens = state.lenses[lens_index]
+    if not lens.is_paraxial:
+        raise ValueError(f"{lens.part_number} is not a paraxial lens")
+    _set_paraxial_properties(lens, focal_length_mm, diameter_mm)
+
+
+def _set_paraxial_properties(lens: PlacedLens, focal_length_mm: float, diameter_mm: float) -> None:
+    """Set a paraxial lens's focal length and diameter, and the name that shows them."""
+    if focal_length_mm == 0.0:
+        raise ValueError("A paraxial lens needs a non-zero focal length")
+    if diameter_mm <= 0.0:
+        raise ValueError("A paraxial lens needs a diameter greater than 0 mm")
+    lens.part_number = f"Paraxial f={focal_length_mm:+g} mm"
+    lens.paraxial_focal_length_mm = focal_length_mm
+    lens.is_negative = focal_length_mm < 0
+    lens.semi_aperture = diameter_mm / 2.0
 
 
 # ---------------------------------------------------------------------- the front limits

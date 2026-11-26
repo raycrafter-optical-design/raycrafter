@@ -1,8 +1,8 @@
 """The context bar: the strip across the top of the main window whose controls follow the tool.
 
 As in a graphics editor, the bar shows the settings of the active tool (``show_page``), e.g.
-the focal length of the next paraxial lens. Whatever the tool, the focus-lock button sits at
-the far right, after a separator.
+the focal length and diameter of the next paraxial lens, or of the selected paraxial lens.
+Whatever the tool, the focus-lock button sits at the far right, after a separator.
 
 On macOS the bar is drawn in the window's title bar, as Affinity Photo does
 (``put_in_title_bar``); a press on an empty part of it moves the window, as the title bar
@@ -16,7 +16,6 @@ import sys
 from PyQt6.QtCore import QEvent, QObject, QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
-    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QListView,
@@ -28,14 +27,20 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from raycrafter.gui.scaled_slider import ScaledSlider
 from raycrafter.gui.tool_icons import ITALIC_F, focus_lock_icon
 from raycrafter.gui.tool_palette import Tool
-from raycrafter.gui.undo_keys import leave_undo_keys_to_window
 
 BAR_HEIGHT_PX = 44
 WINDOW_BUTTONS_WIDTH_PX = 78  # room left at the bar's left end for the macOS window buttons
 FOCAL_LENGTH_LIMIT_MM = 9999.9  # the box takes any focal length up to this, either sign
-FOCAL_LENGTH_BOX_WIDTH_PX = 96
+DIAMETER_LIMIT_MM = 9999.9
+# The sliders' ends and power laws: 0 to 250 mm takes 40% of the focal length slider, and
+# 0 to 50 mm takes 59% of the diameter slider (see raycrafter.gui.scaled_slider).
+FOCAL_LENGTH_SLIDER_MAXIMUM_MM = 1000.0
+FOCAL_LENGTH_SLIDER_EXPONENT = 1.5
+DIAMETER_SLIDER_MAXIMUM_MM = 100.0
+DIAMETER_SLIDER_EXPONENT = 1.3
 USER_PART_BOX_WIDTH_PX = 200
 LOCK_ICON_SIZE = QSize(36, 24)
 NO_USER_PARTS = "No user parts saved yet"
@@ -98,13 +103,13 @@ class ContextBar(QToolBar):
 
     Signals
     -------
-    paraxial_focal_length_changed(float)
-        The focal length for the next paraxial lens was changed (mm; may be 0).
+    paraxial_changed(float, float)
+        The paraxial focal length or diameter was changed by the user (mm; f may be 0).
     user_part_activated(str)
         A user part was chosen from the drop-down (even the one already shown).
     """
 
-    paraxial_focal_length_changed = pyqtSignal(float)
+    paraxial_changed = pyqtSignal(float, float)
     user_part_activated = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -166,7 +171,7 @@ class ContextBar(QToolBar):
         return layout
 
     def _build_paraxial_page(self) -> QHBoxLayout:
-        """A sign button and the focal length of the next paraxial lens."""
+        """A sign button, then the focal length and the diameter, each a slider and a box."""
         layout = self._new_page()
         self.sign_button = QToolButton()
         self.sign_button.setObjectName("signButton")
@@ -177,24 +182,36 @@ class ContextBar(QToolBar):
         focal_length_label = QLabel(f"{ITALIC_F} =")
         focal_length_label.setObjectName("italicF")
         layout.addWidget(focal_length_label)
-
-        self.focal_length_box = QDoubleSpinBox()
-        self.focal_length_box.setRange(-FOCAL_LENGTH_LIMIT_MM, FOCAL_LENGTH_LIMIT_MM)
-        self.focal_length_box.setDecimals(1)
-        self.focal_length_box.setSuffix(" mm")
-        self.focal_length_box.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self.focal_length_box.setFixedWidth(FOCAL_LENGTH_BOX_WIDTH_PX)
-        self.focal_length_box.setToolTip(
-            "Focal length of the next paraxial (ideal thin) lens; negative for a diverging lens"
+        self.focal_length = ScaledSlider(
+            FOCAL_LENGTH_SLIDER_MAXIMUM_MM,
+            FOCAL_LENGTH_SLIDER_EXPONENT,
+            (-FOCAL_LENGTH_LIMIT_MM, FOCAL_LENGTH_LIMIT_MM),
+            signed=True,
         )
-        leave_undo_keys_to_window(self.focal_length_box)
-        layout.addWidget(self.focal_length_box)
+        self.focal_length.setToolTip("Focal length of the paraxial (ideal thin) lens")
+        layout.addWidget(self.focal_length)
 
-        self.sign_button.clicked.connect(
-            lambda: self.focal_length_box.setValue(-self.focal_length_box.value())
+        layout.addSpacing(10)
+        diameter_label = QLabel("⌀ =")  # the diameter sign
+        diameter_label.setObjectName("diameterSign")
+        layout.addWidget(diameter_label)
+        self.diameter = ScaledSlider(
+            DIAMETER_SLIDER_MAXIMUM_MM, DIAMETER_SLIDER_EXPONENT, (0.1, DIAMETER_LIMIT_MM)
         )
-        self.focal_length_box.valueChanged.connect(self.paraxial_focal_length_changed.emit)
+        self.diameter.setToolTip("Clear diameter of the paraxial lens")
+        layout.addWidget(self.diameter)
+
+        self.sign_button.clicked.connect(self._change_focal_length_sign)
+        self.focal_length.value_changed.connect(lambda _value: self._emit_paraxial_changed())
+        self.diameter.value_changed.connect(lambda _value: self._emit_paraxial_changed())
         return layout
+
+    def _change_focal_length_sign(self) -> None:
+        self.focal_length.set_value(-self.focal_length.value())
+        self._emit_paraxial_changed()
+
+    def _emit_paraxial_changed(self) -> None:
+        self.paraxial_changed.emit(*self.paraxial_values_mm())
 
     def _build_user_part_page(self) -> QHBoxLayout:
         """A drop-down of the saved user parts (see ``set_user_parts``)."""
@@ -212,7 +229,7 @@ class ContextBar(QToolBar):
             lambda row: self.user_part_activated.emit(self.user_part_box.itemData(row))
         )
         # The bar's boxes are all one height: a combo box is otherwise taller than a spin box.
-        self.user_part_box.setFixedHeight(self.focal_length_box.sizeHint().height())
+        self.user_part_box.setFixedHeight(self.focal_length.box.sizeHint().height())
         layout.addWidget(self.user_part_box)
         return layout
 
@@ -223,13 +240,14 @@ class ContextBar(QToolBar):
 
     # ------------------------------------------------------------------ values
 
-    def paraxial_focal_length_mm(self) -> float:
-        """The focal length set for the next paraxial lens, in mm (0 is not a lens)."""
-        return self.focal_length_box.value()
+    def paraxial_values_mm(self) -> tuple[float, float]:
+        """The paraxial focal length and diameter shown, in mm (a focal length of 0 is no lens)."""
+        return self.focal_length.value(), self.diameter.value()
 
-    def set_paraxial_focal_length_mm(self, focal_length_mm: float) -> None:
-        """Set the focal length box (emits ``paraxial_focal_length_changed``)."""
-        self.focal_length_box.setValue(focal_length_mm)
+    def set_paraxial_values_mm(self, focal_length_mm: float, diameter_mm: float) -> None:
+        """Show a focal length and diameter, without emitting ``paraxial_changed``."""
+        self.focal_length.set_value(focal_length_mm)
+        self.diameter.set_value(diameter_mm)
 
     def set_user_parts(self, part_labels: list[tuple[str, str]]) -> None:
         """Fill the user part drop-down with (label, part name) pairs, keeping the choice."""

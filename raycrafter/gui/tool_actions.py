@@ -2,9 +2,12 @@
 
 Choosing a tool shows its settings in the context bar and starts it:
 
-- Move: lenses can be dragged, hovered and right-clicked (the default).
-- Add paraxial lens: a ghost of a paraxial lens of the focal length in the context bar
-  follows the pointer; each click places one. Changing the focal length changes the ghost.
+- Move: lenses can be dragged, hovered, right-clicked and selected (the default). While a
+  paraxial lens is selected, the context bar shows its focal length and diameter, and
+  changing them changes the lens at once.
+- Add paraxial lens: a ghost of a paraxial lens of the focal length and diameter in the
+  context bar follows the pointer; each click places one. Changing them changes the ghost.
+  These values for the next lens are kept apart from those of a selected lens.
 - Add user part: the same, for the part chosen in the context bar's drop-down.
 - Add catalogue lens: for now, opens the lens picker; the chosen lens is placed once, then
   the palette goes back to Move. (The picker moves into the main window later, #70.)
@@ -18,13 +21,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from raycrafter.core.placement import PARAXIAL_SEMI_APERTURE_MM
 from raycrafter.gui.lens_picker import LensPickerDialog
 from raycrafter.gui.tool_palette import Tool
 
 if TYPE_CHECKING:
+    from raycrafter.core.state import PlacedLens
     from raycrafter.gui.main_window import MainWindow
 
 DEFAULT_PARAXIAL_FOCAL_LENGTH_MM = 100.0
+DEFAULT_PARAXIAL_DIAMETER_MM = 2.0 * PARAXIAL_SEMI_APERTURE_MM
 
 
 class ToolActions:
@@ -43,13 +49,16 @@ class ToolActions:
         # True while a placement is replaced by a new one: the side view then reports the
         # old one as cancelled, which must not end the tool.
         self.restarting_placement = False
+        # The focal length and diameter (mm) of the next paraxial lens to be placed.
+        self.next_paraxial_mm = (DEFAULT_PARAXIAL_FOCAL_LENGTH_MM, DEFAULT_PARAXIAL_DIAMETER_MM)
 
-        self.bar.set_paraxial_focal_length_mm(DEFAULT_PARAXIAL_FOCAL_LENGTH_MM)
+        self.bar.set_paraxial_values_mm(*self.next_paraxial_mm)
         self.palette.tool_chosen.connect(self.choose_tool)
         self.palette.autofocus_requested.connect(window.run_autofocus)
-        self.bar.paraxial_focal_length_changed.connect(self.on_paraxial_focal_length_changed)
+        self.bar.paraxial_changed.connect(self.on_paraxial_changed)
         self.bar.user_part_activated.connect(lambda _name: self.start_user_part_placement())
         window.side_view.placement_finished.connect(self.on_placement_finished)
+        window.side_view.lens_selected.connect(self.on_lens_selected)
 
     @property
     def tool(self) -> Tool:
@@ -59,9 +68,11 @@ class ToolActions:
     def choose_tool(self, tool: Tool) -> None:
         """Make ``tool`` the active tool: show its settings and start it."""
         self.palette.set_tool(tool)
+        self.window.side_view.set_selected_lens(None)  # selecting is for the Move tool
         self.bar.show_page(tool)
         self._replace_placement(None)  # whatever was being placed belongs to the old tool
         if tool == Tool.ADD_PARAXIAL_LENS:
+            self.bar.set_paraxial_values_mm(*self.next_paraxial_mm)
             self.start_paraxial_lens_placement()
         elif tool == Tool.ADD_USER_PART:
             self.bar.set_user_parts(self.user_part_labels())
@@ -79,18 +90,51 @@ class ToolActions:
     # ------------------------------------------------------------------ placing
 
     def start_paraxial_lens_placement(self) -> None:
-        """A ghost of a paraxial lens of the context bar's focal length follows the pointer."""
-        focal_length_mm = self.bar.paraxial_focal_length_mm()
-        if focal_length_mm == 0.0:
+        """A ghost of a paraxial lens with the context bar's values follows the pointer."""
+        new_lens = self.paraxial_lens_from_bar()
+        if new_lens is None:
             self._replace_placement(None)
             self.window.statusBar().showMessage("Set a focal length other than 0 mm")
             return
-        self._replace_placement([self.window.model.make_paraxial_lens(focal_length_mm)])
+        self._replace_placement([new_lens])
 
-    def on_paraxial_focal_length_changed(self, _focal_length_mm: float) -> None:
-        """A new focal length: the ghost being placed takes it at once."""
+    def paraxial_lens_from_bar(self, z: float = 0.0) -> PlacedLens | None:
+        """A paraxial lens with the context bar's focal length and diameter; None if f is 0."""
+        focal_length_mm, diameter_mm = self.bar.paraxial_values_mm()
+        if focal_length_mm == 0.0:
+            return None
+        return self.window.model.make_paraxial_lens(focal_length_mm, z, diameter_mm)
+
+    def on_paraxial_changed(self, focal_length_mm: float, diameter_mm: float) -> None:
+        """New paraxial values: for the ghost being placed, or for the selected lens."""
+        side_view = self.window.side_view
         if self.tool == Tool.ADD_PARAXIAL_LENS:
-            self.start_paraxial_lens_placement()
+            self.next_paraxial_mm = (focal_length_mm, diameter_mm)
+            ghost = side_view.placement
+            new_lens = self.paraxial_lens_from_bar(ghost.lenses[0].z if ghost else 0.0)
+            if ghost is not None and new_lens is not None:
+                side_view.update_ghost_lenses([new_lens])  # cheap: no new placement
+            else:
+                self.start_paraxial_lens_placement()  # starts or ends the ghost
+            return
+
+        lens_index = side_view.selected_index
+        if lens_index is None or focal_length_mm == 0.0:
+            return  # a focal length of 0 is not a lens: the lens keeps its last one
+        self.window.model.set_paraxial_lens(lens_index, focal_length_mm, diameter_mm)
+        # A run of small steps (a slider drag) is one undo step.
+        self.window.request_update(undo_merge_key=("paraxial lens", lens_index))
+
+    def on_lens_selected(self, lens_index: int | None) -> None:
+        """With Move active, a selected paraxial lens shows its values in the context bar."""
+        if self.tool != Tool.MOVE:
+            return
+        lens = None if lens_index is None else self.window.model.state.lenses[lens_index]
+        if lens is None or lens.paraxial_focal_length_mm is None:
+            self.bar.show_page(Tool.MOVE)
+            return
+        self.bar.set_paraxial_values_mm(lens.paraxial_focal_length_mm, 2.0 * lens.semi_aperture)
+        self.bar.show_page(Tool.ADD_PARAXIAL_LENS)  # the same controls edit the selected lens
 
     def user_part_labels(self) -> list[tuple[str, str]]:
         """(label, name) of each saved user part, read afresh from disk for the drop-down."""

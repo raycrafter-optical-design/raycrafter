@@ -4,8 +4,10 @@ Each field's rays are drawn in the field's colour.
 
 Lenses and the image plane can be dragged along the axis. Hovering a lens darkens it and
 shows its part number; that lens is the target of the right-click menu and the keyboard
-shortcuts (handled by the main window). The view edits the model directly when something
-is dragged, then emits ``changed`` so the main window recomputes and redraws.
+shortcuts (handled by the main window). Clicking a lens selects it (it stays dark), so
+that its settings can be edited in the context bar; clicking empty space clears that.
+The view edits the model directly when something is dragged, then emits ``changed`` so the
+main window recomputes and redraws.
 
 To insert a lens (or a user part), the main window calls ``start_placement``: a dashed ghost
 of the lens then
@@ -99,6 +101,8 @@ class SideView(pg.PlotWidget):
         Placing a lens ended: True if it was put on the bench, False if cancelled.
     drag_finished
         The mouse was released after dragging a lens or the image plane.
+    lens_selected(object)
+        The selected lens changed: its index, or None when no lens is selected.
     """
 
     changed = pyqtSignal()
@@ -107,12 +111,14 @@ class SideView(pg.PlotWidget):
     placement_finished = pyqtSignal(bool)
     drag_finished = pyqtSignal()
     message_requested = pyqtSignal(str)
+    lens_selected = pyqtSignal(object)
 
     def __init__(self, model: OpticalModel) -> None:
         super().__init__()
         self.model = model
         self.lens_graphics: list[LensGraphics] = []  # one entry per lens in the model
         self.hovered_index: int | None = None  # lens under the pointer
+        self.selected_index: int | None = None  # lens last clicked (see set_selected_lens)
         # The lens and field picked in the bench viewer, drawn highlighted (see set_highlight).
         self.highlighted_lens_index: int | None = None
         self.highlighted_field_index: int | None = None
@@ -258,6 +264,7 @@ class SideView(pg.PlotWidget):
         self.lens_graphics = []
         self.hovered_index = None
         self.highlighted_lens_index = None  # the lens list changed, so the index may be wrong
+        self.set_selected_lens(None)  # likewise
 
         side = self.getPlotItem()
         for lens in self.model.state.lenses:
@@ -487,11 +494,11 @@ class SideView(pg.PlotWidget):
 
     def lens_colour(self, index: int) -> str:
         """Blue (purple in an assembly); darker when it, or a lens joined to it by locked
-        gaps, is under the pointer or highlighted in the bench viewer."""
+        gaps, is under the pointer, selected or highlighted in the bench viewer."""
         in_assembly = self.model.state.lenses[index].assembly_id is not None
         # Lenses joined by locked gaps move as one, so they are highlighted as one.
         darkened = []
-        for marked_index in (self.hovered_index, self.highlighted_lens_index):
+        for marked_index in (self.hovered_index, self.selected_index, self.highlighted_lens_index):
             if marked_index is not None and marked_index < len(self.model.state.lenses):
                 darkened += self.model.block_indices(marked_index)
         if index in darkened:
@@ -503,6 +510,15 @@ class SideView(pg.PlotWidget):
         for index, (lens, graphics) in enumerate(zip(self.model.state.lenses, self.lens_graphics)):
             graphics.update(lens, self.lens_colour(index))
         self.place_name_tag()
+
+    def set_selected_lens(self, lens_index: int | None) -> None:
+        """Select a lens (None: no lens), redraw the colours and emit ``lens_selected``."""
+        if lens_index == self.selected_index:
+            return
+        self.selected_index = lens_index
+        if len(self.lens_graphics) == len(self.model.state.lenses):
+            self.refresh_lens_colours()
+        self.lens_selected.emit(lens_index)
 
     def set_hovered_lens(self, lens_index: int | None) -> None:
         """Remember which lens the pointer is over and recolour the lenses if that changed."""
@@ -724,7 +740,8 @@ class SideView(pg.PlotWidget):
         self.place_name_tag()
 
     def on_scene_clicked(self, event) -> None:
-        """A left click types a gap, or while placing puts the lenses where their ghost is."""
+        """A left click types a gap or selects a lens; while placing, it puts the new lenses
+        where their ghost is."""
         if event.button() != Qt.MouseButton.LeftButton:
             return
         placement = self.placement
@@ -735,6 +752,9 @@ class SideView(pg.PlotWidget):
                 # moving at the end of the release otherwise reached the new box as a
                 # focus-out, which accepts and closes it at once.
                 QTimer.singleShot(0, lambda: self.open_gap_editor(gap))
+                return
+            view_point = self.getPlotItem().vb.mapSceneToView(event.scenePos())
+            self.set_selected_lens(self.lens_index_at(view_point))
             return
         self.move_ghost(placement, event.scenePos())  # the ghost may lag a fast click
         if not (placement.fits and placement.is_visible()):
@@ -746,6 +766,14 @@ class SideView(pg.PlotWidget):
         self.rebuild_lens_graphics()
         self.changed.emit()
         self.placement_finished.emit(True)
+
+    def update_ghost_lenses(self, new_lenses: list[PlacedLens]) -> None:
+        """Swap the lenses being placed for ones of the same kind (e.g. a new focal length)."""
+        if self.placement is None:
+            return
+        self.placement.lenses = new_lenses
+        self.placement.draw()
+        self.place_name_tag()
 
     def cancel_placement(self) -> None:
         """Stop placing a lens without adding it (Escape or right click)."""
@@ -822,6 +850,8 @@ class SideView(pg.PlotWidget):
             # so the item being dragged keeps showing the lens it belongs to.
             self.lens_graphics = [self.lens_graphics[old_index] for old_index in new_order]
             self.hovered_index = new_order.index(index)
+            if self.selected_index is not None:
+                self.selected_index = new_order.index(self.selected_index)
             if self.highlighted_lens_index is not None:
                 self.highlighted_lens_index = new_order.index(self.highlighted_lens_index)
         self.changed.emit()
