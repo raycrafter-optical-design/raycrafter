@@ -93,6 +93,9 @@ class LensPickerDialog(QDialog):
         # Which groups are open, as "category" or "category|diameter" keys. Kept across
         # rebuilds of the tree, so filtering does not collapse what the user opened.
         self.expanded_group_keys: set[str] = set()
+        # True while choosing a lens of the same focal length: the list is short, so every
+        # group is opened and the user only has to scroll (see prepare_for_replacement).
+        self.open_every_group = False
 
         self._build_widgets()
         self._connect_signals()
@@ -201,8 +204,12 @@ class LensPickerDialog(QDialog):
         ``replacement.SAME_FOCAL_LENGTH_TOLERANCE`` of it are shown ("Replace with same f");
         with None, the focal length and sign filters are cleared ("Swap lens"). The search
         text is cleared too, and the coating filter left as the user last set it.
+
+        With a focal length, every group of the tree is opened, so the user only has to
+        scroll to choose; with None (the whole catalogue) they start closed.
         """
         self.setWindowTitle(f"Replace {part_number}")
+        self.expanded_group_keys.clear()
         self.search_box.blockSignals(True)  # one refresh at the end, not one per change
         self.hide_positive_checkbox.blockSignals(True)
         self.hide_negative_checkbox.blockSignals(True)
@@ -220,6 +227,7 @@ class LensPickerDialog(QDialog):
         self.search_box.blockSignals(False)
         self.hide_positive_checkbox.blockSignals(False)
         self.hide_negative_checkbox.blockSignals(False)
+        self.open_every_group = focal_length_mm is not None
         self.refresh()
 
     # ------------------------------------------------------------------ results
@@ -320,12 +328,14 @@ class LensPickerDialog(QDialog):
     def rebuild_tree(self, shown_entries: list[CatalogEntry]) -> None:
         """Replace the tree's rows with the given lenses, keeping open groups and selection.
 
-        While a search text is typed, or only a few lenses are shown, every group is opened,
-        so the matches are visible.
+        While a search text is typed, while choosing a lens of the same focal length, or when
+        only a few lenses are shown, every group is opened, so the matches are visible.
         """
         previously_selected = self.selected_part_number()
         expand_everything = (
-            bool(self.lens_filter.part_number_text.strip()) or len(shown_entries) < EXPAND_ALL_BELOW
+            self.open_every_group
+            or bool(self.lens_filter.part_number_text.strip())
+            or len(shown_entries) < EXPAND_ALL_BELOW
         )
 
         self.tree.blockSignals(True)  # no expand/collapse or selection signals while rebuilding

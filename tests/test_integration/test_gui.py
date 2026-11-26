@@ -1031,6 +1031,7 @@ def test_replacing_a_lens_from_the_lens_menu(application, monkeypatch):
         focal_lengths = [float(item.text(1)) for item in shown.values()]
         assert focal_lengths and all(180.0 <= f <= 220.0 for f in focal_lengths)
         assert not any(part.endswith("-B") or part.endswith("-C") for part in shown)
+        assert all(item.isExpanded() for item in picker._group_items())  # just scroll to choose
         assert picker.select_part_number("AC254-200-A")
         return LensPickerDialog.DialogCode.Accepted
 
