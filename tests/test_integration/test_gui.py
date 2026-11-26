@@ -694,3 +694,107 @@ def test_undo_keys_work_from_a_field_box_and_spun_values_undo_together(applicati
     application.processEvents()
     assert box.value() == pytest.approx(0.3)
     window.close()
+
+
+def click_gap_label(window, lens_index: int) -> None:
+    centre = window.side_view.gap_dimensions.label_scene_centre(lens_index)
+    window.side_view.on_scene_clicked(FakeClick(centre))
+
+
+def test_clicking_a_gap_and_typing_sets_it(application):
+    window = MainWindow()
+    window.show()
+    window.model.add_lens("ACT508-200-A")
+    window.side_view.rebuild_lens_graphics()
+    window.request_update()
+    application.processEvents()
+    side_view = window.side_view
+    image_gap_before = window.model.air_gaps()[1].width_mm
+
+    click_gap_label(window, 0)
+    editor = side_view.gap_editor
+    assert editor is not None and editor.value() == pytest.approx(10.0)
+    editor.selectAll()
+    QTest.keyClicks(editor, "42.5")  # includes no key that deletes or flips a lens
+    QTest.keyClick(editor, Qt.Key.Key_Return)
+    application.processEvents()
+    assert side_view.gap_editor is None
+    assert window.model.air_gaps()[0].width_mm == pytest.approx(42.5)
+    assert window.model.air_gaps()[1].width_mm == pytest.approx(image_gap_before)
+    assert side_view.gap_dimensions.labels[0].toPlainText() == "42.50 mm"
+
+    window.undo()
+    application.processEvents()
+    assert window.model.air_gaps()[0].width_mm == pytest.approx(10.0)
+    window.close()
+
+
+def test_escape_abandons_a_typed_gap_and_backspace_edits_the_text(application):
+    window = MainWindow()
+    window.show()
+    window.activateWindow()
+    application.processEvents()
+    before = window.model.air_gaps()[0].width_mm
+
+    click_gap_label(window, 0)
+    editor = window.side_view.gap_editor
+    window.side_view.hovered_index = 0  # Backspace would delete this lens if it reached it
+    QTest.keyClick(editor, Qt.Key.Key_Backspace)
+    QTest.keyClick(editor, Qt.Key.Key_Escape)
+    application.processEvents()
+    assert window.side_view.gap_editor is None
+    assert len(window.model.state.lenses) == 1
+    assert window.model.air_gaps()[0].width_mm == before
+    window.close()
+
+
+def test_accepting_an_untouched_gap_moves_nothing(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    before = window.model.state.image_z  # from autofocus, so it has many decimals
+
+    click_gap_label(window, 0)
+    window.side_view.gap_editor.accept_value()
+    assert window.model.state.image_z == before
+    window.close()
+
+
+def test_fixed_and_impossible_gaps_say_why(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+
+    window.side_view.set_gap(0, 0.0)  # the image plane cannot touch the lens
+    assert "at least" in window.statusBar().currentMessage()
+
+    window.lock_focus_checkbox.setChecked(True)
+    application.processEvents()
+    click_gap_label(window, 0)
+    assert window.side_view.gap_editor is None
+    assert "Lock focus" in window.statusBar().currentMessage()
+    window.close()
+
+
+def test_real_mouse_clicks_open_a_gap_and_clicking_away_accepts_it(application):
+    window = MainWindow()
+    window.show()
+    window.activateWindow()
+    application.processEvents()
+    side_view = window.side_view
+    label_centre = side_view.gap_dimensions.label_scene_centre(0)
+    on_label = side_view.mapFromScene(label_centre)
+
+    QTest.mouseClick(side_view.viewport(), Qt.MouseButton.LeftButton, pos=on_label)
+    application.processEvents()
+    editor = side_view.gap_editor
+    assert editor is not None and editor.hasFocus()
+    editor.selectAll()
+    QTest.keyClicks(editor, "150")
+
+    elsewhere = side_view.mapFromScene(scene_point_on_axis(side_view, 30.0))
+    QTest.mouseClick(side_view.viewport(), Qt.MouseButton.LeftButton, pos=elsewhere)
+    application.processEvents()
+    assert side_view.gap_editor is None
+    assert window.model.air_gaps()[0].width_mm == pytest.approx(150.0)
+    window.close()

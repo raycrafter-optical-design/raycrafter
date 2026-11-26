@@ -255,3 +255,11 @@ succession merge into one step. New and Load clear the history.
 **Why:** Snapshots cover anything later added to the state (locks, goals) with no extra code,
 and are cheap. Merging stops a spun number box making dozens of steps. Clearing on New and
 Load is simplest, and unsaved changes are already asked about. Merge and clearing: Rob agreed.
+
+## 2026-11-26: Typed gaps are refused rather than adjusted (#35)
+**Decision:** A gap that is too small (surfaces would overlap, or under 1 mm to the image) is
+refused and the minimum is shown. With "Lock focus" on, the gap to the image plane cannot be
+typed. The gap inside a Plossl pair is shown but fixed. Dragging is unchanged, so it can still
+overlap concave lenses at the rim.
+**Why:** Silently changing a typed number would mislead, and "Lock focus" would overwrite a
+typed image gap at once. The Plossl and dragging rules follow the issue. Rob agreed.

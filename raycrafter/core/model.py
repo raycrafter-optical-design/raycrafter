@@ -2,7 +2,7 @@
 
 ``OpticalModel`` owns the bench state (``raycrafter.core.state``) and the list of lenses
 that can be placed. It provides the editing operations: add, insert, delete, move and swap
-lenses, make or split Plossl pairs, add or remove fields, and
+lenses, set the air gaps between them, make or split Plossl pairs, add or remove fields, and
 undo and redo. It also gives access to the analyses (``raycrafter.core.analysis``) and to
 Zemax import and export, applied to its current state. It has no Qt code.
 
@@ -22,9 +22,9 @@ from dataclasses import replace
 
 import numpy as np
 
-from raycrafter.core import analysis, optic_builder, zmx_import
+from raycrafter.core import analysis, gaps, optic_builder, zmx_import
 from raycrafter.core.history import UndoHistory
-from raycrafter.core.prescription import prescription_from_zmx_text, surface_sag
+from raycrafter.core.prescription import prescription_from_zmx_text
 from raycrafter.core.state import AXIS_START_Z, BeamField, OpticalState, PlacedLens
 from raycrafter.lenscatalog import thorlabs
 from raycrafter.lenscatalog.catalog import CatalogEntry
@@ -201,7 +201,7 @@ class OpticalModel:
         new_index = sum(1 for lens in lenses if lens.z < new_lens.z)
         lenses.insert(new_index, new_lens)
 
-        minimum_image_z = self.state.last_back_z() + 1.0
+        minimum_image_z = self.state.last_back_z() + gaps.MIN_IMAGE_GAP_MM
         if self.state.image_z < minimum_image_z:
             pushed_image_z = min(new_lens.back_z + IMAGE_CLEARANCE_MM, max_image_z)
             self.state.image_z = max(pushed_image_z, minimum_image_z)
@@ -221,6 +221,16 @@ class OpticalModel:
         lens = self.state.lenses[lens_index]
         if lens.group_id is None and not lens.is_paraxial:
             lens.flipped = not lens.flipped
+
+    # ---------------------------------------------------------------- air gaps
+
+    def air_gaps(self) -> list[gaps.AirGap]:
+        """The air gap behind every lens (see ``gaps.air_gaps``)."""
+        return gaps.air_gaps(self.state)
+
+    def set_gap(self, lens_index: int, gap_mm: float) -> None:
+        """Set the gap behind a lens, moving everything downstream (see ``gaps.set_gap``)."""
+        gaps.set_gap(self.state, lens_index, gap_mm)
 
     # ---------------------------------------------------------------- moving
 
@@ -274,7 +284,7 @@ class OpticalModel:
         if last < len(lenses) - 1:
             next_front_z = lenses[last + 1].z
         else:
-            next_front_z = self.state.image_z - 1.0
+            next_front_z = self.state.image_z - gaps.MIN_IMAGE_GAP_MM
         highest_front_z = next_front_z - group_width
 
         shift_min = lowest_front_z - lenses[first].z
@@ -372,7 +382,8 @@ class OpticalModel:
         shift = right.z - original_right_z
         for downstream in lenses[right_index + 1 :]:
             downstream.z += shift
-        self.state.image_z = max(self.state.image_z + shift, self.state.last_back_z() + 1.0)
+        minimum_image_z = self.state.last_back_z() + gaps.MIN_IMAGE_GAP_MM
+        self.state.image_z = max(self.state.image_z + shift, minimum_image_z)
 
         left.group_id = right.group_id = self.state.next_group_id
         self.state.next_group_id += 1
@@ -381,16 +392,11 @@ class OpticalModel:
     def _plossl_front_z(left: PlacedLens, right: PlacedLens) -> float:
         """Front-vertex z for ``right`` so the facing surfaces are PLOSSL_GAP_MM apart at closest.
 
-        The facing surfaces are the back of ``left`` and the front of ``right`` in their
-        current orientations. The gap is measured along z at each height across the smaller
-        clear aperture, and the smallest value (at the vertices for two convex surfaces,
-        nearer the rim if either is concave) is set to the required gap.
+        The gap is measured along z across the smaller clear aperture, and its smallest value
+        (at the vertices for two convex surfaces, nearer the rim if either is concave) is set
+        to the required gap.
         """
-        heights = np.linspace(0.0, min(left.semi_aperture, right.semi_aperture), 200)
-        back_sag = surface_sag(left.surfaces_in_use()[-1].radius, heights)
-        front_sag = surface_sag(right.surfaces_in_use()[0].radius, heights)
-        gap_if_vertices_touched = front_sag - back_sag
-        return left.back_z + PLOSSL_GAP_MM - float(gap_if_vertices_touched.min())
+        return left.back_z + PLOSSL_GAP_MM - gaps.closest_sag_difference_mm(left, right)
 
     def split_plossl(self, lens_index: int) -> None:
         """Dissolve the lens's group so its lenses move independently again."""

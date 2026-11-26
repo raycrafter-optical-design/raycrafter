@@ -327,9 +327,13 @@ def _system_summary(state: OpticalState, optic: Optic) -> SystemSummary | None:
     if not state.lenses:
         return None
     paraxial = optic.paraxial
-    back_focal_point_z = state.image_z + float(paraxial.F2())
+    # An afocal system (e.g. two lenses a typed gap apart that makes a beam expander) has no
+    # focal point: both lengths are then infinite, which is the answer rather than a fault.
+    with np.errstate(divide="ignore"):
+        back_focal_point_z = state.image_z + float(paraxial.F2())
+        effective_focal_length = float(paraxial.f2())
     return SystemSummary(
-        effective_focal_length=float(paraxial.f2()),
+        effective_focal_length=effective_focal_length,
         back_focal_length=float(back_focal_point_z - state.last_back_z()),
     )
 

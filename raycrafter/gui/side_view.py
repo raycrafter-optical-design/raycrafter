@@ -11,6 +11,9 @@ To insert a lens, the main window calls ``start_placement``: a dashed ghost of t
 follows the pointer along the axis, snapped to the nearest gap it fits in (red where it fits
 nowhere). A left click puts it on the bench; Escape or a right click cancels.
 
+The air gaps are dimensioned along the bottom (``raycrafter.gui.gap_dimensions``). Clicking
+a dimension opens a box in which to type the gap.
+
 A paraxial (ideal thin) lens is drawn as a line with arrowheads. It has no thickness, so it
 can be hovered and dragged a few pixels either side of its line.
 """
@@ -26,6 +29,7 @@ from PyQt6.QtGui import QBrush, QColor, QCursor, QFont, QPainter, QTextOption
 
 from raycrafter import palette
 from raycrafter.core.analysis import RayPaths
+from raycrafter.core.gaps import MIN_IMAGE_GAP_MM, AirGap
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import (
     DEFAULT_AXIS_Y_RANGE,
@@ -36,6 +40,7 @@ from raycrafter.core.plot_geometry import (
     ray_polylines,
 )
 from raycrafter.core.state import PlacedLens
+from raycrafter.gui.gap_dimensions import GapDimensions, GapEditor
 from raycrafter.gui.style import (
     PLOT_BOTTOM_GAP_PX,
     colour_with_alpha,
@@ -44,7 +49,6 @@ from raycrafter.gui.style import (
     style_plot,
 )
 
-MIN_IMAGE_GAP_MM = 1.0  # the image plane stays at least this far behind the last lens
 SIDE_PLOT_MIN_HEIGHT_PX = 240  # the side view is never squeezed below this height
 SIDE_PLOT_TOP_GAP_PX = 8  # space between the top edge and the top of the y axis
 SIDE_GRID_CELL_PX = 40  # grid cells are this many screen pixels on each side
@@ -258,7 +262,10 @@ class SideView(pg.PlotWidget):
     Signals
     -------
     changed
-        A lens or the image plane was dragged; the model has already been updated.
+        A lens or the image plane was dragged, a lens was placed or a gap was typed; the
+        model has already been updated.
+    message_requested(str)
+        Something to tell the user, e.g. why a gap cannot be changed.
     lens_menu_requested(int, QPoint)
         The user right-clicked lens ``index`` at the given global screen position.
     placement_finished(bool)
@@ -271,6 +278,7 @@ class SideView(pg.PlotWidget):
     lens_menu_requested = pyqtSignal(int, QPoint)
     placement_finished = pyqtSignal(bool)
     drag_finished = pyqtSignal()
+    message_requested = pyqtSignal(str)
 
     def __init__(self, model: OpticalModel) -> None:
         super().__init__()
@@ -286,6 +294,7 @@ class SideView(pg.PlotWidget):
         )
 
         self.placement: Placement | None = None  # set while a new lens follows the pointer
+        self.gap_editor: GapEditor | None = None  # set while a gap is being typed
 
         # The (min, max) of each axis, in mm; changed only by fit_to_design.
         self.z_range: tuple[float, float] = DEFAULT_AXIS_Z_RANGE
@@ -305,6 +314,7 @@ class SideView(pg.PlotWidget):
         self._add_items(side)
 
         side.vb.sigResized.connect(self.update_grid)
+        side.vb.sigResized.connect(self.on_view_resized)
         self.image_line.sigPositionChanged.connect(self.on_image_dragged)
         # The signal passes the line itself; drag_finished takes no arguments.
         self.image_line.sigPositionChangeFinished.connect(lambda _line: self.drag_finished.emit())
@@ -326,6 +336,7 @@ class SideView(pg.PlotWidget):
         side.addItem(self.grid_curve)
 
         self.ray_curves: list[pg.PlotCurveItem] = []  # one per field, made in update_view
+        self.gap_dimensions = GapDimensions(side)
 
         self.image_line = pg.InfiniteLine(
             angle=90,
@@ -396,6 +407,7 @@ class SideView(pg.PlotWidget):
 
     def rebuild_lens_graphics(self) -> None:
         """Recreate one set of graphics items per lens (after the lens list changes)."""
+        self.close_gap_editor()  # its lens index may now mean another lens
         for graphics in self.lens_graphics:
             graphics.remove()
         self.lens_graphics = []
@@ -413,7 +425,7 @@ class SideView(pg.PlotWidget):
             self.lens_graphics.append(graphics)
 
     def update_view(self, field_paths: list[RayPaths]) -> None:
-        """Redraw the rays, every lens and the image line from the current model state.
+        """Redraw the rays, lenses, gaps and image line from the current model state.
 
         Parameters
         ----------
@@ -438,6 +450,7 @@ class SideView(pg.PlotWidget):
         self.place_image_label()
 
         self.refresh_lens_colours()
+        self.update_gap_dimensions()
 
     def restyle_ray_curves(self) -> None:
         """Draw each field's rays in its colour, thicker (and on top) if it is highlighted."""
@@ -510,6 +523,60 @@ class SideView(pg.PlotWidget):
             y_points += [y_position, y_position, np.nan]
 
         self.grid_curve.setData(np.array(x_points), np.array(y_points))
+
+    # ------------------------------------------------------------------ gaps
+
+    def update_gap_dimensions(self) -> None:
+        """Redraw the dimension of every air gap."""
+        self.gap_dimensions.update(
+            self.model.air_gaps(), lambda gap: self.why_gap_is_fixed(gap) is None
+        )
+
+    def on_view_resized(self, *_args) -> None:
+        """The dimensions are placed in screen pixels, so a new size moves them."""
+        self.close_gap_editor()
+        self.update_gap_dimensions()
+
+    def why_gap_is_fixed(self, gap: AirGap) -> str | None:
+        """Why this gap cannot be typed, in words for the user; None if it can."""
+        if gap.in_plossl_pair:
+            return "The gap inside a Plossl pair is fixed: split the pair to change it"
+        if gap.to_image and self.image_line_locked:
+            return '"Lock focus" sets the distance to the image plane: turn it off to type it'
+        return None
+
+    def open_gap_editor(self, gap: AirGap) -> None:
+        """Show the box for typing this gap, or say why it cannot be changed."""
+        self.close_gap_editor()  # which may apply a value, so read the gap afresh
+        gap = self.model.air_gaps()[gap.lens_index]
+        reason = self.why_gap_is_fixed(gap)
+        if reason is not None:
+            self.message_requested.emit(reason)
+            return
+        scene_centre = self.gap_dimensions.label_scene_centre(gap.lens_index)
+        centre = QPointF(self.mapFromScene(scene_centre))
+        self.gap_editor = GapEditor(gap, centre, parent=self.viewport())
+        self.gap_editor.accepted.connect(self.set_gap)
+        self.gap_editor.closed.connect(self.on_gap_editor_closed)
+
+    def close_gap_editor(self) -> None:
+        """Remove the gap box, if open, without applying it."""
+        if self.gap_editor is not None:
+            self.gap_editor.close_editor()
+
+    def on_gap_editor_closed(self) -> None:
+        self.gap_editor = None
+
+    def set_gap(self, lens_index: int, gap_mm: float) -> None:
+        """Apply a typed gap to the model, or say why it is not allowed."""
+        try:
+            self.model.set_gap(lens_index, gap_mm)
+        except ValueError as error:
+            self.message_requested.emit(str(error))
+            return
+        self.changed.emit()
+
+    # ------------------------------------------------------------------ Plossl preview
 
     def show_plossl_preview(self, lens_index: int) -> None:
         """Outline, dashed red, the lens and the neighbour it would form a Plossl pair with."""
@@ -654,10 +721,13 @@ class SideView(pg.PlotWidget):
             return
 
         view_point = self.getPlotItem().vb.mapSceneToView(scene_position)
-        hovered_index = self.lens_index_at(view_point)
+        gap = self.gap_dimensions.gap_at(scene_position)
+        hovered_index = None if gap is not None else self.lens_index_at(view_point)
         self.set_hovered_lens(hovered_index)
 
-        if hovered_index is not None or self.is_over_image_line(scene_position):
+        if gap is not None and self.why_gap_is_fixed(gap) is None:
+            self.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
+        elif hovered_index is not None or self.is_over_image_line(scene_position):
             self.viewport().setCursor(Qt.CursorShape.SizeHorCursor)
         else:
             self.viewport().unsetCursor()
@@ -683,6 +753,7 @@ class SideView(pg.PlotWidget):
         dragged meanwhile, so a click near one places the new lens rather than moving it.
         """
         self.cancel_placement()  # in case a previous placement is still going on
+        self.close_gap_editor()
         ghost = LensShape(self.getPlotItem(), paraxial=new_lens.is_paraxial)
         ghost.set_z_value(GHOST_Z_VALUE)
         ghost.set_visible(False)  # shown once the pointer is over the plot
@@ -724,9 +795,14 @@ class SideView(pg.PlotWidget):
         self.place_name_tag()
 
     def on_scene_clicked(self, event) -> None:
-        """While placing: a left click puts the lens where its ghost is, if it fits there."""
+        """A left click types a gap, or while placing puts the lens where its ghost is."""
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
         placement = self.placement
-        if placement is None or event.button() != Qt.MouseButton.LeftButton:
+        if placement is None:
+            gap = self.gap_dimensions.gap_at(event.scenePos())
+            if gap is not None:
+                self.open_gap_editor(gap)
             return
         self.move_ghost(placement, event.scenePos())  # the ghost may lag a fast click
         if not (placement.fits and placement.ghost.is_visible()):
@@ -783,6 +859,7 @@ class SideView(pg.PlotWidget):
         # graphics were rebuilt (e.g. Del pressed mid-drag); that lens is no longer shown.
         if graphics not in self.lens_graphics:
             return
+        self.close_gap_editor()
         self.lens_drag_active = True
         index = self.lens_graphics.index(graphics)
         new_order = self.model.move_lens(index, graphics.requested_front_z())
@@ -807,6 +884,7 @@ class SideView(pg.PlotWidget):
 
     def on_image_dragged(self) -> None:
         """The image line was dragged: keep it behind the last lens and inside the view."""
+        self.close_gap_editor()
         state = self.model.state
         minimum_z = state.last_back_z() + MIN_IMAGE_GAP_MM if state.lenses else self.z_range[0]
         state.image_z = float(np.clip(self.image_line.value(), minimum_z, self.image_max_z()))

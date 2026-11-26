@@ -24,6 +24,9 @@ FAINT = "#ced4da"  # zero lines and borders
 AXIS_LINE = "#adb5bd"  # dashed optical axis in the side view
 SIDE_GRID = "#e9ecef"  # faint square grid behind the side view
 TIMING = "#adb5bd"  # trace/draw timing text
+GAP_LINE = "#868e96"  # gap dimension lines in the side view
+GAP_EDITABLE = "#1c4f9c"  # label of a gap that can be typed
+GAP_FIXED = "#868e96"  # label of a gap that cannot (Plossl pair, or "Lock focus")
 CANVAS_BORDER = "#adb5bd"  # thin frame around each plot
 
 # Colours for telling field angles apart, in the order Zemax uses (blue, green, red, ...),

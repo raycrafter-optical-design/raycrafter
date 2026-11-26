@@ -1,9 +1,9 @@
 """Scripting RayCrafter from Python: ``Bench``, a lens bench you drive with method calls.
 
-A ``Bench`` can do everything the GUI and the AI agent tools can: search the lens catalogue,
-place, move, flip and delete lenses, make Plossl pairs, edit the fields (beams), move the image
-plane, autofocus, run the analyses, draw the plots, write the HTML report, and load and save
-Zemax .zmx files. It does not import Qt.
+A ``Bench`` can do everything the GUI (except undo) and the AI agent tools can: search the lens
+catalogue, place, move, flip and delete lenses, set the gaps between them, make Plossl pairs,
+edit the fields (beams), move the image plane, autofocus, run the analyses, draw the plots,
+write the HTML report, and load and save Zemax .zmx files. It does not import Qt.
 
 There are two kinds of bench:
 
@@ -68,7 +68,7 @@ from typing import cast
 
 from matplotlib.figure import Figure
 
-from raycrafter.core import analysis
+from raycrafter.core import analysis, gaps
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.state import OpticalState, state_from_dict
 from raycrafter.lenscatalog import thorlabs
@@ -111,6 +111,9 @@ class LensInfo:
         Lenses that share a number form a Plossl pair and move together.
     is_paraxial : bool
         True for an ideal, aberration-free thin lens.
+    gap_after_mm : float
+        Air gap from the back vertex to the next lens's front vertex, or to the image plane
+        for the last lens (see ``Bench.set_gap``).
     """
 
     index: int
@@ -123,6 +126,7 @@ class LensInfo:
     flipped: bool
     plossl_group: int | None
     is_paraxial: bool
+    gap_after_mm: float
 
 
 @dataclass(frozen=True)
@@ -487,6 +491,32 @@ class Bench:
         """
         result = self._call("move_lens", lens_index=int(lens_index), front_z_mm=float(front_z_mm))
         return self.lenses[result["moved_lens_index"]]
+
+    def set_gap(self, lens_index: int, gap_mm: float) -> LensInfo:
+        """Set the air gap behind a lens and return that lens's snapshot.
+
+        The gap runs from the lens's back vertex to the next lens's front vertex, or to the
+        image plane behind the last lens. All later lenses and the image plane shift
+        together, so no other gap changes.
+
+        Raises
+        ------
+        ValueError
+            If there is no such lens, the gap is inside a Plossl pair, or it is so small
+            that the surfaces would overlap (the image plane needs at least 1 mm).
+
+        Example
+        -------
+        >>> bench = Bench(empty=True)
+        >>> _ = bench.add_paraxial_lens(100.0)
+        >>> _ = bench.add_paraxial_lens(50.0)
+        >>> bench.set_gap(0, 150.0).gap_after_mm
+        150.0
+        >>> bench.lenses[1].front_z_mm
+        250.0
+        """
+        self._call("set_gap", lens_index=int(lens_index), gap_mm=float(gap_mm))
+        return self.lenses[int(lens_index)]
 
     def flip_lens(self, lens_index: int) -> LensInfo:
         """Turn a lens round and return its snapshot.
@@ -905,6 +935,7 @@ class Bench:
             flipped=lens.flipped,
             plossl_group=lens.group_id,
             is_paraxial=lens.is_paraxial,
+            gap_after_mm=float(gaps.air_gaps(state)[index].width_mm),
         )
 
     @staticmethod

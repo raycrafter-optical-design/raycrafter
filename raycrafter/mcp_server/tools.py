@@ -44,6 +44,7 @@ EDITING_TOOL_NAMES = [  # these change the design, so a window must redraw after
     "insert_lens",
     "add_paraxial_lens",
     "move_lens",
+    "set_gap",
     "flip_lens",
     "delete_lens",
     "make_plossl",
@@ -98,14 +99,20 @@ class DesignTools:
     # ------------------------------------------------------------------ reading
 
     def get_design(self) -> dict:
-        """The whole design: lenses along the axis, fields, image plane, unsaved flag."""
+        """The whole design: lenses along the axis, fields, image plane, unsaved flag.
+
+        Each lens's ``gap_after_mm`` is the air gap from its back vertex to the next lens's
+        front vertex, or to the image plane behind the last lens.
+        """
         state = self.model.state
+        gaps = self.model.air_gaps()
         lenses = [
             {
                 "index": index,
                 "part_number": lens.part_number,
                 "front_z_mm": _number(lens.z),
                 "back_z_mm": _number(lens.back_z),
+                "gap_after_mm": _number(gaps[index].width_mm),
                 "semi_aperture_mm": _number(lens.semi_aperture),
                 "flipped": lens.flipped,
                 "plossl_group": lens.group_id,
@@ -304,6 +311,17 @@ class DesignTools:
         new_order = self.model.move_lens(lens_index, front_z_mm)
         moved_lens_index = lens_index if new_order is None else new_order.index(lens_index)
         return {**self.get_design(), "moved_lens_index": moved_lens_index}
+
+    def set_gap(self, lens_index: int, gap_mm: float) -> dict:
+        """Set the air gap behind a lens: back vertex to the next front vertex.
+
+        Behind the last lens it is the distance to the image plane. All later lenses and the
+        image plane shift together, so no other gap changes. The gap inside a Plossl pair is
+        fixed, and surfaces may not overlap.
+        """
+        self._check_lens_index(lens_index)
+        self.model.set_gap(lens_index, gap_mm)
+        return self.get_design()
 
     def flip_lens(self, lens_index: int) -> dict:
         """Turn a lens round. Has no effect on paraxial lenses or lenses in a Plossl pair."""

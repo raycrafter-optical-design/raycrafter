@@ -34,6 +34,7 @@ EDITS = {
     "flip a lens": lambda model: model.flip_lens(0),
     "move a lens": lambda model: model.move_lens(0, 60.0),
     "swap lenses": lambda model: (model.flip_lens(0), model.move_lens(0, 300.0)),
+    "set a gap": lambda model: model.set_gap(0, 25.0),
     "pair lenses": lambda model: model.make_plossl(0),
     "add a field": lambda model: model.add_field(),
     "edit a field": lambda model: setattr(model.state.selected_field, "angle_deg", 2.0),

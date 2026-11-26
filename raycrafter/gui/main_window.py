@@ -6,7 +6,8 @@
   the box beside it.
 - Hover a lens and it turns a darker shade; that is the lens the actions apply to. Drag a
   lens to slide it along the axis; drag it past a neighbour's centre to swap them. Drag the
-  green line to move the image plane (not while "Lock focus" is on).
+  green line to move the image plane (not while "Lock focus" is on). Click one of the gap
+  dimensions below the lenses to type that distance.
 - Right-click a lens for Flip (F), Delete (Del or Backspace) and Make / Split Plossl.
 - The RayCrafter menu has About and Quit; the File menu has New, Load ZMX and Save ZMX.
   New, Load and Quit ask first if the design has changed since it was last saved or loaded.
@@ -55,6 +56,7 @@ from PyQt6.QtWidgets import (
 
 from raycrafter import palette
 from raycrafter.core.analysis import FastTrace, airy_radius
+from raycrafter.core.gaps import MIN_IMAGE_GAP_MM
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
 from raycrafter.core.state import PlacedLens
@@ -71,7 +73,7 @@ from raycrafter.gui.analysis_panels import (
 from raycrafter.gui.bench_viewer import BenchViewer
 from raycrafter.gui.field_editor import FieldEditor
 from raycrafter.gui.lens_picker import LensPickerDialog
-from raycrafter.gui.side_view import MIN_IMAGE_GAP_MM, SideView
+from raycrafter.gui.side_view import SideView
 from raycrafter.gui.style import style_sheet
 from raycrafter.gui.undo_keys import leave_undo_keys_to_window
 from raycrafter.report import write_and_open_report
@@ -87,6 +89,7 @@ PARAXIAL_FOCAL_LENGTH_RANGE_MM = (-2000, 2000)
 FOCAL_LENGTH_BOX_WIDTH_PX = 82  # room for "-2000 mm" and the arrows, leaving the rest to buttons
 NARROW_BUTTON_STYLE = "padding: 6px 8px;"  # a button only as wide as its text needs
 HINT_MIN_HEIGHT_PX = 52  # height reserved for the help text at the foot of the control panel
+STATUS_MESSAGE_MS = 5000
 
 
 class MainWindow(QMainWindow):
@@ -216,7 +219,7 @@ class MainWindow(QMainWindow):
         # Reminder of where the per-lens actions are, since they are not buttons.
         hint_label = QLabel(
             "Right-click a lens to flip it (F), delete it (Del) or make a Plossl pair. "
-            "Drag a lens past its neighbour to swap their order."
+            "Drag a lens past its neighbour to swap their order. Click a gap to type it."
         )
         hint_label.setObjectName("hintLabel")
         hint_label.setWordWrap(True)
@@ -330,6 +333,9 @@ class MainWindow(QMainWindow):
         self.side_view.changed.connect(self.request_update)
         self.side_view.lens_menu_requested.connect(self.show_lens_menu)
         self.side_view.placement_finished.connect(self.on_placement_finished)
+        self.side_view.message_requested.connect(
+            lambda message: self.statusBar().showMessage(message, STATUS_MESSAGE_MS)
+        )
 
         # Releasing a dragged item brings back the readouts that are skipped during a drag.
         self.side_view.drag_finished.connect(self.request_update)
