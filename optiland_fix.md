@@ -4,7 +4,7 @@ Every place where RayCrafter works around an Optiland bug or gap, and every upst
 waiting for. Optiland lives at <https://github.com/optiland/optiland> (formerly
 `HarrisonKramer/optiland`).
 
-Pinned version: **0.6.3** (`pyproject.toml`). Last checked for a newer release: 2026-11-24
+Pinned version: **0.6.3** (`pyproject.toml`). Last checked for a newer release: 2026-11-26
 (0.6.3 is still the latest).
 
 How this file is used: see "Optiland" under Workflow in `CLAUDE.md`. Add an entry when a
@@ -37,8 +37,8 @@ entry to "Retired".
 ### Ideal-lens OPD error off axis
 - **Where:** no code workaround; the wavefront quantities (RMS WFE, Strehl, PSF, MTF) are wrong
   off axis for ideal (paraxial) lenses. See `log.md`, 2026-11-23 entry "Optiland as the optics engine".
-- **Upstream status:** reported upstream, but the issue link was not recorded. TODO: find it
-  and put it here.
+- **Upstream status:** open, issue
+  [#1248](https://github.com/optiland/optiland/issues/1248).
 - **Remove when:** a release fixes it; add a physics check against a known value.
 
 
