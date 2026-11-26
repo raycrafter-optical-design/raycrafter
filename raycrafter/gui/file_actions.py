@@ -4,7 +4,8 @@ A design is saved as a RayCrafter project (``raycrafter.core.project_file``), wh
 everything. A Zemax file is a lossy exchange format: Import ZMX replaces the design with the
 file's system, and Export ZMX writes the system out but does not count as saving the design,
 so quitting after an export still asks to save. The window title shows the project file's
-name, and marks it as modified when there are unsaved changes.
+name, and marks it as modified when there are unsaved changes. For an imported design it
+also names the Zemax file and says whether the design has changed since the import.
 
 An imported design keeps the original ZMX file and the bench as imported, in its project
 file too. "Save Without Original ZMX" saves the project without them, so from then on the
@@ -264,11 +265,17 @@ class FileActions:
     def update_title(self) -> None:
         """Show the project's name in the title bar, marked if there are unsaved changes.
 
-        Comparing the design with the saved one is too slow for every drag event, so the
-        window calls this once a change is complete.
+        For an imported design the title also names the Zemax file and says whether the
+        design has been changed since, e.g. "Untitled (imported from lens.zmx, modified)".
+        Comparing designs is too slow for every drag event, so the window calls this once a
+        change is complete.
         """
         project_path = self.model.project_path
         name = project_path.name if project_path is not None else UNTITLED_NAME
+        state = self.model.state
+        if state.imported_from is not None:
+            modified = ", modified" if state.modified_since_import() else ""
+            name += f" (imported from {state.imported_from.file_name}{modified})"
         # "[*]" is where Qt shows the modified mark (an asterisk; a dot in the close button
         # on macOS).
         self.window.setWindowTitle(f"{name}[*] - RayCrafter")

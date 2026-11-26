@@ -500,14 +500,20 @@ def test_file_menu_new_save_open_import_and_export(
     window.files.import_zmx()
     assert window.model.project_path is None
     assert window.model.state.imported_from.file_name == "design.zmx"
-    assert window.windowTitle() == "Untitled[*] - RayCrafter"
+    assert window.windowTitle() == "Untitled (imported from design.zmx)[*] - RayCrafter"
     assert not window.model.has_unsaved_changes()
     assert save_without_import.isEnabled()
+
+    # Once the design is edited, the title says so.
+    window.model.state.image_z += 5.0
+    window.record_undo_step()
+    assert window.windowTitle() == "Untitled (imported from design.zmx, modified)[*] - RayCrafter"
 
     # Save Without Original ZMX asks first, then saves a design that is no longer an import.
     monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Save)
     assert window.files.save_without_import()
     assert window.model.state.imported_from is None and not save_without_import.isEnabled()
+    assert window.windowTitle() == "design.zmx.raycrafter[*] - RayCrafter"
     window.close()
 
 
