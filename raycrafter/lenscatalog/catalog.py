@@ -56,6 +56,10 @@ class CatalogEntry:
         The vendor's product family, e.g. "Plano-convex lenses".
     coating : str
         Human-readable coating name, e.g. "A: 350-700 nm", or UNCOATED.
+    vendor : str
+        Who makes the lens, e.g. "Thorlabs".
+    mount_type : str or None
+        How the lens is mounted, e.g. "Unmounted"; None if the catalogue does not say.
     """
 
     part_number: str
@@ -65,6 +69,8 @@ class CatalogEntry:
     category: str
     family: str
     coating: str
+    vendor: str
+    mount_type: str | None = None
 
     @property
     def clear_diameter_mm(self) -> float:

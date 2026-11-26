@@ -114,6 +114,13 @@ class LensInfo:
     gap_after_mm : float
         Air gap from the back vertex to the next lens's front vertex, or to the image plane
         for the last lens (see ``Bench.set_gap``).
+    vendor : str or None
+        Who makes the lens, e.g. ``"Thorlabs"``; None for an imported or paraxial lens.
+    mount_type : str or None
+        ``"Mounted"`` or ``"Unmounted"``; None if unknown, as for most catalogue lenses.
+    surface_range : tuple of (int, int)
+        Numbers of the lens's first and last surface, counted as in the exported ZMX file
+        (the object is surface 0).
     """
 
     index: int
@@ -127,6 +134,9 @@ class LensInfo:
     plossl_group: int | None
     is_paraxial: bool
     gap_after_mm: float
+    vendor: str | None
+    mount_type: str | None
+    surface_range: tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -936,6 +946,9 @@ class Bench:
             plossl_group=lens.group_id,
             is_paraxial=lens.is_paraxial,
             gap_after_mm=float(gaps.air_gaps(state)[index].width_mm),
+            vendor=lens.vendor,
+            mount_type=lens.mount_type,
+            surface_range=state.surface_range(index),
         )
 
     @staticmethod

@@ -21,6 +21,13 @@ def test_summary_matches_the_known_act508_200_a_focal_lengths(tools):
     assert summary["f_number"] == pytest.approx(20.0, abs=0.1)
 
 
+def test_lenses_report_their_part_metadata(tools):
+    lens = tools.get_design()["lenses"][0]
+    assert lens["vendor"] == "Thorlabs" and lens["mount_type"] is None
+    assert lens["surface_range"] == [1, 3]
+    assert tools.get_lens("TRH254-040-A")["mount_type"] == "Unmounted"
+
+
 def test_every_result_is_valid_json(tools):
     tools.add_field()
     results = [

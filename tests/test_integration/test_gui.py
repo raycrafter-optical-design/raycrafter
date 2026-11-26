@@ -276,6 +276,8 @@ def test_bench_viewer_lists_highlights_follows_and_deletes(application):
         ("0", "ACT508-200-A"),
         ("1", "LA1509-A"),
     ]
+    assert lens_rows[0].text(3).startswith("Thorlabs, Ø")
+    assert "surfaces 1–3" in lens_rows[0].text(3)
     assert viewer.field_section.childCount() == 2
     assert viewer.image_row.text(2) == f"{window.model.state.image_z:.1f}"
 

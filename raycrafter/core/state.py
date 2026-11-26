@@ -22,6 +22,10 @@ DEFAULT_WAVELENGTH_NM = 555.0  # green, where the eye is most sensitive
 class PlacedLens:
     """One lens on the optical axis: its prescription, position, orientation and size.
 
+    A lens is also the "part" that is bought and mounted: a contiguous run of surfaces (see
+    ``OpticalState.surface_range``) with a vendor, part number, mount type and clear
+    aperture.
+
     Attributes
     ----------
     part_number : str
@@ -42,6 +46,11 @@ class PlacedLens:
     paraxial_focal_length_mm : float or None
         Set only for a paraxial lens: an ideal thin lens of this focal length, with no
         surfaces (``surfaces`` is empty) and zero thickness. It cannot be flipped or paired.
+    vendor : str or None
+        Who makes the lens, e.g. ``"Thorlabs"``; None if unknown (an imported or paraxial
+        lens).
+    mount_type : str or None
+        How the lens is mounted, e.g. ``"Unmounted"``; None if unknown.
     """
 
     part_number: str
@@ -52,11 +61,18 @@ class PlacedLens:
     group_id: int | None = None
     is_negative: bool = False
     paraxial_focal_length_mm: float | None = None
+    vendor: str | None = None
+    mount_type: str | None = None
 
     @property
     def is_paraxial(self) -> bool:
         """True for an ideal thin (paraxial) lens rather than a catalogue lens."""
         return self.paraxial_focal_length_mm is not None
+
+    @property
+    def surface_count(self) -> int:
+        """How many surfaces the lens adds to the optical system (1 for a paraxial lens)."""
+        return 1 if self.is_paraxial else len(self.surfaces)
 
     def surfaces_in_use(self) -> list[LensSurface]:
         """The surfaces in the current orientation."""
@@ -166,6 +182,15 @@ class OpticalState:
     def last_back_z(self) -> float:
         """z of the back vertex of the rightmost lens (0 if there are no lenses)."""
         return self.lenses[-1].back_z if self.lenses else AXIS_START_Z
+
+    def surface_range(self, lens_index: int) -> tuple[int, int]:
+        """The numbers of the first and last surface of one lens.
+
+        Surfaces are numbered as in the optical system and the exported ZMX file: the object
+        is surface 0 and the lens surfaces follow from 1, left to right.
+        """
+        first = 1 + sum(lens.surface_count for lens in self.lenses[:lens_index])
+        return first, first + self.lenses[lens_index].surface_count - 1
 
     def beam_reference_z(self) -> float:
         """z of the plane where each field's diameter and offset are defined (mm).

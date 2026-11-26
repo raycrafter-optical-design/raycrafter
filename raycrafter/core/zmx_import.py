@@ -499,6 +499,8 @@ def _match_catalogue(
                     z=front_z,
                     flipped=flipped,
                     is_negative=entry.is_negative,
+                    vendor=entry.vendor,
+                    mount_type=entry.mount_type,
                 )
     return None
 
@@ -624,7 +626,7 @@ def _note_lenses_that_block_more_than_zemax(
             )
         else:
             effect = "this may block rays that Zemax lets through"
-        is_catalogue_lens = not lens.part_number.startswith(("Imported", "Paraxial"))
+        is_catalogue_lens = lens.vendor is not None
         size = "its catalogue size" if is_catalogue_lens else "the size the file draws it"
         notes.append(
             f"{lens.part_number} has no aperture in the file, so Zemax blocks no rays there. "

@@ -102,7 +102,9 @@ class DesignTools:
         """The whole design: lenses along the axis, fields, image plane, unsaved flag.
 
         Each lens's ``gap_after_mm`` is the air gap from its back vertex to the next lens's
-        front vertex, or to the image plane behind the last lens.
+        front vertex, or to the image plane behind the last lens. ``vendor`` and
+        ``mount_type`` are null where unknown. ``surface_range`` holds the numbers of the
+        lens's first and last surface, as in the exported ZMX file.
         """
         state = self.model.state
         gaps = self.model.air_gaps()
@@ -110,6 +112,9 @@ class DesignTools:
             {
                 "index": index,
                 "part_number": lens.part_number,
+                "vendor": lens.vendor,
+                "mount_type": lens.mount_type,
+                "surface_range": list(state.surface_range(index)),
                 "front_z_mm": _number(lens.z),
                 "back_z_mm": _number(lens.back_z),
                 "gap_after_mm": _number(gaps[index].width_mm),
@@ -477,6 +482,8 @@ class DesignTools:
         """The catalogue facts about a lens that matter when choosing one."""
         return {
             "part_number": entry.part_number,
+            "vendor": entry.vendor,
+            "mount_type": entry.mount_type,
             "focal_length_mm": _number(entry.focal_length),
             "clear_diameter_mm": _number(entry.clear_diameter_mm),
             "category": entry.category,

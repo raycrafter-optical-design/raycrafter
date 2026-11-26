@@ -93,6 +93,8 @@ class OpticalModel:
             semi_aperture=entry.semi_aperture,
             z=front_z,
             is_negative=entry.is_negative,
+            vendor=entry.vendor,
+            mount_type=entry.mount_type,
         )
 
     @staticmethod
