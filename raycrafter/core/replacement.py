@@ -21,7 +21,7 @@ changes. Behind the last lens, the image plane is pushed back if the new lens wo
 it. A locked gap from the source plane keeps its length.
 
 A lens of a Plossl pair is not replaced on its own unless the pair is split first
-(``replace_lens`` with ``split_plossl_pair``); ``replace_plossl_pair`` replaces both.
+(``replace_lens`` with ``split_plossl_pair``); ``plossl.replace_plossl_pair`` replaces both.
 """
 
 from __future__ import annotations
@@ -58,19 +58,24 @@ def focal_length_mm(lens: PlacedLens, wavelength_nm: float) -> float:
     return float(optic_builder.build_optic(_alone([lens], wavelength_nm)).paraxial.f2())
 
 
-def rear_principal_plane_z(lenses: list[PlacedLens], wavelength_nm: float) -> float | None:
-    """z (mm) of the rear principal plane of a run of lenses, taken on their own.
+def principal_planes_z(
+    lenses: list[PlacedLens], wavelength_nm: float
+) -> tuple[float, float] | None:
+    """z (mm) of the front and rear principal planes of a run of lenses, taken on their own.
 
-    Returns None if the run has no power (it is afocal), as it then has no principal plane.
+    Returns None if the run has no power (it is afocal), as it then has no principal planes.
     """
     if len(lenses) == 1 and lenses[0].is_paraxial:
-        return lenses[0].z  # a thin lens is its own principal plane
+        return lenses[0].z, lenses[0].z  # a thin lens is its own principal plane
     state = _alone(lenses, wavelength_nm)
     paraxial = optic_builder.build_optic(state).paraxial
     if not np.isfinite(float(paraxial.f2())):
         return None
-    # Optiland gives the rear principal plane relative to the image surface.
-    return state.image_z + float(paraxial.P2())
+    # Optiland gives the front principal plane relative to the first surface, and the rear
+    # one relative to the image surface.
+    front_z = state.lenses[0].z + float(paraxial.P1())
+    rear_z = state.image_z + float(paraxial.P2())
+    return front_z, rear_z
 
 
 def anchored_front_z(
@@ -80,13 +85,13 @@ def anchored_front_z(
 
     If either run is afocal, the new run is centred where the old one was instead.
     """
-    old_plane_z = rear_principal_plane_z(old_lenses, wavelength_nm)
-    new_plane_z = rear_principal_plane_z(new_lenses, wavelength_nm)
-    if old_plane_z is None or new_plane_z is None:
+    old_planes = principal_planes_z(old_lenses, wavelength_nm)
+    new_planes = principal_planes_z(new_lenses, wavelength_nm)
+    if old_planes is None or new_planes is None:
         old_centre_z = 0.5 * (old_lenses[0].z + old_lenses[-1].back_z)
         new_length = new_lenses[-1].back_z - new_lenses[0].z
         return old_centre_z - 0.5 * new_length
-    return new_lenses[0].z + (old_plane_z - new_plane_z)
+    return new_lenses[0].z + (old_planes[1] - new_planes[1])
 
 
 def replace_lens(
@@ -108,7 +113,7 @@ def replace_lens(
         The replacement.
     split_plossl_pair : bool
         If the lens is one of a Plossl pair, the pair must be split first (its gap is then
-        unlocked); True does that. To replace both, use ``replace_plossl_pair``.
+        unlocked); True does that. To replace both, use ``plossl.replace_plossl_pair``.
 
     Raises
     ------
@@ -133,32 +138,6 @@ def replace_lens(
     for state_field in fields(OpticalState):
         if state_field.name != "imported_from":
             setattr(state, state_field.name, getattr(trial, state_field.name))
-
-
-def replace_plossl_pair(state: OpticalState, lens_index: int, new_lens: PlacedLens) -> None:
-    """Replace both lenses of this lens's Plossl pair with two copies of ``new_lens``.
-
-    The new pair is set up as ``assemblies.make_plossl`` does (facing each other,
-    PLOSSL_GAP_MM apart) and placed as one lens is, with the pair's own rear principal plane
-    where the old pair's was. It stays a Plossl pair.
-
-    Raises
-    ------
-    ValueError
-        If the lens is in no Plossl pair, the new lens is paraxial or diverging, or the new
-        pair would overlap a neighbour. Nothing is changed then.
-    """
-    if not assemblies.in_plossl_pair(state, lens_index):
-        raise ValueError("This lens is not one of a Plossl pair")
-    if new_lens.is_negative or new_lens.is_paraxial:
-        raise ValueError(
-            f"A Plossl pair needs a positive catalogue lens, and {new_lens.part_number} is not"
-        )
-    left, right = copy.deepcopy(new_lens), copy.deepcopy(new_lens)
-    left.z = 0.0
-    assemblies.face_as_plossl(left, right)
-    members = assemblies.assembly_indices(state, lens_index)
-    replace_lenses(state, members[0], members[-1], [left, right])
 
 
 def replace_lenses(

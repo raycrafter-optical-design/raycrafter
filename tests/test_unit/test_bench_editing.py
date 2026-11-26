@@ -1,9 +1,8 @@
-"""Tests of editing the bench: adding, moving, swapping and pairing lenses."""
+"""Tests of editing the bench: adding, moving, swapping and inserting lenses."""
 
 import pytest
 
 from raycrafter.core import OpticalModel
-from raycrafter.core.model import PLOSSL_GAP_MM
 
 
 @pytest.fixture
@@ -40,55 +39,6 @@ def test_dragging_past_a_neighbours_centre_swaps_them():
     assert (model.state.lenses[0].z, model.state.lenses[1].back_z) == pytest.approx(span)
 
 
-def test_make_plossl_pairs_two_identical_lenses(two_identical_lenses):
-    model = two_identical_lenses
-    assert model.plossl_partner(0) == 1
-    model.make_plossl(0)
-
-    left, right = model.state.lenses
-    assert left.assembly_id is not None and left.assembly_id == right.assembly_id
-    # Crown elements face each other: the left lens's stronger element is at its back.
-    assert left.flipped == left.positive_element_is_first()
-    assert right.flipped != right.positive_element_is_first()
-    assert right.z > left.back_z - PLOSSL_GAP_MM  # surfaces may curve towards each other
-
-
-def test_a_plossl_pair_moves_as_one_and_splits(two_identical_lenses):
-    model = two_identical_lenses
-    model.make_plossl(0)
-    left, right = model.state.lenses
-    spacing = right.z - left.z
-
-    model.move_lens(0, requested_front_z=left.z - 5.0)
-    assert right.z - left.z == pytest.approx(spacing)
-
-    model.split_assembly(0)
-    assert left.assembly_id is None and right.assembly_id is None
-
-
-def test_negative_lenses_cannot_form_a_plossl_pair():
-    model = OpticalModel(add_default_lens=False)
-    model.add_lens("ACN254-050-A")
-    model.add_lens("ACN254-050-A")
-    assert model.plossl_partner(0) is None
-
-
-def test_a_lens_in_a_plossl_pair_cannot_be_flipped(two_identical_lenses):
-    model = two_identical_lenses
-    model.make_plossl(0)
-    flipped_before = model.state.lenses[0].flipped
-    model.flip_lens(0)
-    assert model.state.lenses[0].flipped == flipped_before
-
-
-def test_deleting_one_lens_of_a_pair_releases_the_other(two_identical_lenses):
-    model = two_identical_lenses
-    model.make_plossl(0)
-    model.delete_lens(0)
-    assert len(model.state.lenses) == 1
-    assert model.state.lenses[0].assembly_id is None
-
-
 def test_zmx_export_writes_a_file(tmp_path, two_identical_lenses):
     zmx_path = tmp_path / "system.zmx"
     two_identical_lenses.save_zmx(str(zmx_path))
@@ -109,15 +59,6 @@ def test_free_front_z_snaps_out_of_an_occupied_stretch(two_identical_lenses):
     assert model.free_front_z(thickness, 40.0) == pytest.approx(40.0)
     # A lens thicker than every gap (the space after the last lens being capped) fits nowhere.
     assert model.free_front_z(150.0, 40.0, max_back_z=second.back_z + 1.0) is None
-
-
-def test_free_front_z_never_splits_a_plossl_pair(two_identical_lenses):
-    model = two_identical_lenses
-    model.make_plossl(0)
-    left, right = model.state.lenses
-    gap_centre = 0.5 * (left.back_z + right.z)
-    front_z = model.free_front_z(0.1, gap_centre)
-    assert not left.z < front_z < right.back_z
 
 
 def test_inserted_lens_goes_into_axis_order(two_identical_lenses):

@@ -77,7 +77,10 @@ def test_window_adds_pairs_and_deletes_lenses(application):
     window.side_view.rebuild_lens_graphics()
     assert len(window.side_view.lens_graphics) == 2
 
-    window.make_plossl(0)
+    window.make_plossl(0)  # the first lens becomes a pair
+    assert len(window.side_view.lens_graphics) == 3
+    assert not lens_menu_action(window, 0, "Split assembly").menu()
+    assert lens_menu_action(window, 2, "Make Plossl").isEnabled()
     window.model.state.selected_field.angle_deg = 5.0
     window.recompute_and_redraw()
     window.update_slow_plots()
@@ -86,7 +89,19 @@ def test_window_adds_pairs_and_deletes_lenses(application):
 
     window.delete_lens(1)
     window.recompute_and_redraw()
-    assert len(window.side_view.lens_graphics) == 1
+    assert len(window.side_view.lens_graphics) == 2
+    window.close()
+
+
+def test_make_plossl_says_why_a_pair_does_not_fit(application):
+    window = MainWindow()
+    window.model.insert_lens(window.model.make_paraxial_lens(100.0, 90.0))  # just in front
+    window.show_new_design()
+
+    window.make_plossl(1)
+    assert len(window.model.state.lenses) == 2
+    assert "does not fit" in window.statusBar().currentMessage()
+    assert not lens_menu_action(window, 0, "Make Plossl").isEnabled()  # paraxial
     window.close()
 
 
@@ -1052,7 +1067,6 @@ def test_replacing_a_lens_from_the_lens_menu(application, monkeypatch):
 
 def test_replacing_one_lens_of_a_plossl_pair_asks_first(application, monkeypatch):
     window = MainWindow()
-    window.model.add_lens("ACT508-200-A")
     window.make_plossl(0)
 
     def choose_and_accept(picker):

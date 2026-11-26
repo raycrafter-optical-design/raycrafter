@@ -21,7 +21,7 @@ class FakeClock:
 
 @pytest.fixture
 def model() -> OpticalModel:
-    """Two identical doublets, close enough to pair, with nothing to undo yet."""
+    """Two identical doublets, with nothing to undo yet."""
     model = OpticalModel()
     model.add_lens("ACT508-200-A")
     model.clear_undo_history()

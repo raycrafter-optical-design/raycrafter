@@ -11,7 +11,8 @@ named in each docstring, as functions of an ``OpticalState``:
 - ``placement``: making, adding, inserting and deleting lenses; the source plane.
 - ``moving``: moving lenses along the axis and swapping neighbouring blocks.
 - ``gaps``: setting and locking the air gaps.
-- ``assemblies``: assemblies, Plossl pairs and flipping.
+- ``assemblies``: assemblies and flipping.
+- ``plossl``: Plossl pairs.
 - ``replacement``: replacing a lens in place.
 - ``gap_optimisation``: setting a gap to collimate the output or focus.
 - ``analysis``: spots, MTF, ray fans and the other analyses.
@@ -46,18 +47,19 @@ from raycrafter.core import (
     moving,
     optic_builder,
     placement,
+    plossl,
     project_file,
     replacement,
     user_parts,
     zmx_import,
 )
-from raycrafter.core.assemblies import PLOSSL_GAP_MM  # noqa: F401  (imported from here too)
 from raycrafter.core.history import UndoHistory, same_design
 from raycrafter.core.placement import (  # noqa: F401  (imported from here too)
     FIRST_LENS_MIN_Z,
     INITIAL_LENS_Z,
     LENS_GAP_MM,
 )
+from raycrafter.core.plossl import PLOSSL_GAP_MM  # noqa: F401  (imported from here too)
 from raycrafter.core.state import AnyField, OpticalState, PlacedLens
 from raycrafter.core.user_parts import UserPart
 from raycrafter.lenscatalog import thorlabs
@@ -179,8 +181,8 @@ class OpticalModel:
         replacement.replace_lens(self.state, lens_index, new_lens, split_plossl_pair)
 
     def replace_plossl_pair(self, lens_index: int, part_number: str) -> None:
-        """Replace both lenses of a Plossl pair with ``part_number`` (``replacement``)."""
-        replacement.replace_plossl_pair(self.state, lens_index, self.make_lens(part_number))
+        """Replace both lenses of a Plossl pair with ``part_number`` (``plossl``)."""
+        plossl.replace_plossl_pair(self.state, lens_index, self.make_lens(part_number))
 
     # ---------------------------------------------------------------- air gaps
 
@@ -269,13 +271,13 @@ class OpticalModel:
         """Turn this lens's assembly round as a whole; returns the new order of old indices."""
         return assemblies.flip_assembly(self.state, lens_index)
 
-    def plossl_partner(self, lens_index: int) -> int | None:
-        """A neighbour this lens could form a Plossl pair with (``assemblies.plossl_partner``)."""
-        return assemblies.plossl_partner(self.state, lens_index)
+    def reason_no_plossl(self, lens_index: int) -> str | None:
+        """Why a lens cannot become a Plossl pair, or None (``plossl.reason_not_possible``)."""
+        return plossl.reason_not_possible(self.state, lens_index)
 
     def make_plossl(self, lens_index: int) -> None:
-        """Snap the lens and its partner into a Plossl pair (see ``assemblies.make_plossl``)."""
-        assemblies.make_plossl(self.state, lens_index)
+        """Turn the lens into a Plossl pair of two copies of itself (``plossl.make_plossl``)."""
+        plossl.make_plossl(self.state, lens_index)
 
     # ---------------------------------------------------------------- user parts
 

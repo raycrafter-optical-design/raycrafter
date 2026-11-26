@@ -462,13 +462,14 @@ class DesignTools:
         return self.get_design()
 
     def make_plossl(self, lens_index: int) -> dict:
-        """Snap this lens and its identical neighbouring doublet into a Plossl pair."""
+        """Turn one lens into a Plossl pair: two copies of it facing each other, 1 mm apart.
+
+        The pair is centred on the optical centre of the original lens and becomes an
+        assembly, "Plossl pair", at lens indices ``lens_index`` and ``lens_index + 1``; later
+        lenses' indices go up by one. The lens must be a real (not paraxial), positive lens
+        in no assembly, with room for the pair. A locked gap either side keeps its length.
+        """
         self._check_lens_index(lens_index)
-        if self.model.plossl_partner(lens_index) is None:
-            raise ValueError(
-                "This lens has no Plossl partner: the neighbour must be the same positive "
-                "catalogue lens, close by, and not already paired."
-            )
         self.model.make_plossl(lens_index)
         return self.get_design()
 

@@ -12,7 +12,6 @@ LENS_HOVER = "#1c4f9c"  # darker blue for the lens under the pointer
 PARAXIAL_ARROW = "#1d3e6c"  # arrowheads of a paraxial lens: LENS at half brightness
 ASSEMBLY = "#7048e8"  # purple: a lens in an assembly (e.g. a Plossl pair)
 ASSEMBLY_HOVER = "#4c2fb0"
-PLOSSL_PREVIEW = "#e03131"  # dashed red outline of a proposed Plossl pair
 GHOST_BLOCKED = "#e03131"  # red: a lens being placed where there is no room for it
 RAY = "#e8a317"  # amber: the rays in the app icon
 IMAGE = "#2f9e44"  # green: the image plane and "current image plane" markers

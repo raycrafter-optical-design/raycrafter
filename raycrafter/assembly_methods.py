@@ -44,23 +44,24 @@ class AssemblyMethods:
         def lenses(self) -> list[LensInfo]: ...
 
     def make_plossl(self, lens_index: int) -> None:
-        """Snap a lens and an identical neighbour into a Plossl pair.
+        """Turn one lens into a Plossl pair: two copies of it facing each other.
 
-        The neighbour must be the same positive catalogue lens, no further away than twice
-        its thickness, and in no assembly. The two are turned to face each other with their
-        positive elements inside and put 1 mm apart; later lenses and the image plane shift
-        to make room. The pair becomes an assembly called "Plossl pair".
+        The pair is centred on the optical centre of the original lens, with the positive
+        elements (of a singlet, the more strongly curved faces) inside and 1 mm apart. A
+        locked gap either side keeps its length, so what is joined to it moves outwards.
+        The pair is an assembly called "Plossl pair", at indices ``lens_index`` and
+        ``lens_index + 1``; ``split_assembly`` turns it back into two separate lenses.
 
         Raises
         ------
         ValueError
-            If the lens has no such neighbour.
+            If the lens is paraxial, diverging or already in an assembly, or the pair would
+            overlap a neighbour.
 
         Example
         -------
         >>> from raycrafter import Bench
         >>> bench = Bench(empty=True)
-        >>> _ = bench.add_lens("AC254-050-A")
         >>> _ = bench.add_lens("AC254-050-A")
         >>> bench.make_plossl(0)
         >>> [lens.assembly_name for lens in bench.lenses]

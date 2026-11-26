@@ -66,7 +66,6 @@ SIDE_GRID_CELL_PX = 40  # grid cells are this many screen pixels on each side
 TIMING_FONT_SCALE = 2 / 3  # timing text is this fraction of the axis number size
 LENS_NAME_GAP_PX = 3  # gap between the top of a lens and its name tag
 LENS_NAME_FONT_SCALE = 0.9  # name tag text is this fraction of the default text size
-PLOSSL_PREVIEW_PAD_MM = 1.5  # margin of the dashed rectangle round a proposed Plossl pair
 IMAGE_HOVER_TOLERANCE_PX = 6  # a pointer this close to the image line counts as over it
 GHOST_Z_VALUE = 80  # the ghost is drawn above the lenses on the bench
 RAY_WIDTH_PX = 1.3
@@ -155,7 +154,7 @@ class SideView(pg.PlotWidget):
         self.viewport().installEventFilter(self)
 
     def _add_items(self, side: pg.PlotItem) -> None:
-        """Create the grid, rays, image line, captions and Plossl preview outline."""
+        """Create the grid, rays, image line, captions and lens name tag."""
         # Square grid: drawn by hand (not with showGrid) so its cells stay square on screen
         # even though the z and y axes cover very different distances in mm.
         self.grid_curve = pg.PlotCurveItem(
@@ -200,14 +199,6 @@ class SideView(pg.PlotWidget):
         self.place_timing_label()
         self.timing_label.setZValue(50)
         side.addItem(self.timing_label, ignoreBounds=True)
-
-        # Dashed red rectangle shown while "Make Plossl" is highlighted in the lens menu.
-        self.plossl_preview_curve = pg.PlotCurveItem(
-            pen=pg.mkPen(palette.PLOSSL_PREVIEW, width=2, style=Qt.PenStyle.DashLine)
-        )
-        self.plossl_preview_curve.setZValue(60)
-        self.plossl_preview_curve.hide()
-        side.addItem(self.plossl_preview_curve, ignoreBounds=True)
 
         # Lens name tag: centred just above the hovered lens, text a little smaller than default.
         self.name_tag = LensNameTag()
@@ -444,29 +435,6 @@ class SideView(pg.PlotWidget):
             self.message_requested.emit(str(error))
             return
         self.changed.emit()
-
-    # ------------------------------------------------------------------ Plossl preview
-
-    def show_plossl_preview(self, lens_index: int) -> None:
-        """Outline, dashed red, the lens and the neighbour it would form a Plossl pair with."""
-        partner_index = self.model.plossl_partner(lens_index)
-        if partner_index is None:
-            return
-        lenses = self.model.state.lenses
-        pair = [lenses[lens_index], lenses[partner_index]]
-        z_low = min(lens.z for lens in pair) - PLOSSL_PREVIEW_PAD_MM
-        z_high = max(lens.back_z for lens in pair) + PLOSSL_PREVIEW_PAD_MM
-        half_height = max(lens.semi_aperture for lens in pair) + PLOSSL_PREVIEW_PAD_MM
-
-        self.plossl_preview_curve.setData(
-            [z_low, z_high, z_high, z_low, z_low],
-            [-half_height, -half_height, half_height, half_height, -half_height],
-        )
-        self.plossl_preview_curve.show()
-
-    def hide_plossl_preview(self) -> None:
-        """Remove the dashed Plossl rectangle."""
-        self.plossl_preview_curve.hide()
 
     def showEvent(self, event) -> None:
         """Once shown, size the timing text at 2/3 of the axis numbers (set by the style sheet)."""

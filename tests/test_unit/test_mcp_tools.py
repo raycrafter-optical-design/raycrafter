@@ -93,7 +93,7 @@ def test_set_field_changes_only_what_is_given(tools):
         lambda tools: tools.set_field(3, angle_deg=1.0),
         lambda tools: tools.set_field(0, diameter_mm=-1.0),
         lambda tools: tools.set_image_z(0.0),
-        lambda tools: tools.make_plossl(0),
+        lambda tools: tools.make_plossl(5),
         lambda tools: tools.add_paraxial_lens(0.0, 100.0),
     ],
 )

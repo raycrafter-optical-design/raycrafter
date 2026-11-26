@@ -5,18 +5,15 @@ An assembly is a named run of two or more neighbouring lenses that share an
 moves as one block (``raycrafter.core.gaps``). It can be flipped as a whole, which reverses
 the order of its lenses and turns each one round, and it can be saved as a user part
 (``raycrafter.core.user_parts``) to be inserted again later. A Plossl pair is an assembly
-named PLOSSL_NAME, made by ``make_plossl``. Flipping a single lens (``flip_lens``) is here
-too. It has no Qt code.
+named PLOSSL_NAME (see ``raycrafter.core.plossl``, which makes them). Flipping a single lens
+(``flip_lens``) is here too. It has no Qt code.
 """
 
 from __future__ import annotations
 
-from raycrafter.core import gaps
-from raycrafter.core.state import OpticalState, PlacedLens
+from raycrafter.core.state import OpticalState
 
 PLOSSL_NAME = "Plossl pair"
-PLOSSL_GAP_MM = 1.0  # closest distance between the two facing surfaces of a Plossl pair
-PLOSSL_SEARCH_WIDTHS = 2.0  # a Plossl partner must be within this many lens thicknesses
 
 
 def assembly_indices(state: OpticalState, lens_index: int) -> list[int]:
@@ -165,72 +162,3 @@ def flip_lens(state: OpticalState, lens_index: int) -> None:
 def in_plossl_pair(state: OpticalState, lens_index: int) -> bool:
     """True if the lens is one of a Plossl pair."""
     return assembly_name(state, lens_index) == PLOSSL_NAME
-
-
-def plossl_partner(state: OpticalState, lens_index: int) -> int | None:
-    """Index of a lens this one could form a Plossl pair with, or None.
-
-    The partner must be an immediate neighbour, be the same part, and be in no assembly;
-    the gap between the two must be at most PLOSSL_SEARCH_WIDTHS lens thicknesses. Only
-    positive catalogue lenses can form a Plossl pair (a Plossl is made of doublets, so
-    paraxial lenses are excluded).
-    """
-    lenses = state.lenses
-    lens = lenses[lens_index]
-    if lens.assembly_id is not None or lens.is_negative or lens.is_paraxial:
-        return None
-    for other_index in (lens_index - 1, lens_index + 1):
-        if not 0 <= other_index < len(lenses):
-            continue
-        other = lenses[other_index]
-        left, right = sorted((lens, other), key=lambda item: item.z)
-        gap = right.z - left.back_z
-        if (
-            other.part_number == lens.part_number
-            and other.assembly_id is None
-            and gap <= PLOSSL_SEARCH_WIDTHS * lens.thickness
-        ):
-            return other_index
-    return None
-
-
-def make_plossl(state: OpticalState, lens_index: int) -> None:
-    """Snap the lens and its partner (``plossl_partner``) into a Plossl pair and group them.
-
-    A Plossl pair is two identical doublets facing each other symmetrically, with their
-    positive (crown) elements on the inside (``face_as_plossl``). The right lens is moved so
-    the closest points of the two facing surfaces are PLOSSL_GAP_MM apart, and everything
-    downstream (later lenses and the image plane) shifts with it, even if the gap between
-    the two was locked. The two then form an assembly named PLOSSL_NAME. Does nothing if the
-    lens has no partner.
-    """
-    partner_index = plossl_partner(state, lens_index)
-    if partner_index is None:
-        return
-    left_index, right_index = sorted((lens_index, partner_index))
-    lenses = state.lenses
-    left, right = lenses[left_index], lenses[right_index]
-
-    original_right_z = right.z
-    face_as_plossl(left, right)
-    shift = right.z - original_right_z
-    for downstream in lenses[right_index + 1 :]:
-        downstream.z += shift
-    minimum_image_z = state.last_back_z() + gaps.MIN_IMAGE_GAP_MM
-    state.image_z = max(state.image_z + shift, minimum_image_z)
-
-    make_assembly(state, left_index, right_index, PLOSSL_NAME)
-
-
-def face_as_plossl(left: PlacedLens, right: PlacedLens) -> None:
-    """Turn two identical doublets to face each other as a Plossl pair, PLOSSL_GAP_MM apart.
-
-    The left lens is flipped if needed so its positive element is at its back, and the right
-    lens so its positive element is at its front. The right lens is then moved so that the
-    closest points of the facing surfaces are PLOSSL_GAP_MM apart. The gap is measured along
-    z across the smaller clear aperture: at the vertices for two convex surfaces, nearer the
-    rim if either is concave.
-    """
-    left.flipped = left.positive_element_is_first()  # moves the positive element to the back
-    right.flipped = not right.positive_element_is_first()  # keeps or puts it at the front
-    right.z = left.back_z + PLOSSL_GAP_MM - gaps.closest_sag_difference_mm(left, right)

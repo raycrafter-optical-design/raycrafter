@@ -50,7 +50,7 @@ def test_paraxial_lens_is_thin_and_cannot_be_flipped_or_paired():
 
     model.flip_lens(0)
     assert not first.flipped
-    assert model.plossl_partner(0) is None
+    assert "paraxial" in model.reason_no_plossl(0)
 
 
 def test_negative_paraxial_lens_is_marked_negative():

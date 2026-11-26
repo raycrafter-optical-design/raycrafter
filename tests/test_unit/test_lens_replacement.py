@@ -30,7 +30,8 @@ def paraxial_bench(catalog, focal_lengths_mm=(200.0,), front_zs=(100.0,)) -> Opt
 
 
 def rear_plane_z(model: OpticalModel, lens_index: int) -> float:
-    return replacement.rear_principal_plane_z([model.state.lenses[lens_index]], WAVELENGTH_NM)
+    planes = replacement.principal_planes_z([model.state.lenses[lens_index]], WAVELENGTH_NM)
+    return planes[1]
 
 
 # ------------------------------------------------------------------ where the lens goes
@@ -145,8 +146,7 @@ def test_a_lens_in_an_assembly_stays_in_it(catalog):
 @pytest.fixture
 def plossl_model(catalog) -> OpticalModel:
     model = OpticalModel(catalog, add_default_lens=False)
-    for front_z in (100.0, 120.0):
-        model.insert_lens(model.make_lens("AC254-050-A", front_z))
+    model.insert_lens(model.make_lens("AC254-050-A", 100.0))
     model.make_plossl(0)
     model.state.image_z = 300.0
     return model
@@ -227,8 +227,7 @@ def test_agents_replace_lenses(catalog):
 
 def test_scripts_replace_both_lenses_of_a_plossl_pair():
     bench = Bench(empty=True)
-    for _ in range(2):
-        bench.add_lens("AC254-050-A")
+    bench.add_lens("AC254-050-A")
     bench.make_plossl(0)
     with pytest.raises(ValueError, match="Plossl pair"):
         bench.replace_lens(0, "AC254-100-A")

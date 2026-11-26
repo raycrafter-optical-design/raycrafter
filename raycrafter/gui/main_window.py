@@ -472,12 +472,16 @@ class MainWindow(QMainWindow):
         self.request_update()
 
     def make_plossl(self, lens_index: int) -> None:
-        """Snap a lens and its identical neighbour into a Plossl pair, then refocus."""
-        if self.model.plossl_partner(lens_index) is not None:
+        """Turn a lens into a Plossl pair and refocus, or say why that is not possible."""
+        try:
             self.model.make_plossl(lens_index)
-            if not self.model.state.image_gap_locked:
-                self.model.autofocus()  # the pair has a new focal length: the focus is stale
-            self.request_update()
+        except ValueError as error:
+            self.statusBar().showMessage(str(error), STATUS_MESSAGE_MS)
+            return
+        self.side_view.rebuild_lens_graphics()
+        if not self.model.state.image_gap_locked:
+            self.model.autofocus()  # the pair has a new focal length: the focus is stale
+        self.request_update()
 
     def make_assembly(self, lens_index: int) -> None:
         """Make the lenses joined to this one by locked gaps into one assembly."""
@@ -560,18 +564,12 @@ class MainWindow(QMainWindow):
             save_action.triggered.connect(lambda: self.save_as_user_part(lens_index))
         else:
             plossl_action = menu.addAction("Make Plossl")
-            plossl_action.setEnabled(self.model.plossl_partner(lens_index) is not None)
+            reason = self.model.reason_no_plossl(lens_index)
+            plossl_action.setEnabled(reason is None)
+            if reason is not None:
+                menu.setToolTipsVisible(True)
+                plossl_action.setToolTip(reason)
             plossl_action.triggered.connect(lambda: self.make_plossl(lens_index))
-
-            # While "Make Plossl" is highlighted, outline the two lenses that would be paired.
-            def preview_if_plossl(hovered_action) -> None:
-                if hovered_action is plossl_action and plossl_action.isEnabled():
-                    self.side_view.show_plossl_preview(lens_index)
-                else:
-                    self.side_view.hide_plossl_preview()
-
-            menu.hovered.connect(preview_if_plossl)
-        menu.aboutToHide.connect(self.side_view.hide_plossl_preview)
         return menu
 
     def show_gap_menu(self, lens_index: int, global_position: QPoint) -> None:
