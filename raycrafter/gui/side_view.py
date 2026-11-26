@@ -123,6 +123,8 @@ class SideView(pg.PlotWidget):
         # The lens and field picked in the bench viewer, drawn highlighted (see set_highlight).
         self.highlighted_lens_index: int | None = None
         self.highlighted_field_index: int | None = None
+        # True while the field editor is shown: the selected field's rays are drawn thick.
+        self.selected_field_in_bold = False
         self.image_line_locked = False  # True while "Lock focus" sets the image plane
         # True while the image line cannot be dragged: "Lock focus" is on or the gap to the
         # image plane is locked (see update_image_line_movable).
@@ -310,12 +312,19 @@ class SideView(pg.PlotWidget):
         self.update_gap_dimensions()
 
     def restyle_ray_curves(self) -> None:
-        """Draw each field's rays in its colour, thicker (and on top) if it is highlighted."""
+        """Draw each field's rays in its colour, thicker (and on top) if it is highlighted in
+        the bench viewer, or is the selected field while the field editor is shown."""
+        bold_index = self.model.state.selected_field_index if self.selected_field_in_bold else None
         for index, (beam, curve) in enumerate(zip(self.model.state.fields, self.ray_curves)):
-            highlighted = index == self.highlighted_field_index
+            highlighted = index in (self.highlighted_field_index, bold_index)
             width = HIGHLIGHTED_RAY_WIDTH_PX if highlighted else RAY_WIDTH_PX
             curve.setPen(pg.mkPen(beam.display_colour(), width=width))
             curve.setZValue(1 if highlighted else 0)
+
+    def show_selected_field_in_bold(self, bold: bool) -> None:
+        """Draw the selected field's rays thick (as it changes), or stop doing so."""
+        self.selected_field_in_bold = bold
+        self.restyle_ray_curves()
 
     def set_highlight(self, lens_index: int | None, field_index: int | None) -> None:
         """Highlight a lens (drawn as if hovered) and a field (thicker rays); None for neither."""

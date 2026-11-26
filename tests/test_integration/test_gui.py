@@ -408,8 +408,20 @@ def test_add_field_tool_shows_the_field_editor_and_light_switch(application):
     light_box.hidePopup()
     assert window.model.state.has_finite_object  # reordering changed nothing
 
+    # The rays of the field selected in the list are drawn thick, and only while it is shown.
+    editor.add_button.click()  # a second field, now the selected one
+    window.recompute_and_redraw()
+    widths = [curve.opts["pen"].widthF() for curve in window.side_view.ray_curves]
+    assert widths[1] > widths[0]
+    editor.field_list.setCurrentRow(0)
+    window.recompute_and_redraw()  # as the window does straight after
+    widths = [curve.opts["pen"].widthF() for curve in window.side_view.ray_curves]
+    assert widths[0] > widths[1]
+
     window.tools.escape()
     assert window.bottom_right.currentWidget() is window.field_tabs
+    widths = [curve.opts["pen"].widthF() for curve in window.side_view.ray_curves]
+    assert widths[0] == widths[1]
     window.close()
 
 

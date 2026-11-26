@@ -13,7 +13,8 @@ Choosing a tool shows its settings in the context bar and starts it:
   filters fill the context bar (``raycrafter.gui.lens_browser``). The lens chosen in it
   follows the pointer; each click places one.
 - Add field: the field editor takes the place of the bottom-right plots, and the "Light"
-  switch (beams or object points) is in the context bar.
+  switch (beams or object points) is in the context bar. The rays of the field selected in
+  its list are drawn thick on the bench.
 
 The lens menu's "Replace with same f…" and "Swap lens…" use the lens browser too
 (``start_replacement``): it shows the lenses that could take the place of one on the bench,
@@ -94,6 +95,7 @@ class ToolActions:
         self._replace_placement(None)  # whatever was being placed belongs to the old tool
         panels = {Tool.ADD_CATALOGUE_LENS: window.lens_browser, Tool.ADD_FIELD: window.field_editor}
         window.show_in_bottom_right(panels.get(tool, window.field_tabs))
+        side_view.show_selected_field_in_bold(tool == Tool.ADD_FIELD)
         if tool == Tool.MOVE and just_placed:
             self.select_lens(just_placed[0])
         if tool == Tool.ADD_PARAXIAL_LENS:
