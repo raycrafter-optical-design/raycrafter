@@ -263,3 +263,12 @@ typed. The gap inside a Plossl pair is shown but fixed. Dragging is unchanged, s
 overlap concave lenses at the rim.
 **Why:** Silently changing a typed number would mislead, and "Lock focus" would overwrite a
 typed image gap at once. The Plossl and dragging rules follow the issue. Rob agreed.
+
+## 2026-11-26: Project files embed the ZMX they were imported from (#40)
+**Decision:** A `.raycrafter` project made by Import ZMX keeps the file's exact bytes (base64),
+name, SHA-256, importing version and import notes in `imported_from`, on `OpticalState`. It is a
+record only and is never loaded; it is replaced by the next import and cleared by New. Always
+embedded, documented. "Lock focus" is not stored. After Import ZMX the design counts as saved.
+**Why:** The import is lossy and still improving, so the source allows re-import later,
+reproducible import bugs and importer regression tests. Storing only a path/hash was rejected
+as files move. Rob agreed.
