@@ -1,13 +1,17 @@
-"""The field window: a small, non-modal window for adding, removing and editing fields.
+"""The field editor: the panel for adding, removing and editing fields.
+
+It takes the place of the bottom-right plots while the "Add field" tool is active, so the
+user sees the effect of each change on the bench and the other plots.
 
 A field is a beam of light entering the bench (``raycrafter.core.state.BeamField``), or a
 point of a finite object on the source plane (``ObjectPoint``). Every field of a design is
-of one kind, chosen by the "Light" switch at the top of the form; switching converts them
-all (``OpticalModel.set_finite_object``). The list on the left shows every field with a
-swatch of its colour; "+" adds a field (a copy of the selected one) and "-" removes the
-selected fields (one always remains). The form on the right edits the field that is current
-in the list, which is also the field the single-field analyses use. Every change is applied
-to the model at once, so the user sees its effect while the window is open.
+of one kind, chosen by the "Light" switch, which is shown in the context bar
+(``light_controls``); switching converts them all (``OpticalModel.set_finite_object``).
+
+The list on the left shows every field with a swatch of its colour; "+" adds a field (a
+copy of the selected one) and "-" removes the selected fields (one always remains). The form
+on the right edits the field that is current in the list, which is also the field the
+single-field analyses use. Every change is applied to the model at once.
 """
 
 from __future__ import annotations
@@ -29,11 +33,10 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QColorDialog,
-    QComboBox,
-    QDialog,
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QListView,
     QListWidget,
     QListWidgetItem,
@@ -45,6 +48,8 @@ from PyQt6.QtWidgets import (
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import field_name
 from raycrafter.core.state import AnyField, ObjectPoint
+from raycrafter.gui.current_first_combo import CurrentFirstComboBox
+from raycrafter.gui.style import CONTEXT_BAR_BOX_HEIGHT_PX
 from raycrafter.gui.undo_keys import leave_undo_keys_to_window
 
 SWATCH_SIZE_PX = 12  # the colour square beside each field in the list
@@ -83,8 +88,9 @@ OBJECT_POINT_PROPERTIES = [
 # Every property once, in the order of the form (the wavelength is shared).
 ALL_PROPERTIES = BEAM_PROPERTIES[:-1] + OBJECT_POINT_PROPERTIES
 
-# The "Light" switch: its items, in this order, are beams and object points.
-LIGHT_KINDS = ["Beams (object at infinity)", "Object points (finite object)"]
+# The "Light" switch: (text, True for a finite object) per item.
+LIGHT_KINDS = [("Beams (object at infinity)", False), ("Object points (finite object)", True)]
+LIGHT_BOX_WIDTH_PX = 210
 
 
 def properties_of(light: AnyField) -> list[tuple]:
@@ -148,15 +154,18 @@ def colour_swatch(colour: str) -> QIcon:
     return QIcon(pixmap)
 
 
-class FieldEditor(QDialog):
+class FieldEditor(QWidget):
     """List of fields with "+" and "-", and a form for the current field.
 
     Parameters
     ----------
     model : OpticalModel
         The bench whose fields are edited.
-    parent : QWidget, optional
-        The main window; the field window stays on top of it.
+
+    Attributes
+    ----------
+    light_controls : QWidget
+        The "Light" switch, for the main window to put in the context bar.
 
     Signals
     -------
@@ -168,14 +177,9 @@ class FieldEditor(QDialog):
 
     fields_changed = pyqtSignal(object)
 
-    def __init__(self, model: OpticalModel, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
+    def __init__(self, model: OpticalModel) -> None:
+        super().__init__()
         self.model = model
-        self.setWindowTitle("Fields")
-        # A tool window floats above the main window without taking over the keyboard, so
-        # the bench stays usable while it is open.
-        self.setWindowFlag(Qt.WindowType.Tool)
-        self.setModal(False)
 
         self.field_list = QListWidget()
         self.field_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -187,19 +191,28 @@ class FieldEditor(QDialog):
         self.add_button.setToolTip("Add a field: a copy of the selected one")
         self.remove_button.setToolTip("Remove the selected fields")
 
-        self.light_kind_box = QComboBox()
+        self.light_kind_box = CurrentFirstComboBox()
         # A plain list view instead of the native macOS popup. The native popup ignores the
         # style sheet (the highlighted item's text was unreadable) and moves the list so that
         # the current item sits over the box, so the items jumped about as one was picked.
         self.light_kind_box.setView(QListView())
-        self.light_kind_box.addItems(LIGHT_KINDS)
+        for text, finite_object in LIGHT_KINDS:
+            self.light_kind_box.addItem(text, finite_object)
+        self.light_kind_box.setFixedSize(LIGHT_BOX_WIDTH_PX, CONTEXT_BAR_BOX_HEIGHT_PX)
         self.light_kind_box.setToolTip(
             "Beams: light from an object at infinity, each field an angle and a width.\n"
             "Object points: a finite object on the source plane, each field a height and an NA."
         )
+        self.light_controls = QWidget()
+        light_row = QHBoxLayout(self.light_controls)
+        light_row.setContentsMargins(0, 0, 0, 0)
+        light_row.setSpacing(6)
+        light_row.addWidget(QLabel("Light"))
+        light_row.addWidget(self.light_kind_box)
+        light_row.addStretch(1)
+
         self.value_boxes: dict[str, QDoubleSpinBox] = {}
         self.form = form = QFormLayout()
-        form.addRow("Light", self.light_kind_box)
         for attribute, label, minimum, maximum, step, decimals in ALL_PROPERTIES:
             box = QDoubleSpinBox()
             box.setRange(minimum, maximum)
@@ -261,18 +274,14 @@ class FieldEditor(QDialog):
         form_column.addLayout(form)
         form_column.addStretch(1)
 
-        # The list grows towards the window's left and top edges, which are a third of their
-        # usual distance away; the form and the list's right and bottom edges stay put.
+        # The list is as tall as the panel; the form sits beside it, at the top.
         layout = QHBoxLayout(self)
-        margins = layout.contentsMargins()
-        extra_px = margins.left() * 2 // 3
-        layout.setContentsMargins(
-            margins.left() - extra_px, margins.top() - extra_px, margins.right(), margins.bottom()
-        )
-        form_column.setContentsMargins(0, extra_px, 0, 0)
-        self.field_list.setFixedWidth(LIST_WIDTH_PX + extra_px)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.field_list.setFixedWidth(LIST_WIDTH_PX)
         layout.addLayout(list_column)
+        layout.addSpacing(12)
         layout.addLayout(form_column)
+        layout.addStretch(1)
 
     # ------------------------------------------------------------------ showing the fields
 
@@ -299,7 +308,8 @@ class FieldEditor(QDialog):
         include it.
         """
         self.light_kind_box.blockSignals(True)
-        self.light_kind_box.setCurrentIndex(1 if isinstance(light, ObjectPoint) else 0)
+        finite_object = isinstance(light, ObjectPoint)
+        self.light_kind_box.setCurrentIndex(self.light_kind_box.findData(finite_object))
         self.light_kind_box.blockSignals(False)
         shown = properties_of(light)
         shown_attributes = {attribute for attribute, *_rest in shown}
@@ -344,11 +354,10 @@ class FieldEditor(QDialog):
         self.fill_form(self.model.state.selected_field)
         self.fields_changed.emit(None)
 
-    def on_light_kind_changed(self, index: int) -> None:
+    def on_light_kind_changed(self, _index: int) -> None:
         """The "Light" switch changed: make every field a beam or an object point."""
-        self.model.set_finite_object(index == 1)
+        self.model.set_finite_object(bool(self.light_kind_box.currentData()))
         self.refresh()
-        self.adjustSize()
         self.fields_changed.emit(None)
 
     def add_field(self) -> None:

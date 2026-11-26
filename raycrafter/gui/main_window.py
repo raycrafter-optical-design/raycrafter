@@ -30,8 +30,9 @@ What each tool does is in ``raycrafter.gui.tool_actions``.
   brought up to date with the slower plots, once nothing is being dragged.
 - The Edit menu has Undo and Redo. One action (a whole drag, a typed value) is one step; New,
   Open and Import clear the history.
-- The Add field tool opens the field window (``raycrafter.gui.field_editor``), where beams
-  are added, removed and edited while the bench updates live.
+- The Add field tool shows the field editor (``raycrafter.gui.field_editor``) in place of
+  the bottom-right plots, where beams are added, removed and edited while the bench updates
+  live.
 
 Updates come in two speeds, to keep the window responsive (see CLAUDE.md). The side view,
 spot, through-focus plot and status bar are recomputed on every change (coalesced, so a
@@ -144,7 +145,6 @@ class MainWindow(QMainWindow):
         pg.setConfigOptions(background="w", foreground=palette.TEXT, antialias=True)
 
         self.model = model if model is not None else OpticalModel()
-        self.field_editor: FieldEditor | None = None  # made on first use, then kept
         self.bench_viewer: BenchViewer | None = None  # made on first use, then kept
         self.view_3d: View3DWindow | None = None  # made on first use, then kept
         self.f_number_readout: str | None = None  # last f-number text, kept during a drag
@@ -216,12 +216,15 @@ class MainWindow(QMainWindow):
             [("Field curvature", self.field_curvature_panel), ("Distortion", self.distortion_panel)]
         )
 
-        # The bottom-right corner shows the field curvature and distortion, or the lens
-        # browser while the "Add catalogue lens" tool is active (see show_in_bottom_right).
+        # The bottom-right corner shows the field curvature and distortion, or the panel of
+        # the "Add catalogue lens" or "Add field" tool while it is active (see
+        # show_in_bottom_right).
         self.lens_browser = LensBrowser(self.model.catalog)
+        self.field_editor = FieldEditor(self.model)
+        self.field_editor.fields_changed.connect(self.request_update)
         self.bottom_right = QStackedWidget()
-        self.bottom_right.addWidget(self.field_tabs)
-        self.bottom_right.addWidget(self.lens_browser)
+        for panel in (self.field_tabs, self.lens_browser, self.field_editor):
+            self.bottom_right.addWidget(panel)
 
         bottom_row = QHBoxLayout()
         for tab_widget in (self.spot_tabs, self.mtf_tabs, self.bottom_right):
@@ -247,6 +250,7 @@ class MainWindow(QMainWindow):
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.context_bar)
         self.lock_focus_button = self.context_bar.lock_focus_button  # "Lock focus"
         self.context_bar.add_page(Tool.ADD_CATALOGUE_LENS, self.lens_browser.filter_controls)
+        self.context_bar.add_page(Tool.ADD_FIELD, self.field_editor.light_controls)
 
     def _build_menus(self) -> None:
         """The RayCrafter menu (About, Quit), File (see ``file_actions``), Edit, View and Help.
@@ -538,22 +542,6 @@ class MainWindow(QMainWindow):
             return
         self.request_update()
 
-    def open_field_editor(self) -> None:
-        """Show the field window (made on first use) and bring it to the front.
-
-        The first time, it is put at the bottom-left of the window, over the first of the
-        plots, so it covers neither the side view nor the bench controls.
-        """
-        if self.field_editor is None:
-            self.field_editor = FieldEditor(self.model, parent=self)
-            self.field_editor.fields_changed.connect(self.request_update)
-            self.field_editor.adjustSize()
-            self.field_editor.move(self.spot_tabs.mapToGlobal(QPoint(0, 0)))
-        self.field_editor.refresh()  # the bench may have changed since it was last open
-        self.field_editor.show()
-        self.field_editor.raise_()
-        self.field_editor.activateWindow()
-
     def open_bench_viewer(self) -> None:
         """Show the bench viewer (made on first use) and bring it to the front."""
         if self.bench_viewer is None:
@@ -576,8 +564,7 @@ class MainWindow(QMainWindow):
     def delete_fields(self, field_indices: list[int]) -> None:
         """Remove fields (the bench viewer's Delete); at least one always remains."""
         self.model.remove_fields(field_indices)
-        if self.field_editor is not None:
-            self.field_editor.refresh()
+        self.field_editor.refresh()
         self.request_update()
 
     def show_3d_view(self) -> None:
@@ -658,8 +645,7 @@ class MainWindow(QMainWindow):
         """Redraw everything after the lenses or the whole design changed behind the view."""
         self.side_view.cancel_placement()
         self.side_view.rebuild_lens_graphics()
-        if self.field_editor is not None:
-            self.field_editor.refresh()
+        self.field_editor.refresh()
         self.f_number_readout = None
         self.request_update()
 

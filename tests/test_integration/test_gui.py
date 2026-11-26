@@ -389,6 +389,30 @@ def test_a_selected_paraxial_lens_is_edited_from_the_context_bar(application):
     window.close()
 
 
+def test_add_field_tool_shows_the_field_editor_and_light_switch(application):
+    """#70: the field editor takes the bottom-right corner, the Light switch the bar; the
+    switch's list always opens with the current choice at the top."""
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
+    editor = window.field_editor
+    assert window.bottom_right.currentWidget() is editor
+    assert window.context_bar.pages.currentWidget() is editor.light_controls
+
+    light_box = editor.light_kind_box
+    light_box.setCurrentIndex(light_box.findData(True))  # object points
+    assert window.model.state.has_finite_object
+    light_box.showPopup()
+    assert light_box.itemData(0) is True and light_box.currentIndex() == 0
+    light_box.hidePopup()
+    assert window.model.state.has_finite_object  # reordering changed nothing
+
+    window.tools.escape()
+    assert window.bottom_right.currentWidget() is window.field_tabs
+    window.close()
+
+
 def test_field_window_adds_edits_and_removes_fields_live(application):
     window = MainWindow()
     window.show()
@@ -498,7 +522,7 @@ def test_fields_are_numbered_from_zero_everywhere(application):
     window.model.add_field()  # added and selected: field 1
     window.show()
     window.recompute_and_redraw()
-    window.open_field_editor()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
     window.open_bench_viewer()
 
     # The field window and the bench viewer name the fields as scripts number them.
@@ -916,7 +940,7 @@ def test_undo_keys_work_from_a_field_box_and_spun_values_undo_together(applicati
     window = MainWindow()
     window.show()
     application.processEvents()
-    window.open_field_editor()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
     box = window.field_editor.value_boxes["angle_deg"]
     box.setFocus()
     for _ in range(3):
@@ -1396,7 +1420,7 @@ def test_drop_downs_use_a_styled_list_rather_than_the_native_popup(application):
     # The native macOS popup ignores the style sheet, so the highlighted item's text could
     # not be read, and it moves the list so that the items jump about as one is picked.
     window = MainWindow()
-    window.open_field_editor()
+    window.tool_palette.tool_actions[Tool.ADD_FIELD].trigger()
     assert type(window.field_editor.light_kind_box.view()) is QListView
     assert type(window.lens_browser.filter_controls.coating_combo.view()) is QListView
 

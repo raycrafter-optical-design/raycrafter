@@ -12,7 +12,8 @@ Choosing a tool shows its settings in the context bar and starts it:
 - Add catalogue lens: the lens browser takes the place of the bottom-right plots and its
   filters fill the context bar (``raycrafter.gui.lens_browser``). The lens chosen in it
   follows the pointer; each click places one.
-- Add field: for now, opens the field window and goes back to Move (#70).
+- Add field: the field editor takes the place of the bottom-right plots, and the "Light"
+  switch (beams or object points) is in the context bar.
 
 The lens menu's "Replace with same f…" and "Swap lens…" use the lens browser too
 (``start_replacement``): it shows the lenses that could take the place of one on the bench,
@@ -91,9 +92,8 @@ class ToolActions:
         window.lens_browser.end_replacement()  # if one was going on, it is abandoned
         self.bar.show_page(tool)
         self._replace_placement(None)  # whatever was being placed belongs to the old tool
-        window.show_in_bottom_right(
-            window.lens_browser if tool == Tool.ADD_CATALOGUE_LENS else window.field_tabs
-        )
+        panels = {Tool.ADD_CATALOGUE_LENS: window.lens_browser, Tool.ADD_FIELD: window.field_editor}
+        window.show_in_bottom_right(panels.get(tool, window.field_tabs))
         if tool == Tool.MOVE and just_placed:
             self.select_lens(just_placed[0])
         if tool == Tool.ADD_PARAXIAL_LENS:
@@ -108,8 +108,7 @@ class ToolActions:
             )
             self.on_catalogue_lens_chosen(window.lens_browser.selected_part_number())
         elif tool == Tool.ADD_FIELD:
-            self.window.open_field_editor()
-            self.choose_tool(Tool.MOVE)
+            window.field_editor.refresh()  # the bench may have changed since it was last shown
 
     def select_lens(self, lens: PlacedLens) -> None:
         """Select a lens on the bench (if it is still there), as a click on it would."""
