@@ -28,7 +28,7 @@ from raycrafter.core.plot_geometry import (
     rms_radius_text,
     spot_view_half_width_um,
 )
-from raycrafter.core.state import BeamField
+from raycrafter.core.state import AnyField
 from raycrafter.gui.style import PLOT_MIN_SIZE_PX, style_plot
 
 TITLE_SIZE = "11pt"
@@ -72,14 +72,14 @@ class SpotPanel(pg.PlotWidget):
         plot.addItem(self.airy_curve)
         self.field_scatters: list[pg.ScatterPlotItem] = []  # one per field
 
-    def show_result(self, fast_trace: FastTrace, fields: list[BeamField]) -> None:
+    def show_result(self, fast_trace: FastTrace, fields: list[AnyField]) -> None:
         """Draw every field's spot (micrometres about its centroid), the Airy disk and RMS.
 
         Parameters
         ----------
         fast_trace : FastTrace
             The spots, one per field.
-        fields : list of BeamField
+        fields : list of BeamField or ObjectPoint
             The fields, for their colours.
         """
         self._match_scatter_count(len(fast_trace.spots))
@@ -190,16 +190,20 @@ class MtfPanel(pg.PlotWidget):
         )
         self.sagittal_curve = plot.plot(pen=pg.mkPen(palette.SAGITTAL, width=2), name="sagittal")
 
-    def show_result(self, mtf: MtfResult, field_angle: float) -> None:
-        """Draw the MTF curves computed at ``field_angle`` degrees (or say why there are none)."""
+    def show_result(self, mtf: MtfResult, field_position: str) -> None:
+        """Draw the MTF curves (or say why there are none).
+
+        ``field_position`` says where the field is, e.g. "+2.5 deg" or "y = +0.50 mm" (see
+        ``plot_geometry.field_position_text``).
+        """
         self.limit_curve.setData(mtf.frequency, mtf.diffraction_limit)
         self.tangential_curve.setData(mtf.frequency, mtf.tangential)
         self.sagittal_curve.setData(mtf.frequency, mtf.sagittal)
         plot = self.getPlotItem()
         if mtf.frequency.size == 0:
-            plot.setTitle(f"No MTF: beam blocked at {field_angle:+.1f} deg", size=TITLE_SIZE)
+            plot.setTitle(f"No MTF: light blocked at {field_position}", size=TITLE_SIZE)
             return
-        plot.setTitle(f"MTF at {field_angle:+.1f} deg", size=TITLE_SIZE)
+        plot.setTitle(f"MTF at {field_position}", size=TITLE_SIZE)
         plot.setXRange(0, mtf.frequency[-1], padding=0)
 
 
@@ -221,13 +225,13 @@ class RayFanPanel(pg.PlotWidget):
             pen=pg.mkPen(palette.SAGITTAL, width=2, style=Qt.PenStyle.DashLine), name="sagittal"
         )
 
-    def show_result(self, fan: RayFanResult, field_angle: float) -> None:
-        """Draw the ray fan (micrometres) computed at ``field_angle`` degrees."""
+    def show_result(self, fan: RayFanResult, field_position: str) -> None:
+        """Draw the ray fan (micrometres) of the field at ``field_position`` (as for the MTF)."""
         # Blocked rays are NaN; connect="finite" leaves gaps there instead of failing.
         self.tangential_curve.setData(fan.pupil, fan.tangential_error * 1000.0, connect="finite")
         self.sagittal_curve.setData(fan.pupil, fan.sagittal_error * 1000.0, connect="finite")
         plot = self.getPlotItem()
-        plot.setTitle(f"Ray fan at {field_angle:+.1f} deg", size=TITLE_SIZE)
+        plot.setTitle(f"Ray fan at {field_position}", size=TITLE_SIZE)
 
         largest_error_mm = largest_magnitude(fan.tangential_error, fan.sagittal_error)
         limit_um = ray_fan_limit_um(largest_error_mm)
@@ -266,7 +270,11 @@ class FieldCurvaturePanel(pg.PlotWidget):
         )
 
     def show_result(self, curvature: FieldCurvatureResult, field_angle: float) -> None:
-        """Draw the curves; a dashed line marks the selected field's angle."""
+        """Draw the curves; a dashed line marks the selected field's angle.
+
+        ``field_angle`` is the angle of the field's chief ray in degrees (for an object point,
+        see ``fields.chief_ray_angle_deg``).
+        """
         # Angles with too little light are NaN; connect="finite" leaves gaps there.
         self.tangential_curve.setData(
             curvature.tangential_shift, curvature.angles, connect="finite"

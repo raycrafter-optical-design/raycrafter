@@ -342,3 +342,12 @@ call. The threaded or every-few-frames tracing suggested in #27 is put off.
 **Why:** Glass lookups were nearly all of a rebuild, and a trace call costs much the same for
 few rays as for many. A 12-lens, 9-field frame fell from 260 to 66 ms (Apple M2, off screen),
 only 17 ms of it tracing, so a thread would gain little.
+
+## 2026-11-26: A finite object is points on the source plane (#29)
+**Decision:** A design's fields are all beams (object at infinity) or all `ObjectPoint`s (x and
+y height, object-space NA) on the source plane, which is then the object plane; there is no
+separate `object_z`. Rays fill a cone of half-angle asin(NA) about a chief ray aimed at the
+first lens centre (a stop item comes later). Switching keeps each chief-ray angle; with the
+source on the lens, the object goes to its front focal plane. Project files are format 2.
+**Why:** Rob's choices. The source plane (#41) already did what `object_z` would; one kind per
+design, as in Zemax, keeps magnification, the MTF and ZMX export well defined.

@@ -31,8 +31,10 @@ from raycrafter.core.optic_builder import is_diverging
 from raycrafter.core.prescription import LensSurface
 from raycrafter.core.state import (
     AXIS_START_Z,
+    AnyField,
     BeamField,
     ImportedSource,
+    ObjectPoint,
     OpticalState,
     PlacedLens,
     raycrafter_version,
@@ -40,11 +42,7 @@ from raycrafter.core.state import (
 
 FILE_EXTENSION = ".raycrafter"
 FORMAT_NAME = "raycrafter-project"
-FORMAT_VERSION = 1
-
-# Format version -> function that turns a file of that version into the next version's
-# layout. Empty until version 2 exists.
-_UPGRADES: dict[int, Callable[[dict], dict]] = {}
+FORMAT_VERSION = 2  # 2: fields have a "kind", and may be object points (#29)
 
 # The keys of a design: the project's own, and the imported bench inside imported_from.
 DESIGN_KEYS = [
@@ -68,14 +66,26 @@ PARAXIAL_LENS_KEYS = ["focal_length_mm"]
 BENCH_LENS_KEYS = ["assembly", "locked_to_next"]
 ASSEMBLY_KEYS = ["id", "name"]
 SURFACE_KEYS = ["radius_mm", "thickness_after_mm", "material_after"]
-FIELD_KEYS = [
-    "diameter_mm",
-    "angle_deg",
-    "vergence_dioptres",
-    "offset_mm",
-    "wavelength_nm",
-    "colour",
-]
+# A field's keys depend on its kind: a beam, or a point of a finite object (#29).
+FIELD_KEYS = {
+    "beam": [
+        "kind",
+        "diameter_mm",
+        "angle_deg",
+        "vergence_dioptres",
+        "offset_mm",
+        "wavelength_nm",
+        "colour",
+    ],
+    "object_point": [
+        "kind",
+        "height_x_mm",
+        "height_y_mm",
+        "numerical_aperture",
+        "wavelength_nm",
+        "colour",
+    ],
+}
 SOURCE_KEYS = [
     "format",
     "file_name",
@@ -201,14 +211,24 @@ def lens_to_dict(lens: PlacedLens, on_bench: bool = True) -> dict:
     return data
 
 
-def _field_to_dict(beam: BeamField) -> dict:
+def _field_to_dict(light: AnyField) -> dict:
+    if isinstance(light, ObjectPoint):
+        return {
+            "kind": "object_point",
+            "height_x_mm": light.height_x_mm,
+            "height_y_mm": light.height_y_mm,
+            "numerical_aperture": light.numerical_aperture,
+            "wavelength_nm": light.wavelength_nm,
+            "colour": light.colour,
+        }
     return {
-        "diameter_mm": beam.diameter_mm,
-        "angle_deg": beam.angle_deg,
-        "vergence_dioptres": beam.vergence_dioptres,
-        "offset_mm": beam.offset_mm,
-        "wavelength_nm": beam.wavelength_nm,
-        "colour": beam.colour,
+        "kind": "beam",
+        "diameter_mm": light.diameter_mm,
+        "angle_deg": light.angle_deg,
+        "vergence_dioptres": light.vergence_dioptres,
+        "offset_mm": light.offset_mm,
+        "wavelength_nm": light.wavelength_nm,
+        "colour": light.colour,
     }
 
 
@@ -305,6 +325,10 @@ def _design_from_dict(data: dict, prefix: str) -> OpticalState:
     ]
     if not fields:
         raise ProjectFileError(f"The {prefix}design has no fields; there must be at least one.")
+    if len({type(light) for light in fields}) > 1:
+        raise ProjectFileError(
+            f"The {prefix}design mixes beams and object points; its fields must be of one kind."
+        )
     selected_field = _integer(data["selected_field"], f"{prefix}selected_field")
     if not 0 <= selected_field < len(fields):
         raise ProjectFileError(
@@ -369,6 +393,26 @@ def _check_assemblies(
             raise ProjectFileError(
                 f"The gaps inside the {prefix}assembly {name!r} must all be locked."
             )
+
+
+def _upgrade_from_version_1(data: dict) -> dict:
+    """Version 1 had beams only, without a "kind": mark each one as a beam.
+
+    Anything malformed is left as it is, for the checks that follow to name.
+    """
+    designs = [data]
+    if isinstance(data.get("imported_from"), dict):
+        designs.append(data["imported_from"].get("imported_design"))
+    for design in designs:
+        if isinstance(design, dict) and isinstance(design.get("fields"), list):
+            for field_data in design["fields"]:
+                if isinstance(field_data, dict):
+                    field_data.setdefault("kind", "beam")
+    return data
+
+
+# Format version -> function that turns a file of that version into the next version's layout.
+_UPGRADES: dict[int, Callable[[dict], dict]] = {1: _upgrade_from_version_1}
 
 
 def _upgraded(data: dict) -> dict:
@@ -455,10 +499,17 @@ def _surface_from_dict(data: object, where: str) -> LensSurface:
     )
 
 
-def _field_from_dict(data: object, where: str) -> BeamField:
+def _field_from_dict(data: object, where: str) -> AnyField:
     if not isinstance(data, dict):
         raise ProjectFileError(f"{where} is not a JSON object.")
-    _check_keys(data, FIELD_KEYS, where)
+    kind = data.get("kind")
+    if kind not in FIELD_KEYS:
+        raise ProjectFileError(
+            f"{where} has kind {kind!r}; it must be one of {', '.join(map(repr, FIELD_KEYS))}."
+        )
+    _check_keys(data, FIELD_KEYS[kind], where)
+    if kind == "object_point":
+        return _object_point_from_dict(data, where)
     diameter_mm = _number(data["diameter_mm"], f"{where} diameter_mm")
     wavelength_nm = _number(data["wavelength_nm"], f"{where} wavelength_nm")
     if diameter_mm <= 0 or wavelength_nm <= 0:
@@ -468,6 +519,22 @@ def _field_from_dict(data: object, where: str) -> BeamField:
         angle_deg=_number(data["angle_deg"], f"{where} angle_deg"),
         vergence_dioptres=_number(data["vergence_dioptres"], f"{where} vergence_dioptres"),
         offset_mm=_number(data["offset_mm"], f"{where} offset_mm"),
+        wavelength_nm=wavelength_nm,
+        colour=_optional_text(data["colour"], f"{where} colour"),
+    )
+
+
+def _object_point_from_dict(data: dict, where: str) -> ObjectPoint:
+    numerical_aperture = _number(data["numerical_aperture"], f"{where} numerical_aperture")
+    wavelength_nm = _number(data["wavelength_nm"], f"{where} wavelength_nm")
+    if not 0 < numerical_aperture < 1 or wavelength_nm <= 0:
+        raise ProjectFileError(
+            f"{where} needs a numerical aperture between 0 and 1 and a positive wavelength."
+        )
+    return ObjectPoint(
+        height_x_mm=_number(data["height_x_mm"], f"{where} height_x_mm"),
+        height_y_mm=_number(data["height_y_mm"], f"{where} height_y_mm"),
+        numerical_aperture=numerical_aperture,
         wavelength_nm=wavelength_nm,
         colour=_optional_text(data["colour"], f"{where} colour"),
     )

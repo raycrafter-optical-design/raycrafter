@@ -65,9 +65,16 @@ from PyQt6.QtWidgets import (
 
 from raycrafter import palette
 from raycrafter.core.analysis import FastTrace, airy_radius
+from raycrafter.core.fields import chief_ray_angle_deg
 from raycrafter.core.gaps import MIN_IMAGE_GAP_MM, SOURCE_GAP_INDEX
 from raycrafter.core.model import OpticalModel
-from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
+from raycrafter.core.plot_geometry import (
+    f_number_text,
+    field_position_text,
+    image_point_text,
+    magnification_text,
+    rms_radius_text,
+)
 from raycrafter.core.state import PlacedLens
 from raycrafter.gui.about_dialog import DOCS_URL, AboutDialog
 from raycrafter.gui.analysis_panels import (
@@ -843,6 +850,12 @@ class MainWindow(QMainWindow):
                 f"EFL={summary.effective_focal_length:.1f} mm",
                 f"BFL={summary.back_focal_length:.1f} mm",
             ]
+            if summary.magnification is not None:
+                readouts.append(magnification_text(summary.magnification))
+        if state.has_finite_object:
+            # The real image height: where the selected field's chief ray lands.
+            image_x, image_y = fast_trace.chief_ray_image_points[state.selected_field_index]
+            readouts.append(image_point_text(image_x, image_y))
         # The f-number needs an extra trace: during a drag the last value stays on show.
         if not self.is_dragging():
             f_number = self.model.compute_f_number()
@@ -868,15 +881,17 @@ class MainWindow(QMainWindow):
         if self.is_dragging():
             return  # they are recomputed when the drag ends
         self.update_mtf_tab()
+        state = self.model.state
         self.field_curvature_panel.show_result(
-            self.model.compute_field_curvature(), self.model.state.selected_field.angle_deg
+            self.model.compute_field_curvature(),
+            chief_ray_angle_deg(state, state.selected_field),
         )
         self.set_slow_plots_faded(False)
 
     def update_mtf_tab(self) -> None:
         """Compute whichever of the MTF and ray fan is showing; the other waits until selected."""
-        field_angle = self.model.state.selected_field.angle_deg
+        field_position = field_position_text(self.model.state.selected_field)
         if self.mtf_tabs.currentWidget() is self.mtf_panel:
-            self.mtf_panel.show_result(self.model.compute_mtf(), field_angle)
+            self.mtf_panel.show_result(self.model.compute_mtf(), field_position)
         else:
-            self.ray_fan_panel.show_result(self.model.compute_ray_fan(), field_angle)
+            self.ray_fan_panel.show_result(self.model.compute_ray_fan(), field_position)

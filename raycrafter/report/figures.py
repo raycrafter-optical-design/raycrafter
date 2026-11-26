@@ -27,6 +27,7 @@ from raycrafter.core.analysis import (
     ThroughFocusResult,
     airy_radius,
 )
+from raycrafter.core.fields import chief_ray_angle_deg
 from raycrafter.core.plot_geometry import (
     axis_ranges,
     largest_magnitude,
@@ -357,5 +358,6 @@ def draw_named_plot(state: OpticalState, kind: str) -> Figure:
     if kind == "ray_fan":
         return draw_ray_fan(analysis.compute_ray_fan(state))
     return draw_field_curvature(
-        analysis.compute_field_curvature(state), state.selected_field.angle_deg
+        analysis.compute_field_curvature(state),
+        chief_ray_angle_deg(state, state.selected_field),
     )

@@ -7,9 +7,11 @@ once and launch every field's rays ourselves. This is also fast: all the fields 
 together (see ``join_rays``). The MTF is the exception: it needs Optiland's own pupil model
 (see ``optic_builder.build_optic_for_beam``).
 
-Every ray starts at the start of the axis (``AXIS_START_Z``), so the side view can draw it
-from there. Its height and slope are worked out from where it crosses the beam's reference
-plane (the source plane, ``OpticalState.source_z``; see ``BeamField``):
+There are two kinds of field, each with its own launcher; ``launch_rays`` picks the right one.
+
+A beam (``BeamField``, ``launch_beam``) starts at the start of the axis (``AXIS_START_Z``),
+so the side view can draw it from there. Each ray's height and slope are worked out from
+where it crosses the beam's reference plane (the source plane, ``OpticalState.source_z``):
 
 - a ray at pupil point (px, py), normalised to the beam radius r, crosses the reference
   plane at x = px r, y = offset + py r;
@@ -17,8 +19,11 @@ plane (the source plane, ``OpticalState.source_z``; see ``BeamField``):
   dx/dz = -V px r, with V in 1/mm. A converging beam (V > 0) thus aims at a point 1000/V mm
   beyond the reference plane, which is how a real point object would light the lens.
 
-``beam_at_first_lens`` gives the same beam described at the first lens instead, for the
-analyses that use Optiland's own object and pupil there.
+An object point (``ObjectPoint``, ``launch_from_point``) is a point on the source plane, and
+its rays start there, in a cone about the chief ray (see ``launch_from_point``).
+
+``beam_at_first_lens`` gives a beam described at the first lens instead, for the analyses
+that use Optiland's own object and pupil there.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ from optiland.distribution import create_distribution
 from optiland.optic import Optic
 from optiland.rays import RealRays
 
-from raycrafter.core.state import AXIS_START_Z, BeamField, OpticalState
+from raycrafter.core.state import AXIS_START_Z, AnyField, BeamField, ObjectPoint, OpticalState
 
 
 def pupil_points(distribution: str, ray_count: int) -> tuple[np.ndarray, np.ndarray]:
@@ -61,12 +66,28 @@ def pupil_points(distribution: str, ray_count: int) -> tuple[np.ndarray, np.ndar
 
 def launch_rays(
     state: OpticalState,
+    light: AnyField,
+    optic: Optic,
+    pupil_x: np.ndarray,
+    pupil_y: np.ndarray,
+) -> RealRays:
+    """Optiland rays for one field of either kind (``launch_beam`` or ``launch_from_point``).
+
+    The parameters and result are those of the launcher used.
+    """
+    if isinstance(light, ObjectPoint):
+        return launch_from_point(state, light, optic, pupil_x, pupil_y)
+    return launch_beam(state, light, optic, pupil_x, pupil_y)
+
+
+def launch_beam(
+    state: OpticalState,
     beam: BeamField,
     optic: Optic,
     pupil_x: np.ndarray,
     pupil_y: np.ndarray,
 ) -> RealRays:
-    """Optiland rays for one field, starting at the start of the axis.
+    """Optiland rays for one beam, starting at the start of the axis.
 
     Parameters
     ----------
@@ -94,14 +115,11 @@ def launch_rays(
     slope_x = -vergence_per_mm * pupil_x * radius_mm
     slope_y = np.tan(np.radians(beam.angle_deg)) - vergence_per_mm * pupil_y * radius_mm
 
-    # Step back along each ray to the start of the axis. Optiland's z is anchored on its
-    # first surface, which is at state.first_surface_z() on the bench.
+    # Step back along each ray to the start of the axis.
     distance_back_mm = state.beam_reference_z() - AXIS_START_Z
     start_x = x_at_reference - slope_x * distance_back_mm
     start_y = y_at_reference - slope_y * distance_back_mm
-    first_surface_local_z = float(optic.surfaces[1].geometry.cs.z)
-    start_local_z = first_surface_local_z - (state.first_surface_z() - AXIS_START_Z)
-    start_z = np.full(pupil_x.shape, start_local_z)
+    start_z = np.full(pupil_x.shape, _local_z(state, optic, AXIS_START_Z))
 
     # Direction cosines: the slope vector (dx/dz, dy/dz, 1), normalised.
     length = np.sqrt(slope_x**2 + slope_y**2 + 1.0)
@@ -116,6 +134,81 @@ def launch_rays(
         intensity=np.ones(ray_count),
         wavelength=np.full(ray_count, beam.wavelength_um),
     )
+
+
+def launch_from_point(
+    state: OpticalState,
+    point: ObjectPoint,
+    optic: Optic,
+    pupil_x: np.ndarray,
+    pupil_y: np.ndarray,
+) -> RealRays:
+    """Optiland rays for one object point, starting at the point on the source plane.
+
+    The chief ray (pupil point 0, 0) is aimed at the centre of the first lens's front vertex
+    (straight along the axis if the point is on the lens's vertex plane). The other rays fill
+    a cone of half-angle asin(NA) about it: a ray at normalised pupil point (px, py) has
+    direction cosines (NA px, NA py) relative to the chief ray. This samples the cone evenly in
+    the sine of the angle, as an object-space NA is defined (the sine condition).
+
+    Parameters
+    ----------
+    state : OpticalState
+        The bench; it gives the position of the source (object) plane and the first lens.
+    point : ObjectPoint
+        The object point to launch from.
+    optic : optiland.optic.Optic
+        The system built from ``state`` (``optic_builder.build_optic``).
+    pupil_x, pupil_y : numpy.ndarray
+        Normalised pupil coordinates of the rays (see ``pupil_points``).
+
+    Returns
+    -------
+    optiland.rays.RealRays
+        Rays ready for ``optic.surfaces.trace``.
+    """
+    # The chief ray's direction, (chief_x, chief_y, chief_z), a unit vector.
+    distance_to_lens_mm = state.first_surface_z() - state.source_z
+    chief = np.array([-point.height_x_mm, -point.height_y_mm, distance_to_lens_mm])
+    if distance_to_lens_mm <= 0.0:
+        chief = np.array([0.0, 0.0, 1.0])
+    chief_x, chief_y, chief_z = chief / np.linalg.norm(chief)
+
+    # Each ray's direction about the chief ray, as if the chief ray were along the axis.
+    across_x = point.numerical_aperture * pupil_x
+    across_y = point.numerical_aperture * pupil_y
+    along = np.sqrt(1.0 - across_x**2 - across_y**2)
+
+    # Rotate those directions so that the axis turns onto the chief ray. This is Rodrigues'
+    # rotation about the axis z x chief, written out for the vector (across_x, across_y,
+    # along); it needs chief_z > 0, which holds for any point in front of the lens.
+    sideways = chief_x * across_x + chief_y * across_y
+    rodrigues_factor = 1.0 / (1.0 + chief_z)
+    direction_x = across_x + chief_x * along - chief_x * sideways * rodrigues_factor
+    direction_y = across_y + chief_y * along - chief_y * sideways * rodrigues_factor
+    direction_z = along - sideways - (chief_x**2 + chief_y**2) * along * rodrigues_factor
+
+    ray_count = pupil_x.size
+    return RealRays(
+        x=np.full(ray_count, point.height_x_mm),
+        y=np.full(ray_count, point.height_y_mm),
+        z=np.full(ray_count, _local_z(state, optic, state.source_z)),
+        L=direction_x,
+        M=direction_y,
+        N=direction_z,
+        intensity=np.ones(ray_count),
+        wavelength=np.full(ray_count, point.wavelength_um),
+    )
+
+
+def _local_z(state: OpticalState, optic: Optic, bench_z: float) -> float:
+    """Optiland's local z of a plane at ``bench_z`` on the bench.
+
+    Optiland's z has its own origin, anchored on its first surface, which is at
+    ``state.first_surface_z()`` on the bench.
+    """
+    first_surface_local_z = float(optic.surfaces[1].geometry.cs.z)
+    return first_surface_local_z - (state.first_surface_z() - bench_z)
 
 
 def beam_at_first_lens(state: OpticalState, beam: BeamField) -> BeamField:

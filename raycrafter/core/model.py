@@ -39,6 +39,8 @@ import numpy as np
 from raycrafter.core import (
     analysis,
     assemblies,
+    examples,
+    fields,
     gap_optimisation,
     gaps,
     moving,
@@ -56,7 +58,7 @@ from raycrafter.core.placement import (  # noqa: F401  (imported from here too)
     INITIAL_LENS_Z,
     LENS_GAP_MM,
 )
-from raycrafter.core.state import BeamField, OpticalState, PlacedLens
+from raycrafter.core.state import AnyField, OpticalState, PlacedLens
 from raycrafter.core.user_parts import UserPart
 from raycrafter.lenscatalog import thorlabs
 from raycrafter.lenscatalog.catalog import CatalogEntry
@@ -311,7 +313,7 @@ class OpticalModel:
 
     # ---------------------------------------------------------------- fields
 
-    def add_field(self) -> BeamField:
+    def add_field(self) -> AnyField:
         """Add a field: a copy of the selected one, which then becomes the selected field.
 
         Starting from a copy means a new field is already sensible for the bench, and the
@@ -320,7 +322,7 @@ class OpticalModel:
 
         Returns
         -------
-        BeamField
+        BeamField or ObjectPoint
             The new field (the last in ``state.fields``).
         """
         new_field = replace(self.state.selected_field, colour=None)
@@ -339,24 +341,28 @@ class OpticalModel:
         IndexError
             If any index is not a field; nothing is removed then.
         """
-        fields = self.state.fields
+        all_fields = self.state.fields
         for field_index in field_indices:
-            if not 0 <= field_index < len(fields):
+            if not 0 <= field_index < len(all_fields):
                 raise IndexError(f"There is no field {field_index}")
         to_remove = sorted(set(field_indices))
-        if len(to_remove) >= len(fields):
+        if len(to_remove) >= len(all_fields):
             to_remove = to_remove[1:]  # keep the first field
         if not to_remove:
             return
         for index in reversed(to_remove):
-            del fields[index]
-        self.state.selected_field_index = min(max(to_remove[0] - 1, 0), len(fields) - 1)
+            del all_fields[index]
+        self.state.selected_field_index = min(max(to_remove[0] - 1, 0), len(all_fields) - 1)
 
     def select_field(self, field_index: int) -> None:
         """Make this field the one that autofocus and the single-field analyses use."""
         if not 0 <= field_index < len(self.state.fields):
             raise IndexError(f"There is no field {field_index}")
         self.state.selected_field_index = field_index
+
+    def set_finite_object(self, finite: bool) -> None:
+        """Make the fields object points or beams (see ``fields.set_finite_object``)."""
+        fields.set_finite_object(self.state, finite)
 
     # ---------------------------------------------------------------- optics
 
@@ -453,6 +459,21 @@ class OpticalModel:
         self.project_path = None
         self.mark_saved()
         self.clear_undo_history()
+
+    def new_design_from_example(self, name: str) -> None:
+        """Start again from the example design ``name``, as ``new_design`` does.
+
+        The examples, by name, are ``examples.EXAMPLES``.
+
+        Raises
+        ------
+        KeyError
+            If there is no example of that name.
+        """
+        example = examples.EXAMPLES[name]()
+        self.new_design()
+        self.state = example
+        self.mark_saved()
 
     def save_project(
         self, file_path: str | Path | None = None, forget_import: bool = False

@@ -56,15 +56,19 @@ class DesignFileMethods:
         source = self._call("get_design")["imported_from"]
         return None if source is None else source["modified_since_import"]
 
-    def new_design(self, discard_unsaved: bool = False) -> None:
-        """Start again with no lenses and one default field.
+    def new_design(self, discard_unsaved: bool = False, example: str | None = None) -> None:
+        """Start again with no lenses and one default field, or from an example design.
+
+        ``example`` is the name of one of ``raycrafter.core.examples.EXAMPLES``, such as
+        ``"Basic microscope"``.
 
         Raises
         ------
         ValueError
-            If there are unsaved changes and ``discard_unsaved`` is False.
+            If there are unsaved changes and ``discard_unsaved`` is False, or there is no
+            example of that name.
         """
-        self._call("new_design", discard_unsaved=discard_unsaved)
+        self._call("new_design", discard_unsaved=discard_unsaved, example=example)
 
     def save_project(
         self, file_path: str | Path | None = None, forget_import: bool = False

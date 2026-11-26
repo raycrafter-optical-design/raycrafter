@@ -1,11 +1,13 @@
 """The field window: a small, non-modal window for adding, removing and editing fields.
 
-A field is a beam of light entering the bench (``raycrafter.core.state.BeamField``). The
-list on the left shows every field with a swatch of its colour; "+" adds a field (a copy of
-the selected one) and "-" removes the selected fields (one always remains). The form on the
-right edits the field that is current in the list, which is also the field the single-field
-analyses use. Every change is applied to the model at once, so the user sees its effect
-while the window is open.
+A field is a beam of light entering the bench (``raycrafter.core.state.BeamField``), or a
+point of a finite object on the source plane (``ObjectPoint``). Every field of a design is
+of one kind, chosen by the "Light" switch at the top of the form; switching converts them
+all (``OpticalModel.set_finite_object``). The list on the left shows every field with a
+swatch of its colour; "+" adds a field (a copy of the selected one) and "-" removes the
+selected fields (one always remains). The form on the right edits the field that is current
+in the list, which is also the field the single-field analyses use. Every change is applied
+to the model at once, so the user sees its effect while the window is open.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QColorDialog,
+    QComboBox,
     QDialog,
     QDoubleSpinBox,
     QFormLayout,
@@ -40,7 +43,7 @@ from PyQt6.QtWidgets import (
 
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import field_name
-from raycrafter.core.state import BeamField
+from raycrafter.core.state import AnyField, ObjectPoint
 from raycrafter.gui.undo_keys import leave_undo_keys_to_window
 
 SWATCH_SIZE_PX = 12  # the colour square beside each field in the list
@@ -60,14 +63,32 @@ QPushButton:pressed { background: palette(mid); }
 QPushButton:disabled { color: palette(mid); }
 """
 
-# The editable properties: (BeamField attribute, label, minimum, maximum, step, decimals).
-FIELD_PROPERTIES = [
+# The editable properties of each kind of field:
+# (attribute, label, minimum, maximum, step, decimals).
+WAVELENGTH_PROPERTY = ("wavelength_nm", "Wavelength (nm)", 300.0, 2000.0, 5.0, 0)
+BEAM_PROPERTIES = [
     ("diameter_mm", "Width (mm)", 0.1, 60.0, 1.0, 1),
     ("angle_deg", "Angle (deg)", -20.0, 20.0, 0.1, 1),
     ("vergence_dioptres", "Vergence (D)", -10.0, 10.0, 0.05, 2),
     ("offset_mm", "Offset (mm)", -30.0, 30.0, 0.5, 1),
-    ("wavelength_nm", "Wavelength (nm)", 300.0, 2000.0, 5.0, 0),
+    WAVELENGTH_PROPERTY,
 ]
+OBJECT_POINT_PROPERTIES = [
+    ("height_y_mm", "Height y (mm)", -30.0, 30.0, 0.1, 2),
+    ("height_x_mm", "Height x (mm)", -30.0, 30.0, 0.1, 2),
+    ("numerical_aperture", "NA", 0.001, 0.95, 0.01, 3),
+    WAVELENGTH_PROPERTY,
+]
+# Every property once, in the order of the form (the wavelength is shared).
+ALL_PROPERTIES = BEAM_PROPERTIES[:-1] + OBJECT_POINT_PROPERTIES
+
+# The "Light" switch: its items, in this order, are beams and object points.
+LIGHT_KINDS = ["Beams (object at infinity)", "Object points (finite object)"]
+
+
+def properties_of(light: AnyField) -> list[tuple]:
+    """The editable properties of a field of this kind."""
+    return OBJECT_POINT_PROPERTIES if isinstance(light, ObjectPoint) else BEAM_PROPERTIES
 
 
 def reset_colour_icon(size_px: int = 64) -> QIcon:
@@ -165,9 +186,16 @@ class FieldEditor(QDialog):
         self.add_button.setToolTip("Add a field: a copy of the selected one")
         self.remove_button.setToolTip("Remove the selected fields")
 
+        self.light_kind_box = QComboBox()
+        self.light_kind_box.addItems(LIGHT_KINDS)
+        self.light_kind_box.setToolTip(
+            "Beams: light from an object at infinity, each field an angle and a width.\n"
+            "Object points: a finite object on the source plane, each field a height and an NA."
+        )
         self.value_boxes: dict[str, QDoubleSpinBox] = {}
-        form = QFormLayout()
-        for attribute, label, minimum, maximum, step, decimals in FIELD_PROPERTIES:
+        self.form = form = QFormLayout()
+        form.addRow("Light", self.light_kind_box)
+        for attribute, label, minimum, maximum, step, decimals in ALL_PROPERTIES:
             box = QDoubleSpinBox()
             box.setRange(minimum, maximum)
             box.setSingleStep(step)
@@ -185,10 +213,10 @@ class FieldEditor(QDialog):
         # button that goes back to the colour of the wavelength. Together they are as wide
         # as a spin box, so the form's right edge stays close to the boxes.
         self.colour_button = QPushButton()
-        self.colour_button.setToolTip("Draw this beam in a colour of your choice")
+        self.colour_button.setToolTip("Draw this field in a colour of your choice")
         self.auto_colour_button = QPushButton()
         self.auto_colour_button.setIcon(reset_colour_icon())
-        self.auto_colour_button.setToolTip("Reset: draw this beam in the colour of its wavelength")
+        self.auto_colour_button.setToolTip("Reset: draw this field in the colour of its wavelength")
         button_height_px = self.value_boxes["wavelength_nm"].sizeHint().height()
         self.auto_colour_button.setFixedSize(button_height_px, button_height_px)
         self.auto_colour_button.setIconSize(self.auto_colour_button.size() * 0.8)
@@ -207,6 +235,7 @@ class FieldEditor(QDialog):
         self.field_list.itemSelectionChanged.connect(self.update_remove_button)
         self.colour_button.clicked.connect(self.choose_colour)
         self.auto_colour_button.clicked.connect(self.use_wavelength_colour)
+        self.light_kind_box.currentIndexChanged.connect(self.on_light_kind_changed)
         self.refresh()
 
     def _lay_out(self, form: QFormLayout) -> None:
@@ -256,23 +285,31 @@ class FieldEditor(QDialog):
         self.update_remove_button()
         self.fill_form(self.model.state.selected_field)
 
-    def fill_form(self, beam: BeamField) -> None:
-        """Show a field's values, without these updates counting as edits.
+    def fill_form(self, light: AnyField) -> None:
+        """Show a field's kind and values, without these updates counting as edits.
 
-        A field loaded from a file or set by a script may lie outside a box's usual range.
-        Qt would silently clamp it, so the box would show a value the model does not have;
-        instead the box's range is widened to include it.
+        Only the rows for the field's kind are shown. A field loaded from a file or set by a
+        script may lie outside a box's usual range. Qt would silently clamp it, so the box
+        would show a value the model does not have; instead the box's range is widened to
+        include it.
         """
-        for attribute, _label, minimum, maximum, _step, _decimals in FIELD_PROPERTIES:
+        self.light_kind_box.blockSignals(True)
+        self.light_kind_box.setCurrentIndex(1 if isinstance(light, ObjectPoint) else 0)
+        self.light_kind_box.blockSignals(False)
+        shown = properties_of(light)
+        shown_attributes = {attribute for attribute, *_rest in shown}
+        for attribute, box in self.value_boxes.items():
+            self.form.setRowVisible(box, attribute in shown_attributes)
+        for attribute, _label, minimum, maximum, _step, _decimals in shown:
             box = self.value_boxes[attribute]
-            value = getattr(beam, attribute)
+            value = getattr(light, attribute)
             box.blockSignals(True)
             box.setRange(min(minimum, value), max(maximum, value))
             box.setValue(value)
             box.blockSignals(False)
-        self._show_colour(beam)
+        self._show_colour(light)
 
-    def _show_colour(self, beam: BeamField) -> None:
+    def _show_colour(self, beam: AnyField) -> None:
         """Fill the colour rectangle with the field's colour; enable reset if it is its own."""
         self.colour_button.setStyleSheet(
             f"QPushButton {{ background-color: {beam.display_colour()}; "
@@ -302,6 +339,13 @@ class FieldEditor(QDialog):
         self.fill_form(self.model.state.selected_field)
         self.fields_changed.emit(None)
 
+    def on_light_kind_changed(self, index: int) -> None:
+        """The "Light" switch changed: make every field a beam or an object point."""
+        self.model.set_finite_object(index == 1)
+        self.refresh()
+        self.adjustSize()
+        self.fields_changed.emit(None)
+
     def add_field(self) -> None:
         """Add a copy of the selected field and select it."""
         self.model.add_field()
@@ -326,7 +370,7 @@ class FieldEditor(QDialog):
     def choose_colour(self) -> None:
         """Let the user pick the selected field's colour."""
         beam = self.model.state.selected_field
-        colour = QColorDialog.getColor(QColor(beam.display_colour()), self, "Beam colour")
+        colour = QColorDialog.getColor(QColor(beam.display_colour()), self, "Field colour")
         if colour.isValid():
             self.set_colour(colour.name())
 

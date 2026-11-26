@@ -483,7 +483,7 @@ def test_file_menu_new_save_open_import_and_export(
     assert menu_titles == ["RayCrafter", "File", EDIT_MENU_TITLE, "Help"]
     file_menu = window.menuBar().actions()[1].menu()
     assert [action.text() for action in file_menu.actions() if action.text()] == [
-        "New", "Open...", "Save", "Save As...", "Save Without Original ZMX...",
+        "New", "New from Example", "Open...", "Save", "Save As...", "Save Without Original ZMX...",
         "Import ZMX...", "Export ZMX...",
     ]  # fmt: skip
     assert not window.model.has_unsaved_changes()  # the start-up bench counts as saved
@@ -1136,3 +1136,54 @@ def test_the_gap_dialog_suggests_flipping_a_lens(application, monkeypatch):
     assert model.air_gaps()[0].width_mm == pytest.approx(140.35, abs=0.02)
     assert not model.air_gaps()[0].locked
     window.close()
+
+
+# ------------------------------------------------------------- a finite object (#29)
+
+
+def test_the_field_window_switches_the_design_to_object_points(application):
+    window = MainWindow()
+    window.show()
+    window.add_field_button.click()
+    editor = window.field_editor
+    assert not editor.form.isRowVisible(editor.value_boxes["numerical_aperture"])
+
+    editor.light_kind_box.setCurrentIndex(1)  # "Object points"
+    window.recompute_and_redraw()  # completes the switch as one undo step
+    state = window.model.state
+    assert state.has_finite_object and not state.source_gap_locked
+    assert editor.form.isRowVisible(editor.value_boxes["numerical_aperture"])
+    assert not editor.form.isRowVisible(editor.value_boxes["diameter_mm"])
+
+    editor.value_boxes["height_y_mm"].setValue(2.0)
+    assert state.fields[0].height_y_mm == 2.0
+    window.recompute_and_redraw()
+    assert window.side_view.source_label.toPlainText() == "object"
+    assert "image y=" in window.status_label.text()
+
+    window.undo()  # the height
+    window.undo()  # the switch
+    assert not window.model.state.has_finite_object
+    window.recompute_and_redraw()
+    assert window.side_view.source_label.toPlainText() == "source"
+
+
+def test_new_from_example_opens_the_microscope_with_its_readouts(application):
+    window = MainWindow()
+    window.show()
+    file_menu = window.menuBar().actions()[1].menu()
+    examples_menu = next(
+        action.menu() for action in file_menu.actions() if action.text() == "New from Example"
+    )
+    next(a for a in examples_menu.actions() if a.text() == "Basic microscope").trigger()
+    window.recompute_and_redraw()
+    window.update_slow_plots()
+
+    assert window.model.state.has_finite_object
+    assert not window.model.has_unsaved_changes()
+    text = window.status_label.text()
+    assert "M=-20.00x" in text and "image y=0.000 mm" in text and "f/" not in text
+    window.model.select_field(1)
+    window.update_mtf_tab()
+    assert "y = +0.50 mm" in window.mtf_panel.getPlotItem().titleLabel.text
+    assert "Magnification" in build_report_html(window.model)

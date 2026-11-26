@@ -1,4 +1,5 @@
-"""The File menu of the main window: New, Open, Save, Save As, Import ZMX and Export ZMX.
+"""The File menu of the main window: New, New from Example, Open, Save, Save As, Import ZMX
+and Export ZMX.
 
 A design is saved as a RayCrafter project (``raycrafter.core.project_file``), which keeps
 everything. A Zemax file is a lossy exchange format: Import ZMX replaces the design with the
@@ -11,7 +12,9 @@ An imported design keeps the original ZMX file and the bench as imported, in its
 file too. "Save Without Original ZMX" saves the project without them, so from then on the
 design is no longer an import.
 
-New, Open, Import ZMX and Quit ask first if the design has unsaved changes.
+New from Example starts from one of ``raycrafter.core.examples.EXAMPLES``, such as a basic
+microscope. New, New from Example, Open, Import ZMX and Quit ask first if the design has
+unsaved changes.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from typing import TYPE_CHECKING
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import QFileDialog, QMenu, QMessageBox
 
+from raycrafter.core.examples import EXAMPLES
 from raycrafter.core.project_file import FILE_EXTENSION, ProjectFileError
 from raycrafter.core.zmx_import import ZmxImportError
 
@@ -58,6 +62,11 @@ class FileActions:
             return action
 
         add_action("New", self.new_design, QKeySequence.StandardKey.New)
+        examples_menu = file_menu.addMenu("New from Example")
+        for name in EXAMPLES:
+            action = examples_menu.addAction(name)
+            # Bind the name now; the lambda would otherwise see the loop's last one.
+            action.triggered.connect(lambda _checked, name=name: self.new_from_example(name))
         add_action("Open...", self.open_project, QKeySequence.StandardKey.Open)
         add_action("Save", self.save, QKeySequence.StandardKey.Save)
         add_action("Save As...", self.save_as, QKeySequence.StandardKey.SaveAs)
@@ -110,6 +119,13 @@ class FileActions:
         if not self.confirm_discard_changes("starting a new design"):
             return
         self.model.new_design()
+        self._show_replaced_design()
+
+    def new_from_example(self, name: str) -> None:
+        """File > New from Example > ``name``: start again from that example design."""
+        if not self.confirm_discard_changes("starting a new design"):
+            return
+        self.model.new_design_from_example(name)
         self._show_replaced_design()
 
     def open_project(self) -> None:

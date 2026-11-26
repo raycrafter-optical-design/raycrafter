@@ -9,7 +9,7 @@ import pytest
 from matplotlib.figure import Figure
 
 import raycrafter
-from raycrafter import api
+from raycrafter import api, assembly_methods, design_files, field_methods, gap_methods
 from raycrafter.api import Bench
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.state import state_from_dict, state_to_dict
@@ -20,8 +20,9 @@ from raycrafter.mcp_server.tools import LINK_ONLY_TOOL_NAMES, TOOL_NAMES, Design
 
 def test_the_examples_in_the_docstrings_are_right():
     """The docstring examples are the API's documentation, so they must actually work."""
-    for module in (api, selection):
-        result = doctest.testmod(module, optionflags=doctest.ELLIPSIS)
+    for module in (api, assembly_methods, design_files, field_methods, gap_methods, selection):
+        # The mixin modules (field_methods, ...) use Bench in their examples without importing it.
+        result = doctest.testmod(module, optionflags=doctest.ELLIPSIS, extraglobs={"Bench": Bench})
         assert result.failed == 0
 
 

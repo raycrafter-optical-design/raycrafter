@@ -118,8 +118,28 @@ class PlacedLens:
         return self.z + self.thickness
 
 
+class _FieldAppearance:
+    """The wavelength and colour methods that both kinds of field share.
+
+    Mixed into ``BeamField`` and ``ObjectPoint``, which each have ``wavelength_nm`` and
+    ``colour`` attributes.
+    """
+
+    wavelength_nm: float
+    colour: str | None
+
+    @property
+    def wavelength_um(self) -> float:
+        """Wavelength in micrometres, as Optiland wants it."""
+        return self.wavelength_nm / 1000.0
+
+    def display_colour(self) -> str:
+        """The colour to draw the field in: its own, or else that of its wavelength."""
+        return self.colour if self.colour is not None else wavelength_colour(self.wavelength_nm)
+
+
 @dataclass
-class BeamField:
+class BeamField(_FieldAppearance):
     """One beam of light entering the bench from the left (a "field").
 
     The beam is defined where it crosses the source plane (``OpticalState.source_z``): there
@@ -150,14 +170,39 @@ class BeamField:
     wavelength_nm: float = DEFAULT_WAVELENGTH_NM
     colour: str | None = None
 
-    @property
-    def wavelength_um(self) -> float:
-        """Wavelength in micrometres, as Optiland wants it."""
-        return self.wavelength_nm / 1000.0
 
-    def display_colour(self) -> str:
-        """The colour to draw the beam in: its own, or else that of its wavelength."""
-        return self.colour if self.colour is not None else wavelength_colour(self.wavelength_nm)
+@dataclass
+class ObjectPoint(_FieldAppearance):
+    """One point of a finite object, at the source plane, lighting the lenses (a "field").
+
+    This is the other kind of field: the point at ``height_x_mm``, ``height_y_mm`` on the
+    source plane (``OpticalState.source_z``, which is then the object plane) sends out a cone
+    of rays of half-angle asin(``numerical_aperture``) about its chief ray. The chief ray is
+    aimed at the centre of the first lens. A design has either beams or object points, never
+    both (``OpticalState.has_finite_object``).
+
+    Attributes
+    ----------
+    height_x_mm, height_y_mm : float
+        Position of the point on the object plane, from the axis (positive y is up in the
+        side view; x is out of it).
+    numerical_aperture : float
+        Object-space NA, the sine of the cone's half-angle; between 0 and 1.
+    wavelength_nm : float
+        Wavelength the rays are traced at.
+    colour : str or None
+        Hex colour the rays are drawn in; None for the colour of their wavelength.
+    """
+
+    height_x_mm: float = 0.0
+    height_y_mm: float = 0.0
+    numerical_aperture: float = 0.1
+    wavelength_nm: float = DEFAULT_WAVELENGTH_NM
+    colour: str | None = None
+
+
+# Either kind of field. Every field of one design is of the same kind.
+AnyField = BeamField | ObjectPoint
 
 
 def raycrafter_version() -> str:
@@ -248,8 +293,9 @@ class OpticalState:
         The id the next assembly will get.
     assembly_names : dict of int to str
         The name of each assembly, by id, e.g. ``{1: "Plossl pair"}``.
-    fields : list of BeamField
-        The beams entering the bench. There is always at least one.
+    fields : list of BeamField, or list of ObjectPoint
+        The light entering the bench: beams (an object at infinity), or the points of an
+        object at the source plane. There is always at least one, and all are of one kind.
     selected_field_index : int
         The field that autofocus and the single-field analyses (through-focus, MTF, ray
         fan, field curvature, f-number) use. The spot diagram and side view show every field.
@@ -273,7 +319,7 @@ class OpticalState:
     lenses: list[PlacedLens] = field(default_factory=list)
     next_assembly_id: int = 1
     assembly_names: dict[int, str] = field(default_factory=dict)
-    fields: list[BeamField] = field(default_factory=lambda: [BeamField()])
+    fields: list[AnyField] = field(default_factory=lambda: [BeamField()])
     selected_field_index: int = 0
     image_z: float = 310.0
     image_gap_locked: bool = False
@@ -282,9 +328,14 @@ class OpticalState:
     imported_from: ImportedSource | None = None
 
     @property
-    def selected_field(self) -> BeamField:
+    def selected_field(self) -> AnyField:
         """The field the single-field analyses use."""
         return self.fields[self.selected_field_index]
+
+    @property
+    def has_finite_object(self) -> bool:
+        """True if the fields are points of an object at the source plane, not beams."""
+        return isinstance(self.fields[0], ObjectPoint)
 
     def last_back_z(self) -> float:
         """z of the back vertex of the rightmost lens (0 if there are no lenses)."""
@@ -342,7 +393,11 @@ def state_from_dict(data: dict) -> OpticalState:
         )
         for lens_data in data["lenses"]
     ]
-    fields = [BeamField(**field_data) for field_data in data["fields"]]
+    # ``asdict`` does not record a field's class, but only an object point has an NA.
+    fields = [
+        ObjectPoint(**field_data) if "numerical_aperture" in field_data else BeamField(**field_data)
+        for field_data in data["fields"]
+    ]
     # JSON turns the assembly ids, which are dictionary keys, into text.
     assembly_names = {int(key): name for key, name in data["assembly_names"].items()}
     source_data = data.get("imported_from")

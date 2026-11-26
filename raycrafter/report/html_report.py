@@ -24,13 +24,17 @@ from importlib import resources
 from pathlib import Path
 
 from raycrafter.core.analysis import airy_radius
+from raycrafter.core.fields import chief_ray_angle_deg
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import (
     f_number_text,
     field_name,
+    field_position_text,
+    image_point_text,
+    magnification_text,
     rms_radius_text,
 )
-from raycrafter.core.state import BeamField
+from raycrafter.core.state import AnyField, ObjectPoint
 from raycrafter.report import figures
 from raycrafter.report.explanations import EXPLANATIONS
 
@@ -73,15 +77,22 @@ def vergence_words(vergence: float) -> str:
     return "converging" if vergence > 0 else "diverging"
 
 
-def field_html(field_index: int, beam: BeamField) -> str:
+def field_html(field_index: int, light: AnyField) -> str:
     """A one-line description of a field, in the field's colour."""
-    text = (
-        f"{field_name(field_index)}: {beam.diameter_mm:g} mm {vergence_words(beam.vergence_dioptres)}"
-        f" at {beam.angle_deg:+.1f}°, {beam.wavelength_nm:g} nm"
-    )
-    if beam.offset_mm != 0.0:
-        text += f", offset {beam.offset_mm:+g} mm"
-    return f'<span style="color:{beam.display_colour()}">{html.escape(text)}</span>'
+    if isinstance(light, ObjectPoint):
+        text = (
+            f"{field_name(field_index)}: object point at {field_position_text(light)}, "
+            f"NA {light.numerical_aperture:g}, {light.wavelength_nm:g} nm"
+        )
+    else:
+        text = (
+            f"{field_name(field_index)}: {light.diameter_mm:g} mm "
+            f"{vergence_words(light.vergence_dioptres)} at {light.angle_deg:+.1f}°, "
+            f"{light.wavelength_nm:g} nm"
+        )
+        if light.offset_mm != 0.0:
+            text += f", offset {light.offset_mm:+g} mm"
+    return f'<span style="color:{light.display_colour()}">{html.escape(text)}</span>'
 
 
 def build_report_html(model: OpticalModel) -> str:
@@ -119,6 +130,11 @@ def build_report_html(model: OpticalModel) -> str:
             chip_html("EFL", f"{summary.effective_focal_length:.1f} mm"),
             chip_html("BFL", f"{summary.back_focal_length:.1f} mm"),
         ]
+        if summary.magnification is not None:
+            chips.append(chip_html("Magnification", magnification_text(summary.magnification)))
+    if state.has_finite_object:
+        image_x, image_y = fast_trace.chief_ray_image_points[state.selected_field_index]
+        chips.append(chip_html("Image height", image_point_text(image_x, image_y)))
     f_number = model.compute_f_number()
     if f_number is not None:
         chips.append(chip_html("f-number", f_number_text(f_number)))
@@ -143,7 +159,7 @@ def build_report_html(model: OpticalModel) -> str:
 
     # "+ 0.0" turns a rounded -0.000 into 0.000.
     best_focus_text = f"{round(through_focus.best_offset, 3) + 0.0:+.3f}"
-    angle_text = f"{field_name(state.selected_field_index)}, at {selected.angle_deg:+.1f}°"
+    angle_text = f"{field_name(state.selected_field_index)}, at {field_position_text(selected)}"
     cards = [
         card_html(
             "rays",
@@ -182,7 +198,7 @@ def build_report_html(model: OpticalModel) -> str:
             "Field curvature",
             "Best focus against field angle",
             figures.figure_to_inline_svg(
-                figures.draw_field_curvature(curvature, selected.angle_deg)
+                figures.draw_field_curvature(curvature, chief_ray_angle_deg(state, selected))
             ),
             "span-3",
         ),

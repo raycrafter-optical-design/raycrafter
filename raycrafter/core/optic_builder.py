@@ -30,7 +30,7 @@ from optiland.optic import Optic
 from optiland.physical_apertures import RadialAperture
 
 from raycrafter.core import ray_launch
-from raycrafter.core.state import AXIS_START_Z, BeamField, OpticalState, PlacedLens
+from raycrafter.core.state import AXIS_START_Z, BeamField, ObjectPoint, OpticalState, PlacedLens
 
 MAX_REMEMBERED_INDICES = 100  # sets of wavelengths a shared glass remembers (see ``glass``)
 
@@ -83,12 +83,15 @@ def object_distance_mm(beam_vergence: float) -> float:
 def build_optic(state: OpticalState) -> Optic:
     """The Optiland system for tracing rays launched by ``ray_launch``.
 
-    The object is at infinity, so that it does not get in the way of rays that start at
-    the start of the axis. Optiland's single field (0 degrees), aperture and wavelength are
-    set from the selected field only because its paraxial calculations (the effective and
-    back focal lengths) need them.
+    For beams the object is at infinity, so that it does not get in the way of rays that
+    start at the start of the axis. For a finite object it is at the source plane (see
+    ``build_optic_for_object``), where those rays start. Optiland's single field (on axis),
+    aperture and wavelength are set from the selected field only because its paraxial
+    calculations (the focal lengths and magnification) need them.
     """
     beam = state.selected_field
+    if isinstance(beam, ObjectPoint):
+        return build_optic_for_object(state, beam, field_heights_mm=[0.0])
     optic = Optic()
     optic.surfaces.add(index=0, radius=np.inf, thickness=np.inf)
     _add_lens_and_image_surfaces(optic, state)
@@ -150,6 +153,45 @@ def build_optic_for_beam(
     for angle in field_angles if field_angles is not None else [abs(beam.angle_deg)]:
         optic.fields.add(y=angle)
     optic.wavelengths.add(beam.wavelength_um, is_primary=True)
+    return optic
+
+
+def build_optic_for_object(
+    state: OpticalState,
+    point: ObjectPoint,
+    field_heights_mm: list[float] | None = None,
+) -> Optic:
+    """The Optiland system with its object at the source plane, set up for one object point.
+
+    The object surface is the source plane, the aperture is the point's object-space NA and
+    the fields are object heights. The point's x height cannot be described this way, so the
+    field is at its distance from the axis, in y.
+
+    Parameters
+    ----------
+    state : OpticalState
+        The lenses, source plane and image plane.
+    point : ObjectPoint
+        Sets the NA and the wavelength.
+    field_heights_mm : list of float, optional
+        Object heights. By default there is one field, at the point's distance from the axis.
+
+    Returns
+    -------
+    optiland.optic.Optic
+        The system, ready to trace.
+    """
+    if field_heights_mm is None:
+        field_heights_mm = [float(np.hypot(point.height_x_mm, point.height_y_mm))]
+    optic = Optic()
+    object_distance = max(state.first_surface_z() - state.source_z, 0.0)
+    optic.surfaces.add(index=0, radius=np.inf, thickness=object_distance)
+    _add_lens_and_image_surfaces(optic, state)
+    optic.set_aperture("objectNA", point.numerical_aperture)
+    optic.fields.set_type("object_height")
+    for height_mm in field_heights_mm:
+        optic.fields.add(y=height_mm)
+    optic.wavelengths.add(point.wavelength_um, is_primary=True)
     return optic
 
 
@@ -215,14 +257,28 @@ def save_zmx(state: OpticalState, file_path: str) -> None:
 
     Zemax gives every field the same object and entrance pupil, so those come from the
     selected field. Every field's angle and wavelength is written (each once), with the
-    selected field's wavelength as the primary one. Field offsets are not exported.
+    selected field's wavelength as the primary one. Field offsets are not exported. A finite
+    object is written as one: object distance, object-space NA and object heights (each
+    point's distance from the axis).
     """
     selected = state.selected_field
-    field_angles = sorted({abs(beam.angle_deg) for beam in state.fields})
-    # Zemax's object and pupil are at the first lens, so describe the beam there.
-    optic = build_optic_for_beam(
-        state, ray_launch.beam_at_first_lens(state, selected), field_angles=field_angles
-    )
+    if isinstance(selected, ObjectPoint):
+        heights_mm = sorted(
+            {
+                float(np.hypot(point.height_x_mm, point.height_y_mm))
+                for point in state.fields
+                if isinstance(point, ObjectPoint)
+            }
+        )
+        optic = build_optic_for_object(state, selected, field_heights_mm=heights_mm)
+    else:
+        field_angles = sorted(
+            {abs(beam.angle_deg) for beam in state.fields if isinstance(beam, BeamField)}
+        )
+        # Zemax's object and pupil are at the first lens, so describe the beam there.
+        optic = build_optic_for_beam(
+            state, ray_launch.beam_at_first_lens(state, selected), field_angles=field_angles
+        )
     for wavelength_nm in sorted({beam.wavelength_nm for beam in state.fields}):
         if wavelength_nm != selected.wavelength_nm:
             optic.wavelengths.add(wavelength_nm / 1000.0)

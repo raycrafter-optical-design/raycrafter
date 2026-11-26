@@ -20,7 +20,9 @@ hover, as one. While the gap to the image plane is locked, the image line cannot
 The source plane, where every field is defined, is a dashed line captioned "source". While
 its gap to the first lens is locked (the default, at 0 mm) it moves with the first lens;
 right-clicking its caption unlocks it, and it can then be dragged or its gap typed. The
-dimension of that gap is left out while it is locked at 0 mm, as it says nothing then.
+dimension of that gap is left out while it is locked at 0 mm, as it says nothing then. When
+the fields are points of a finite object, the source plane is the object plane and is
+captioned "object" instead.
 
 A paraxial (ideal thin) lens is drawn as a line with arrowheads. It has no thickness, so it
 can be hovered and dragged a few pixels either side of its line.
@@ -43,6 +45,7 @@ from raycrafter.core.plot_geometry import (
     IMAGE_EDGE_GAP_MM,
     axis_ranges,
     ray_polylines,
+    source_caption,
 )
 from raycrafter.core.state import AXIS_START_Z, PlacedLens
 from raycrafter.gui.gap_dimensions import EDITABLE, FIXED, LOCKED, GapDimensions, GapEditor
@@ -394,7 +397,8 @@ class SideView(pg.PlotWidget):
         if gap.in_assembly:
             return "The gaps inside an assembly are fixed: split it to change them"
         if gap.from_source and gap.locked:
-            return 'The gap from the source plane is locked: right-click "source" to unlock it'
+            caption = source_caption(self.model.state)
+            return f'The gap from the source plane is locked: right-click "{caption}" to unlock it'
         if gap.locked:
             return "This gap is locked: right-click it to unlock it"
         if gap.to_image and self.image_line_locked:
@@ -598,6 +602,9 @@ class SideView(pg.PlotWidget):
         has_lenses = bool(state.lenses)
         self.source_line.setVisible(has_lenses)
         self.source_label.setVisible(has_lenses)
+        caption = source_caption(state)
+        if self.source_label.toPlainText() != caption:
+            self.source_label.setText(caption)
         self.source_line.blockSignals(True)
         self.source_line.setValue(state.source_z)
         self.source_line.blockSignals(False)

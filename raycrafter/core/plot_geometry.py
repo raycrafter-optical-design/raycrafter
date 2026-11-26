@@ -11,7 +11,7 @@ import numpy as np
 
 from raycrafter.core.analysis import FNumberResult, RayPaths, SpotResult, airy_radius
 from raycrafter.core.prescription import surface_sag
-from raycrafter.core.state import AXIS_START_Z, OpticalState, PlacedLens
+from raycrafter.core.state import AXIS_START_Z, AnyField, BeamField, OpticalState, PlacedLens
 
 DEFAULT_AXIS_Z_RANGE = (AXIS_START_Z, 450.0)  # mm of optical axis shown for a design that fits
 DEFAULT_AXIS_Y_RANGE = (-32.0, 32.0)  # mm either side of the axis shown for a design that fits
@@ -120,6 +120,43 @@ def field_name(field_index: int) -> str:
     Fields are numbered from 0, as the Python API and the agent tools number them.
     """
     return f"Field {field_index}"
+
+
+def source_caption(state: OpticalState) -> str:
+    """The side view's caption for the source plane: "object" for a finite object, else "source"."""
+    return "object" if state.has_finite_object else "source"
+
+
+def field_position_text(light: AnyField) -> str:
+    """Where a field is, for plot titles: "+2.5 deg" for a beam, "y = +0.50 mm" for a point.
+
+    An object point off the y axis gives both heights, e.g. "x = +0.30, y = -0.20 mm".
+    """
+    if isinstance(light, BeamField):
+        return f"{light.angle_deg:+.1f} deg"
+    if light.height_x_mm == 0.0:
+        return f"y = {light.height_y_mm:+.2f} mm"
+    return f"x = {light.height_x_mm:+.2f}, y = {light.height_y_mm:+.2f} mm"
+
+
+def magnification_text(magnification: float) -> str:
+    """The paraxial magnification for display, e.g. "M=-20.00x", or "M=-" if it has none."""
+    if not np.isfinite(magnification):
+        return "M=-"
+    return f"M={magnification:.2f}x"
+
+
+def image_point_text(image_x_mm: float, image_y_mm: float) -> str:
+    """Where a chief ray meets the image plane, e.g. "image y=-10.000 mm".
+
+    Both coordinates are given if x is not zero, and "image: chief ray blocked" if the ray
+    does not get there (NaN).
+    """
+    if not (np.isfinite(image_x_mm) and np.isfinite(image_y_mm)):
+        return "image: chief ray blocked"
+    if abs(image_x_mm) < 5e-4:  # shows as 0.000
+        return f"image y={image_y_mm:.3f} mm"
+    return f"image x={image_x_mm:.3f}, y={image_y_mm:.3f} mm"
 
 
 def rms_radius_text(spot: SpotResult, micrometre_symbol: str = "um") -> str:
