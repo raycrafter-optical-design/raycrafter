@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
 from raycrafter.gui.about_dialog import DOCS_URL, PROJECT_URL, AboutDialog  # noqa: E402
 from raycrafter.gui.analysis_panels import MtfPanel  # noqa: E402
 from raycrafter.gui.lens_picker import ALL_COATINGS, LensPickerDialog  # noqa: E402
-from raycrafter.gui.main_window import MainWindow  # noqa: E402
+from raycrafter.gui.main_window import EDIT_MENU_TITLE, MainWindow  # noqa: E402
 from raycrafter.gui.range_slider import RangeSlider  # noqa: E402
 from raycrafter.gui.style import force_light_colour_scheme  # noqa: E402
 
@@ -40,6 +40,30 @@ def discard_unsaved_changes(monkeypatch):
 
     monkeypatch.setattr(QMessageBox, "question", answer)
     return questions
+
+
+# Every window a test opens, held until the test process ends.
+OPENED_WINDOWS: list[MainWindow] = []
+
+
+@pytest.fixture(scope="module", autouse=True)
+def keep_windows_alive():
+    """Stop Python's garbage collector destroying the windows of finished tests.
+
+    It would do so at an arbitrary moment, often while Qt still had events queued for a
+    window's plots, and the whole test process then crashed with a segmentation fault.
+    Deleting the windows after each test crashed too, inside the destructors of their plots.
+    The application has one window, which lives until it exits, so neither happens there.
+    """
+    original_init = MainWindow.__init__
+
+    def init_and_keep(window, *args, **kwargs):
+        original_init(window, *args, **kwargs)
+        OPENED_WINDOWS.append(window)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(MainWindow, "__init__", init_and_keep)
+        yield
 
 
 def test_window_adds_pairs_and_deletes_lenses(application):
@@ -419,7 +443,7 @@ def test_side_view_fits_a_long_design_but_not_during_a_drag(application):
 def test_file_menu_new_save_and_load(application, discard_unsaved_changes, monkeypatch, tmp_path):
     window = MainWindow()
     menu_titles = [action.text() for action in window.menuBar().actions()]
-    assert menu_titles == ["RayCrafter", "File", "Help"]
+    assert menu_titles == ["RayCrafter", "File", EDIT_MENU_TITLE, "Help"]
     assert not window.model.has_unsaved_changes()  # the start-up bench counts as saved
 
     # Save writes the file and marks the design saved.
@@ -568,3 +592,105 @@ def test_trackpad_scrolling_does_not_move_the_plots(application):
     assert panel.verticalScrollBar().value() == 0
     assert panel.mapToScene(0, 0) == QPointF(0, 0)
     panel.close()
+
+
+def drag_lens(side_view, lens_index: int, requested_front_z: float) -> None:
+    """One movement of a drag: the lens is not let go.
+
+    ``setRegion`` would also signal that the drag had finished, so its signals are blocked.
+    """
+    graphics = side_view.lens_graphics[lens_index]
+    thickness = side_view.model.state.lenses[lens_index].thickness
+    graphics.region.blockSignals(True)
+    graphics.region.setRegion((requested_front_z, requested_front_z + thickness))
+    graphics.region.blockSignals(False)
+    side_view.on_lens_dragged(graphics)
+
+
+def test_a_whole_drag_is_one_undo_step(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    assert not window.undo_action.isEnabled()  # the start-up autofocus cannot be undone
+    start_z = window.model.state.lenses[0].z
+
+    for front_z in (90.0, 80.0, 70.0):
+        drag_lens(window.side_view, 0, front_z)
+        application.processEvents()  # redraws happen during the drag
+    window.undo()  # ignored while the lens is held
+    assert window.model.state.lenses[0].z == pytest.approx(70.0)
+    window.side_view.on_lens_drag_finished()
+    application.processEvents()
+
+    window.undo_action.trigger()
+    application.processEvents()
+    assert window.model.state.lenses[0].z == start_z
+    assert not window.undo_action.isEnabled()
+    window.redo_action.trigger()
+    application.processEvents()
+    assert window.model.state.lenses[0].z == pytest.approx(70.0)
+    window.close()
+
+
+def test_undo_brings_back_a_deleted_lens_and_new_clears_history(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    window.delete_lens(0)
+    window.undo()  # before the redraw has run
+    application.processEvents()
+    assert len(window.model.state.lenses) == 1
+    assert len(window.side_view.lens_graphics) == 1
+
+    window.new_design()
+    application.processEvents()
+    assert not window.undo_action.isEnabled()
+    assert not window.redo_action.isEnabled()
+    window.close()
+
+
+def test_undo_with_lock_focus_does_not_get_stuck(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    window.model.state.image_z = 250.0  # well out of focus
+    window.request_update()
+    application.processEvents()
+    window.lock_focus_checkbox.setChecked(True)  # refocuses: a step
+    application.processEvents()
+
+    window.undo()  # back to 250 mm, which "Lock focus" at once refocuses
+    application.processEvents()
+    assert window.redo_action.isEnabled()
+    window.undo()  # the earlier move of the image plane
+    application.processEvents()
+    assert window.model.state.image_z > 300.0
+    assert window.redo_action.isEnabled()
+    window.close()
+
+
+def test_undo_keys_work_from_a_field_box_and_spun_values_undo_together(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    window.open_field_editor()
+    box = window.field_editor.value_boxes["angle_deg"]
+    box.setFocus()
+    for _ in range(3):
+        box.stepUp()
+        application.processEvents()
+    assert window.model.state.selected_field.angle_deg == pytest.approx(0.3)
+
+    QTest.keyClick(box, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    application.processEvents()
+    assert window.model.state.selected_field.angle_deg == 0.0
+    assert box.value() == 0.0
+
+    QTest.keyClick(
+        box,
+        Qt.Key.Key_Z,
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+    )
+    application.processEvents()
+    assert box.value() == pytest.approx(0.3)
+    window.close()

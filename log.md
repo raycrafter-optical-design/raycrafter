@@ -247,3 +247,11 @@ tool call and falls back to its own headless model if none answers; results say 
 **Why:** The Claude app starts the MCP server itself over stdio, so it is a different process from
 the window. Having the window host MCP over HTTP was rejected: the desktop app launches local
 servers rather than connecting to running ones. The fallback keeps the server useful with no window.
+
+## 2026-11-26: Undo keeps snapshots of the state (#37)
+**Decision:** `core.history.UndoHistory` keeps whole `OpticalState` copies, recorded by the
+front end once nothing is held, so a drag is one step. Small changes to one value in quick
+succession merge into one step. New and Load clear the history.
+**Why:** Snapshots cover anything later added to the state (locks, goals) with no extra code,
+and are cheap. Merging stops a spun number box making dozens of steps. Clearing on New and
+Load is simplest, and unsaved changes are already asked about. Merge and clearing: Rob agreed.

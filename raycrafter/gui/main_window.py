@@ -10,6 +10,8 @@
 - Right-click a lens for Flip (F), Delete (Del or Backspace) and Make / Split Plossl.
 - The RayCrafter menu has About and Quit; the File menu has New, Load ZMX and Save ZMX.
   New, Load and Quit ask first if the design has changed since it was last saved or loaded.
+- The Edit menu has Undo and Redo. One action (a whole drag, a typed value) is one step; New
+  and Load clear the history.
 - "Add field" opens the field window (``raycrafter.gui.field_editor``), where beams are
   added, removed and edited while the bench updates live.
 
@@ -27,8 +29,9 @@ dragged (a lens or the image plane):
 
 from __future__ import annotations
 
+import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QPoint, Qt, QTimer, QUrl
@@ -70,8 +73,13 @@ from raycrafter.gui.field_editor import FieldEditor
 from raycrafter.gui.lens_picker import LensPickerDialog
 from raycrafter.gui.side_view import MIN_IMAGE_GAP_MM, SideView
 from raycrafter.gui.style import style_sheet
+from raycrafter.gui.undo_keys import leave_undo_keys_to_window
 from raycrafter.report import write_and_open_report
 
+# macOS adds AutoFill, Start Dictation and Emoji & Symbols to any menu called "Edit", none of
+# which is any use here, and Qt has no setting to stop it. A zero-width space after the name
+# looks the same but is not recognised, so the menu holds only RayCrafter's own items.
+EDIT_MENU_TITLE = "Edit\u200b" if sys.platform == "darwin" else "Edit"
 SLOW_PLOT_DELAY_MS = 120  # MTF, ray fan and field curvature wait this long after the last change
 STALE_PLOT_OPACITY = 0.4  # the slower plots are this faded while a drag makes them out of date
 DEFAULT_PARAXIAL_FOCAL_LENGTH_MM = 100
@@ -102,6 +110,9 @@ class MainWindow(QMainWindow):
         self.field_editor: FieldEditor | None = None  # made on first use, then kept
         self.bench_viewer: BenchViewer | None = None  # made on first use, then kept
         self.f_number_readout: str | None = None  # last f-number text, kept during a drag
+        # How the next redraw enters the undo history (see record_undo_step).
+        self.undo_merge_key: Hashable | None = None
+        self.next_redraw_is_undo_step = True
         self._build_widgets()
         self._build_menus()
         self._connect_signals()
@@ -121,8 +132,11 @@ class MainWindow(QMainWindow):
         self.recompute_and_redraw()
 
         # The start-up bench (after its autofocus) counts as saved: New, Load and Quit ask
-        # before throwing away a design that differs from the saved one.
+        # before throwing away a design that differs from the saved one. It is also where
+        # undo stops.
         self.model.mark_saved()
+        self.model.clear_undo_history()
+        self.update_undo_actions()
 
     # ------------------------------------------------------------------ setup
 
@@ -181,6 +195,7 @@ class MainWindow(QMainWindow):
         self.paraxial_focal_length_box.setValue(DEFAULT_PARAXIAL_FOCAL_LENGTH_MM)
         self.paraxial_focal_length_box.setSuffix(" mm")
         self.paraxial_focal_length_box.setMaximumWidth(FOCAL_LENGTH_BOX_WIDTH_PX)
+        leave_undo_keys_to_window(self.paraxial_focal_length_box)
         self.paraxial_focal_length_box.setToolTip(
             "Focal length of the next paraxial (ideal thin) lens; negative for a diverging lens"
         )
@@ -245,7 +260,7 @@ class MainWindow(QMainWindow):
         return control_panel
 
     def _build_menus(self) -> None:
-        """The RayCrafter menu (About, Quit), the File menu (New, Load ZMX, Save ZMX) and Help.
+        """The RayCrafter menu (About, Quit), File (New, Load ZMX, Save ZMX), Edit and Help.
 
         On macOS, Qt moves About and Quit into the application menu, which is named after
         the app, so they appear where Mac users expect them; the menu roles tell it which.
@@ -275,6 +290,20 @@ class MainWindow(QMainWindow):
         add_action(file_menu, "New", self.new_design, shortcut=QKeySequence.StandardKey.New)
         add_action(file_menu, "Load ZMX...", self.load_zmx, shortcut=QKeySequence.StandardKey.Open)
         add_action(file_menu, "Save ZMX...", self.save_zmx, shortcut=QKeySequence.StandardKey.Save)
+
+        edit_menu = menu_bar.addMenu(EDIT_MENU_TITLE)
+        self.undo_action = add_action(
+            edit_menu, "Undo", self.undo, shortcut=QKeySequence.StandardKey.Undo
+        )
+        self.redo_action = add_action(edit_menu, "Redo", self.redo)
+        # Shift with the undo keys redoes on every system, besides the system's own keys.
+        shift_redo = QKeySequence("Ctrl+Shift+Z")
+        other_redo_keys = [
+            keys
+            for keys in QKeySequence.keyBindings(QKeySequence.StandardKey.Redo)
+            if keys != shift_redo
+        ]
+        self.redo_action.setShortcuts([shift_redo, *other_redo_keys])
 
         help_menu = menu_bar.addMenu("Help")
         add_action(
@@ -322,8 +351,13 @@ class MainWindow(QMainWindow):
 
     # --------------------------------------------------------------- controls
 
-    def request_update(self) -> None:
-        """Schedule one recompute; repeated requests before it runs collapse into one."""
+    def request_update(self, undo_merge_key: Hashable | None = None) -> None:
+        """Schedule one recompute; repeated requests before it runs collapse into one.
+
+        ``undo_merge_key`` names a value that changes in small steps, so that changes made
+        in quick succession are undone together (see ``UndoHistory.record``).
+        """
+        self.undo_merge_key = undo_merge_key
         if not self.update_timer.isActive():
             self.update_timer.start(0)
 
@@ -472,6 +506,45 @@ class MainWindow(QMainWindow):
             self.field_editor.refresh()
         self.request_update()
 
+    # ------------------------------------------------------------------ undo and redo
+
+    def undo(self) -> None:
+        """Edit > Undo."""
+        self._step_through_history(self.model.undo)
+
+    def redo(self) -> None:
+        """Edit > Redo."""
+        self._step_through_history(self.model.redo)
+
+    def _step_through_history(self, step: Callable[[], bool]) -> None:
+        """Run the model's undo or redo and show the result, unless something is being held."""
+        if self.is_dragging():
+            return
+        if self.update_timer.isActive():  # a change not yet drawn must be recorded first
+            self.update_timer.stop()
+            self.recompute_and_redraw()
+        if step():
+            self.show_replaced_design()
+
+    def record_undo_step(self) -> None:
+        """Called by each redraw made with nothing held, so a whole drag is one step.
+
+        Redraws that follow undo, redo, New or Load are not user actions: anything "Lock
+        focus" changes during one becomes part of the step already shown.
+        """
+        if self.next_redraw_is_undo_step:
+            self.model.record_undo_step(self.undo_merge_key)
+        else:
+            self.model.amend_undo_step()
+        self.next_redraw_is_undo_step = True
+        self.undo_merge_key = None
+        self.update_undo_actions()
+
+    def update_undo_actions(self) -> None:
+        """Grey out Undo or Redo when there is no step to take."""
+        self.undo_action.setEnabled(self.model.history.can_undo)
+        self.redo_action.setEnabled(self.model.history.can_redo)
+
     # ------------------------------------------------------------------ files
 
     def confirm_discard_changes(self, action_text: str) -> bool:
@@ -502,8 +575,13 @@ class MainWindow(QMainWindow):
             return self.save_zmx()
         return answer == QMessageBox.StandardButton.Discard
 
+    def show_replaced_design(self) -> None:
+        """Redraw after undo, redo, New or Load, none of which is itself an undo step."""
+        self.show_new_design()
+        self.next_redraw_is_undo_step = False
+
     def show_new_design(self) -> None:
-        """Redraw everything after the model's state was replaced (New or Load)."""
+        """Redraw everything after the lenses or the whole design changed behind the view."""
         self.side_view.cancel_placement()
         self.side_view.rebuild_lens_graphics()
         if self.field_editor is not None:
@@ -516,7 +594,7 @@ class MainWindow(QMainWindow):
         if not self.confirm_discard_changes("starting a new design"):
             return
         self.model.new_design()
-        self.show_new_design()
+        self.show_replaced_design()
 
     def load_zmx(self) -> None:
         """File > Load ZMX: replace the design with the system in a Zemax file."""
@@ -532,7 +610,7 @@ class MainWindow(QMainWindow):
         except ZmxImportError as error:
             QMessageBox.critical(self, "Load failed", f"Could not load {file_path}:\n{error}")
             return
-        self.show_new_design()
+        self.show_replaced_design()
         if notes:
             QMessageBox.information(
                 self, "Loaded with changes", "\n\n".join(["Some details were simplified:"] + notes)
@@ -621,6 +699,8 @@ class MainWindow(QMainWindow):
         start = time.perf_counter()
         if self.lock_focus_checkbox.isChecked():
             self.refocus_if_focus_in_view()
+        if not self.is_dragging():
+            self.record_undo_step()  # after any refocus, which is part of the same step
         fast_trace = self.model.trace_fast()
         through_focus = self.model.compute_through_focus(fast_trace)
         trace_ms = (time.perf_counter() - start) * 1000

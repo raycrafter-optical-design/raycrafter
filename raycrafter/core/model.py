@@ -2,9 +2,9 @@
 
 ``OpticalModel`` owns the bench state (``raycrafter.core.state``) and the list of lenses
 that can be placed. It provides the editing operations: add, insert, delete, move and swap
-lenses, make or split Plossl pairs, and add or remove fields. It also gives access to the
-analyses (``raycrafter.core.analysis``) and to Zemax import and export, applied to its
-current state. It has no Qt code.
+lenses, make or split Plossl pairs, add or remove fields, and
+undo and redo. It also gives access to the analyses (``raycrafter.core.analysis``) and to
+Zemax import and export, applied to its current state. It has no Qt code.
 
 Example
 -------
@@ -17,11 +17,13 @@ Example
 from __future__ import annotations
 
 import copy
+from collections.abc import Hashable
 from dataclasses import replace
 
 import numpy as np
 
 from raycrafter.core import analysis, optic_builder, zmx_import
+from raycrafter.core.history import UndoHistory
 from raycrafter.core.prescription import prescription_from_zmx_text, surface_sag
 from raycrafter.core.state import AXIS_START_Z, BeamField, OpticalState, PlacedLens
 from raycrafter.lenscatalog import thorlabs
@@ -53,9 +55,15 @@ class OpticalModel:
     state : OpticalState
         The lenses, fields (beams) and image plane. Front ends may set a field's properties
         and ``image_z`` directly; lenses, and which fields exist, should be changed through
-        the methods here.
+        the methods here. ``undo``, ``redo``, ``new_design`` and ``load_zmx`` replace this
+        object, so do not keep a reference to it.
     catalog : dict
         Part number -> CatalogEntry.
+
+    Notes
+    -----
+    Undo steps are not recorded automatically: a front end calls ``record_undo_step`` when a
+    user action is complete.
     """
 
     def __init__(
@@ -68,6 +76,7 @@ class OpticalModel:
         self.saved_state: OpticalState = copy.deepcopy(
             self.state
         )  # the start-up bench counts as saved
+        self.history = UndoHistory(self.state)
 
     # --------------------------------------------------------------- adding and removing
 
@@ -468,6 +477,34 @@ class OpticalModel:
         """Best focus against field angle (see ``analysis.compute_field_curvature``)."""
         return analysis.compute_field_curvature(self.state)
 
+    # ---------------------------------------------------------------- undo and redo
+
+    def record_undo_step(self, merge_key: Hashable | None = None) -> None:
+        """Make the changes since the last step undoable as one (see ``UndoHistory.record``)."""
+        self.history.record(self.state, merge_key)
+
+    def amend_undo_step(self) -> None:
+        """Take the bench as it is into the current step, without making a new one."""
+        self.history.amend(self.state)
+
+    def clear_undo_history(self) -> None:
+        """Forget every undo step: the bench as it is now becomes the starting point."""
+        self.history.reset(self.state)
+
+    def undo(self) -> bool:
+        """Go back one step. Returns False (changing nothing) if there is none."""
+        return self._show_history_state(self.history.undo())
+
+    def redo(self) -> bool:
+        """Redo the step last undone. Returns False (changing nothing) if there is none."""
+        return self._show_history_state(self.history.redo())
+
+    def _show_history_state(self, state: OpticalState | None) -> bool:
+        if state is None:
+            return False
+        self.state = state
+        return True
+
     # ---------------------------------------------------------------- files
 
     def has_unsaved_changes(self) -> bool:
@@ -487,9 +524,10 @@ class OpticalModel:
         self.saved_state = copy.deepcopy(self.state)
 
     def new_design(self) -> None:
-        """Start again: no lenses, one default field. Counts as saved."""
+        """Start again: no lenses, one default field. Counts as saved; clears undo."""
         self.state = OpticalState()
         self.mark_saved()
+        self.clear_undo_history()
 
     def save_zmx(self, file_path: str) -> None:
         """Write the current system to a Zemax .zmx file."""
@@ -497,7 +535,7 @@ class OpticalModel:
         self.mark_saved()
 
     def load_zmx(self, file_path: str) -> list[str]:
-        """Replace the bench with the system in a Zemax .zmx file.
+        """Replace the bench with the system in a Zemax .zmx file, clearing the undo history.
 
         Returns
         -------
@@ -513,4 +551,5 @@ class OpticalModel:
         imported = zmx_import.load_zmx(file_path, self.catalog)
         self.state = imported.state
         self.mark_saved()
+        self.clear_undo_history()
         return imported.notes
