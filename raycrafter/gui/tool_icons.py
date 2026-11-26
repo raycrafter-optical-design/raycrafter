@@ -27,6 +27,9 @@ FIELD_COLOUR = "#d6336c"  # pink
 AUTOFOCUS_COLOUR = palette.IMAGE  # green, the colour of the image plane
 FOCUS_LOCKED_COLOUR = palette.GHOST_BLOCKED  # red
 FOCUS_UNLOCKED_COLOUR = palette.AIRY  # grey
+POSITIVE_LENSES_COLOUR = palette.IMAGE  # green
+NEGATIVE_LENSES_COLOUR = palette.GHOST_BLOCKED  # red
+HIDDEN_LENSES_COLOUR = palette.FAINT  # faded grey: those lenses are hidden
 
 
 def italic_f_font(size_px: int) -> QFont:
@@ -162,3 +165,26 @@ def focus_lock_icon(locked: bool) -> QIcon:
         painter.drawRoundedRect(body, 4, 4)
 
     return _draw_icon(palette.TEXT, draw, width_px=72)
+
+
+def lens_sign_icon(positive: bool) -> QIcon:
+    """A plus (green) or minus (red), drawn faded grey while the button is pressed (checked).
+
+    Drawn rather than typed, so the sign is centred in its button whatever the font.
+    """
+
+    def sign_pixmap(colour: str) -> QPixmap:
+        def draw(painter: QPainter) -> None:
+            pen = QPen(QColor(colour), 6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(10, 24), QPointF(38, 24))
+            if positive:
+                painter.drawLine(QPointF(24, 10), QPointF(24, 38))
+
+        return _draw_icon(colour, draw).pixmap(ICON_CANVAS_PX, ICON_CANVAS_PX)
+
+    icon = QIcon()
+    shown_colour = POSITIVE_LENSES_COLOUR if positive else NEGATIVE_LENSES_COLOUR
+    icon.addPixmap(sign_pixmap(shown_colour), QIcon.Mode.Normal, QIcon.State.Off)
+    icon.addPixmap(sign_pixmap(HIDDEN_LENSES_COLOUR), QIcon.Mode.Normal, QIcon.State.On)
+    return icon

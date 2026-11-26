@@ -29,6 +29,9 @@ REQUEST_TIMEOUT_S = 100.0  # shorter than the client's wait, so the client gets 
 STATUS_MESSAGE_MS = 3000
 
 
+STATUS_EDGE_GAP_PX = 5  # room between the status text and the window's edge
+
+
 class _Request:
     """One tool call waiting for the GUI thread."""
 
@@ -60,6 +63,7 @@ class AgentLink(QObject):
         self.tools = DesignTools(window.model)
         self.server = LinkServer(self._handle_on_server_thread, endpoint_path)
         self.status_label = QLabel("AI agent link on")
+        self.status_label.setContentsMargins(0, 0, STATUS_EDGE_GAP_PX, 0)  # clear of the edge
         # Emitted from a server thread and received here (the GUI thread), so Qt queues it.
         self._request_received.connect(self._run_on_gui_thread)
 

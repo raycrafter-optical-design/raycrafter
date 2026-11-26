@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -41,7 +41,7 @@ from PyQt6.QtWidgets import (
 from raycrafter.core.replacement import SAME_FOCAL_LENGTH_TOLERANCE
 from raycrafter.gui.range_slider import RangeSlider
 from raycrafter.gui.style import CONTEXT_BAR_BOX_HEIGHT_PX
-from raycrafter.gui.tool_icons import ITALIC_F
+from raycrafter.gui.tool_icons import ITALIC_F, lens_sign_icon
 from raycrafter.lenscatalog.catalog import CatalogEntry
 from raycrafter.lenscatalog.selection import (
     LensFilter,
@@ -61,6 +61,9 @@ RANGE_SLIDER_WIDTH_PX = 110
 RANGE_SLIDER_HANDLE_PX = 5  # small handles, like the context bar's other sliders
 RANGE_TEXT_WIDTH_PX = 84  # room for "4.0-2500 mm"
 COATING_COMBO_WIDTH_PX = 190  # room for "Suits the beams (555 nm)"
+SIGN_ICON_SIZE = QSize(14, 14)  # the + and - in their 22 px buttons
+SEARCH_TO_TREE_PX = 6
+TREE_TO_COUNT_PX = 11
 PART_NUMBER_ROLE = Qt.ItemDataRole.UserRole  # where a lens row keeps its part number
 GROUP_KEY_ROLE = Qt.ItemDataRole.UserRole + 1  # where a group row keeps its key (see below)
 
@@ -157,15 +160,15 @@ class LensFilterControls(QWidget):
         # Latched buttons: pressed (checked) means those lenses are hidden; they are then
         # drawn faded grey (see the style sheet).
         self.hide_positive_button = QToolButton()
-        self.hide_positive_button.setObjectName("positiveLensesButton")
-        self.hide_positive_button.setText("+")
+        self.hide_positive_button.setIcon(lens_sign_icon(positive=True))
         self.hide_positive_button.setToolTip("Show or hide positive (converging) lenses")
         self.hide_negative_button = QToolButton()
-        self.hide_negative_button.setObjectName("negativeLensesButton")
-        self.hide_negative_button.setText("−")  # a minus sign, the width of the "+"
+        self.hide_negative_button.setIcon(lens_sign_icon(positive=False))
         self.hide_negative_button.setToolTip("Show or hide negative (diverging) lenses")
         for button in (self.hide_positive_button, self.hide_negative_button):
+            button.setObjectName("lensSignButton")
             button.setCheckable(True)
+            button.setIconSize(SIGN_ICON_SIZE)
 
         self.focal_length_slider = RangeSlider(0, SLIDER_STEPS, RANGE_SLIDER_HANDLE_PX)
         self.focal_length_text = QLabel()
@@ -175,7 +178,9 @@ class LensFilterControls(QWidget):
             slider.setFixedWidth(RANGE_SLIDER_WIDTH_PX)
         for text in (self.focal_length_text, self.diameter_text):
             text.setFixedWidth(RANGE_TEXT_WIDTH_PX)
-        self.focal_length_slider.setToolTip("Range of |focal length| shown")
+        self.focal_length_slider.setToolTip(
+            "Range of focal length shown (its size: positive and negative lenses alike)"
+        )
         self.diameter_slider.setToolTip("Range of clear diameter shown")
 
         self.coating_combo = QComboBox()
@@ -193,7 +198,7 @@ class LensFilterControls(QWidget):
         self.catalogue_combo.setEnabled(False)  # one catalogue so far
         self.catalogue_combo.setToolTip("Catalogue (only Thorlabs so far)")
 
-        focal_length_label = QLabel(f"|{ITALIC_F}|")
+        focal_length_label = QLabel(ITALIC_F)
         focal_length_label.setObjectName("italicF")
         diameter_label_widget = QLabel("⌀")
         diameter_label_widget.setObjectName("diameterSign")
@@ -282,6 +287,11 @@ class LensBrowser(QWidget):
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search part numbers, e.g. LA1 or AC254")
         self.search_box.setClearButtonEnabled(True)
+        self.expand_button = QPushButton("Expand all")
+        self.expand_button.setToolTip("Open or close every group of the list")
+        search_row = QHBoxLayout()
+        search_row.addWidget(self.search_box, stretch=1)
+        search_row.addWidget(self.expand_button)
 
         self.tree = QTreeWidget()
         self.tree.setObjectName("lensTree")  # its text is a little smaller (see the style sheet)
@@ -308,8 +318,11 @@ class LensBrowser(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.search_box)
+        layout.setSpacing(0)  # the gaps are set one by one
+        layout.addLayout(search_row)
+        layout.addSpacing(SEARCH_TO_TREE_PX)
         layout.addWidget(self.tree, stretch=1)
+        layout.addSpacing(TREE_TO_COUNT_PX)
         layout.addLayout(bottom_row)
 
     def _connect_signals(self) -> None:
@@ -328,6 +341,7 @@ class LensBrowser(QWidget):
         self.tree.itemDoubleClicked.connect(self.on_item_double_clicked)
         self.tree.itemExpanded.connect(lambda item: self.on_group_toggled(item, True))
         self.tree.itemCollapsed.connect(lambda item: self.on_group_toggled(item, False))
+        self.expand_button.clicked.connect(self.toggle_expand_all)
         self.replace_button.clicked.connect(self.confirm_replacement)
         self.cancel_button.clicked.connect(self.replace_cancelled.emit)
 
@@ -545,6 +559,7 @@ class LensBrowser(QWidget):
         if previously_selected is not None and not self.select_part_number(previously_selected):
             self.on_selection_changed()  # the chosen lens was filtered out
         self.count_label.setText(f"{len(shown_entries)} of {len(self.entries)} lenses shown")
+        self.update_expand_button()
         self.update_replace_button()
 
     @staticmethod
@@ -579,6 +594,22 @@ class LensBrowser(QWidget):
     def _lens_items(self) -> list[QTreeWidgetItem]:
         return [item for item in self._all_items() if item.data(0, PART_NUMBER_ROLE) is not None]
 
+    def toggle_expand_all(self) -> None:
+        """Open every group, or close them all if every one is already open."""
+        groups = self._group_items()
+        expand = not all(item.isExpanded() for item in groups)
+        self.tree.setUpdatesEnabled(False)
+        for item in groups:
+            item.setExpanded(expand)  # on_group_toggled remembers each one
+        self.tree.setUpdatesEnabled(True)
+        self.update_expand_button()
+
+    def update_expand_button(self) -> None:
+        """The button offers to close the groups once they are all open."""
+        groups = self._group_items()
+        all_open = bool(groups) and all(item.isExpanded() for item in groups)
+        self.expand_button.setText("Collapse all" if all_open else "Expand all")
+
     def on_group_toggled(self, item: QTreeWidgetItem, expanded: bool) -> None:
         """Remember which groups the user opened, so a rebuild can open them again."""
         key = item.data(0, GROUP_KEY_ROLE)
@@ -588,3 +619,4 @@ class LensBrowser(QWidget):
             self.expanded_group_keys.add(key)
         else:
             self.expanded_group_keys.discard(key)
+        self.update_expand_button()

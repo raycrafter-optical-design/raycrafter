@@ -77,15 +77,11 @@ QToolBar QToolButton:checked { background: #cfd4da; }
 QToolBar#contextBar QToolButton { border: 1px solid #ced4da; background: #f8f9fa; padding: 0px; }
 QToolBar#contextBar QToolButton#signButton { font-size: 18px; min-width: 22px; max-width: 22px;
                                              min-height: 22px; max-height: 22px; }
-/* Show or hide positive (green) and negative (red) lenses: pressed means hidden, drawn faded. */
-QToolBar#contextBar QToolButton#positiveLensesButton,
-QToolBar#contextBar QToolButton#negativeLensesButton { font-size: 18px; font-weight: 600;
-    min-width: 22px; max-width: 22px; min-height: 22px; max-height: 22px; }
-QToolBar#contextBar QToolButton#positiveLensesButton { color: #2f9e44; }
-QToolBar#contextBar QToolButton#negativeLensesButton { color: #e03131; }
-QToolBar#contextBar QToolButton#positiveLensesButton:checked,
-QToolBar#contextBar QToolButton#negativeLensesButton:checked { color: #ced4da;
-    background: #f1f3f5; border-color: #dee2e6; }
+/* Show or hide positive and negative lenses: pressed (hidden) is drawn faded. */
+QToolBar#contextBar QToolButton#lensSignButton { min-width: 22px; max-width: 22px;
+    min-height: 22px; max-height: 22px; }
+QToolBar#contextBar QToolButton#lensSignButton:checked { background: #f1f3f5;
+    border-color: #dee2e6; }
 QToolBar#contextBar QToolButton#lockFocusButton { min-width: 40px; max-width: 40px;
                                                   min-height: 28px; max-height: 28px; }
 QToolBar#contextBar QToolButton#lockFocusButton:checked { background: #fff5f5;

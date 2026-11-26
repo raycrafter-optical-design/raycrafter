@@ -123,6 +123,7 @@ EDIT_MENU_TITLE = "Edit\u200b" if sys.platform == "darwin" else "Edit"
 SLOW_PLOT_DELAY_MS = 120  # the slower plots wait this long after the last change
 STALE_PLOT_OPACITY = 0.4  # the slower plots are this faded while a drag makes them out of date
 STATUS_MESSAGE_MS = 5000
+STATUS_EDGE_GAP_PX = 5  # room between the status text and the window's edge
 
 
 class MainWindow(QMainWindow):
@@ -237,6 +238,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.status_label = QLabel()
+        self.status_label.setContentsMargins(STATUS_EDGE_GAP_PX, 0, 0, 0)  # clear of the edge
         self.statusBar().addWidget(self.status_label)
 
         self.tool_palette = ToolPalette(self)

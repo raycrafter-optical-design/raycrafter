@@ -168,6 +168,16 @@ def test_lens_browser_filters_and_selects(application):
     controls.hide_positive_button.setChecked(True)  # pressed: positive lenses are hidden
     assert browser._lens_items() == []
     assert browser.selected_part_number() is None
+
+    # "Expand all" opens every group; then the button closes them all.
+    controls.hide_positive_button.setChecked(False)
+    browser.search_box.clear()
+    assert browser.expand_button.text() == "Expand all"
+    browser.expand_button.click()
+    assert all(item.isExpanded() for item in browser._group_items())
+    assert browser.expand_button.text() == "Collapse all"
+    browser.expand_button.click()
+    assert not any(item.isExpanded() for item in browser._group_items())
     window.close()
 
 

@@ -69,6 +69,7 @@ from raycrafter.gui.style import PLOT_BOTTOM_GAP_PX, join_with_gaps, scaled_font
 SIDE_PLOT_MIN_HEIGHT_PX = 240  # the side view is never squeezed below this height
 SIDE_PLOT_TOP_GAP_PX = 8  # space between the top edge and the top of the y axis
 SIDE_GRID_CELL_PX = 40  # grid cells are this many screen pixels on each side
+TIMING_EDGE_GAP_PX = 12  # timings sit this far from the top and right edges
 TIMING_FONT_SCALE = 2 / 3  # timing text is this fraction of the default axis number size
 TICK_FONT_SCALE = 0.9  # the axis numbers are a little smaller than the default
 LENS_NAME_GAP_PX = 3  # gap between the top of a lens and its name tag
@@ -159,6 +160,7 @@ class SideView(pg.PlotWidget):
         side.vb.sigResized.connect(self.update_grid)
         side.vb.sigResized.connect(self.on_view_resized)
         side.vb.sigResized.connect(self.axis_glyph.place)
+        side.vb.sigResized.connect(self.place_timing_label)  # it is placed in screen pixels
         self.image_line.sigPositionChanged.connect(self.on_image_dragged)
         # The signal passes the line itself; drag_finished takes no arguments.
         self.image_line.sigPositionChangeFinished.connect(lambda _line: self.drag_finished.emit())
@@ -639,11 +641,12 @@ class SideView(pg.PlotWidget):
         y_span = self.y_range[1] - self.y_range[0]
         self.image_label.setPos(self.image_line.value(), self.y_range[1] - 0.01 * y_span)
 
-    def place_timing_label(self) -> None:
-        """Put the trace and draw timings just inside the top-right corner of the plot."""
-        z_span = self.z_range[1] - self.z_range[0]
-        y_span = self.y_range[1] - self.y_range[0]
-        self.timing_label.setPos(self.z_range[1] - 0.01 * z_span, self.y_range[1] - 0.04 * y_span)
+    def place_timing_label(self, *_args) -> None:
+        """Put the trace and draw timings in the top-right corner of the frame, as far from
+        its top edge as from its right one (on screen)."""
+        corner = self.mapToScene(self.viewport().rect().topRight())
+        corner_in_view = QPointF(corner.x() - TIMING_EDGE_GAP_PX, corner.y() + TIMING_EDGE_GAP_PX)
+        self.timing_label.setPos(self.getPlotItem().vb.mapSceneToView(corner_in_view))
 
     def on_hover(self, scene_position: QPointF) -> None:
         """Track the lens under the pointer; show a left/right arrow over anything draggable.
