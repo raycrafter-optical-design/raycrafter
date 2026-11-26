@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
 
 from raycrafter.gui.about_dialog import DOCS_URL, PROJECT_URL, AboutDialog  # noqa: E402
 from raycrafter.gui.analysis_panels import MtfPanel  # noqa: E402
-from raycrafter.gui.lens_picker import ALL_COATINGS, LensPickerDialog  # noqa: E402
+from raycrafter.gui.lens_picker import ALL_COATINGS, SUITS_BEAMS, LensPickerDialog  # noqa: E402
 from raycrafter.gui.main_window import EDIT_MENU_TITLE, MainWindow  # noqa: E402
 from raycrafter.gui.range_slider import RangeSlider  # noqa: E402
 from raycrafter.gui.style import force_light_colour_scheme  # noqa: E402
@@ -89,6 +89,14 @@ def test_window_adds_pairs_and_deletes_lenses(application):
     window.close()
 
 
+def lens_menu_action(window: MainWindow, lens_index: int, text: str):
+    """The entry of a lens's context menu with this text."""
+    for action in window.build_lens_menu(lens_index).actions():
+        if action.text() == text:
+            return action
+    raise AssertionError(f"The lens menu has no {text!r}")
+
+
 def test_light_colour_scheme_is_forced(application):
     """Button text must stay dark when the OS is in dark mode (white-on-white on Windows 11).
 
@@ -105,9 +113,10 @@ def test_light_colour_scheme_is_forced(application):
 def test_lens_picker_filters_and_selects(application):
     window = MainWindow()
     picker = LensPickerDialog(window.model.catalog, parent=window)
-    assert picker.coating_combo.currentText() == ALL_COATINGS
+    assert picker.coating_combo.currentData() == SUITS_BEAMS  # the default
     assert not picker.insert_button.isEnabled()  # nothing selected yet
 
+    picker.coating_combo.setCurrentIndex(picker.coating_combo.findText(ALL_COATINGS))
     all_coatings_count = len(picker._lens_items())
     picker.coating_combo.setCurrentIndex(picker.coating_combo.findText("Uncoated"))
     assert 0 < len(picker._lens_items()) < all_coatings_count
@@ -927,10 +936,10 @@ def test_locked_lenses_become_an_assembly_that_flips_saves_and_is_placed_again(
     application.processEvents()
 
     menu_texts = lambda: [action.text() for action in window.build_lens_menu(0).actions()]  # noqa: E731
-    make_assembly = window.build_lens_menu(0).actions()[3]
-    assert make_assembly.text() == "Make assembly" and not make_assembly.isEnabled()
+    make_assembly = lens_menu_action(window, 0, "Make assembly")
+    assert not make_assembly.isEnabled()
     window.set_gap_locked(0, True)
-    window.build_lens_menu(0).actions()[3].trigger()
+    lens_menu_action(window, 0, "Make assembly").trigger()
     assert window.model.assembly_name(1) == "Assembly 1"
     assert "Flip assembly\tF" in menu_texts() and "Split assembly" in menu_texts()
 
@@ -1008,4 +1017,51 @@ def test_opening_a_project_with_lock_focus_on_leaves_nothing_unsaved(
     application.processEvents()
     window.recompute_and_redraw()
     assert not window.model.has_unsaved_changes()
+    window.close()
+
+
+def test_replacing_a_lens_from_the_lens_menu(application, monkeypatch):
+    """Issue #63: "Replace with same f…" lists suitable lenses and swaps one in place."""
+    window = MainWindow()  # one ACT508-200-A, beam at 555 nm
+    menu_texts = [action.text() for action in window.build_lens_menu(0).actions()]
+    assert {"Replace with same f…", "Swap lens…", "Replace with paraxial"} <= set(menu_texts)
+
+    def choose_and_accept(picker):
+        shown = {item.text(0): item for item in picker._lens_items()}
+        focal_lengths = [float(item.text(1)) for item in shown.values()]
+        assert focal_lengths and all(180.0 <= f <= 220.0 for f in focal_lengths)
+        assert not any(part.endswith("-B") or part.endswith("-C") for part in shown)
+        assert picker.select_part_number("AC254-200-A")
+        return LensPickerDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(LensPickerDialog, "exec", choose_and_accept)
+    lens_menu_action(window, 0, "Replace with same f…").trigger()
+    assert [lens.part_number for lens in window.model.state.lenses] == ["AC254-200-A"]
+    assert len(window.side_view.lens_graphics) == 1
+
+    lens_menu_action(window, 0, "Replace with paraxial").trigger()
+    assert window.model.state.lenses[0].part_number == "Paraxial f=+200.2 mm"
+    assert not lens_menu_action(window, 0, "Replace with paraxial").isEnabled()
+    window.close()
+
+
+def test_replacing_one_lens_of_a_plossl_pair_asks_first(application, monkeypatch):
+    window = MainWindow()
+    window.model.add_lens("ACT508-200-A")
+    window.make_plossl(0)
+
+    def choose_and_accept(picker):
+        picker.coating_combo.setCurrentIndex(picker.coating_combo.findText(ALL_COATINGS))
+        assert picker.select_part_number("AC508-150-A")
+        return LensPickerDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(LensPickerDialog, "exec", choose_and_accept)
+    monkeypatch.setattr(window.replacer, "ask_about_plossl_pair", lambda **_kwargs: None)
+    window.replacer.replace_with_catalogue_lens(1, same_focal_length=False)  # cancelled
+    assert [lens.part_number for lens in window.model.state.lenses] == ["ACT508-200-A"] * 2
+
+    monkeypatch.setattr(window.replacer, "ask_about_plossl_pair", lambda **_kwargs: "both")
+    window.replacer.replace_with_catalogue_lens(1, same_focal_length=False)
+    assert [lens.part_number for lens in window.model.state.lenses] == ["AC508-150-A"] * 2
+    assert window.model.in_plossl_pair(0)
     window.close()

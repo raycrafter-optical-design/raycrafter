@@ -44,6 +44,9 @@ class LensFilter:
         Leave out converging or diverging lenses.
     part_number_text : str
         Show only lenses whose part number contains this text (case does not matter).
+    wavelengths_nm : tuple of float or None
+        Show only lenses whose coating suits all these wavelengths (see
+        ``CatalogEntry.suits_wavelengths``); None shows every coating.
     """
 
     coating: str | None = None
@@ -51,6 +54,7 @@ class LensFilter:
     hide_positive: bool = False
     hide_negative: bool = False
     part_number_text: str = ""
+    wavelengths_nm: tuple[float, ...] | None = None
 
     def matches_ignoring_focal_length(self, entry: CatalogEntry) -> bool:
         """True if the lens passes every test except the focal length range.
@@ -59,6 +63,8 @@ class LensFilter:
         tests, so this is kept separate from ``matches``.
         """
         if self.coating is not None and entry.coating != self.coating:
+            return False
+        if self.wavelengths_nm is not None and not entry.suits_wavelengths(self.wavelengths_nm):
             return False
         if entry.is_negative and self.hide_negative:
             return False

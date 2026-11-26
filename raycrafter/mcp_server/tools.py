@@ -55,6 +55,7 @@ EDITING_TOOL_NAMES = [  # these change the design, so a window must redraw after
     "set_source_z",
     "flip_lens",
     "delete_lens",
+    "replace_lens",
     "make_plossl",
     "make_assembly",
     "split_assembly",
@@ -389,6 +390,42 @@ class DesignTools:
         """Remove a lens. Its assembly, if any, is dissolved."""
         self._check_lens_index(lens_index)
         self.model.delete_lens(lens_index)
+        return self.get_design()
+
+    def replace_lens(
+        self,
+        lens_index: int,
+        part_number: str | None = None,
+        paraxial_focal_length_mm: float | None = None,
+        plossl_pair: str | None = None,
+    ) -> dict:
+        """Swap a lens for a catalogue lens (``part_number``) or a paraxial one, in place.
+
+        Give exactly one of ``part_number`` and ``paraxial_focal_length_mm``. The new lens is
+        placed so its rear principal plane is where the old lens's was, so a collimated beam
+        focuses in about the same place; a locked gap in front keeps the front vertex, and
+        one behind keeps the back vertex. It takes over the old lens's assembly, the lock
+        behind it, and (catalogue for catalogue) whether it is flipped. It is refused if it
+        would overlap a neighbour. For a lens of a Plossl pair, ``plossl_pair`` must be
+        "replace_both" (two of the new part, still a Plossl pair) or "split" (split the pair,
+        replace this lens only). To find lenses of the same focal length, use search_lenses.
+        """
+        self._check_lens_index(lens_index)
+        if (part_number is None) == (paraxial_focal_length_mm is None):
+            raise ValueError("Give exactly one of part_number and paraxial_focal_length_mm")
+        if plossl_pair not in (None, "replace_both", "split"):
+            raise ValueError('plossl_pair must be "replace_both", "split" or null')
+        if plossl_pair == "replace_both":
+            if part_number is None:
+                raise ValueError("A Plossl pair can only be replaced with a catalogue lens")
+            self._catalog_entry(part_number)
+            self.model.replace_plossl_pair(lens_index, part_number)
+            return self.get_design()
+        if paraxial_focal_length_mm is not None:
+            new_lens = self.model.make_paraxial_lens(paraxial_focal_length_mm)
+        else:
+            new_lens = self.model.make_lens(self._catalog_entry(str(part_number)).part_number)
+        self.model.replace_lens(lens_index, new_lens, split_plossl_pair=plossl_pair == "split")
         return self.get_design()
 
     def make_plossl(self, lens_index: int) -> dict:

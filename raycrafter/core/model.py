@@ -1,10 +1,10 @@
 """The lens bench model: the one object that front ends (GUI, report, scripts) talk to.
 
 ``OpticalModel`` owns the bench state (``raycrafter.core.state``) and the list of lenses
-that can be placed. It provides the editing operations: add, insert, delete, move and swap
-lenses, set and lock the air gaps between them (and from the source plane, where the beams
-are defined, to the first lens), group lenses into assemblies (such as Plossl
-pairs), flip them and save them as user parts (``raycrafter.core.user_parts``), add or
+that can be placed. It provides the editing operations: add, insert, delete, move, swap and
+replace lenses (``raycrafter.core.replacement``), set and lock the air gaps between them
+(and from the source plane, where the beams are defined, to the first lens), group lenses
+into assemblies (such as Plossl pairs), flip them and save them as user parts (``raycrafter.core.user_parts``), add or
 remove fields, and undo and redo. It also gives access to the analyses
 (``raycrafter.core.analysis``), to saving and opening project files
 (``raycrafter.core.project_file``) and to Zemax import and export, applied to its current
@@ -33,6 +33,7 @@ from raycrafter.core import (
     gaps,
     optic_builder,
     project_file,
+    replacement,
     user_parts,
     zmx_import,
 )
@@ -318,6 +319,92 @@ class OpticalModel:
         lens = self.state.lenses[lens_index]
         if lens.assembly_id is None and not lens.is_paraxial:
             lens.flipped = not lens.flipped
+
+    # ---------------------------------------------------------------- replacing lenses
+
+    def lens_focal_length_mm(self, lens_index: int) -> float:
+        """The focal length (mm) of one lens on its own, at the selected field's wavelength."""
+        wavelength_nm = self.state.selected_field.wavelength_nm
+        return replacement.focal_length_mm(self.state.lenses[lens_index], wavelength_nm)
+
+    def in_plossl_pair(self, lens_index: int) -> bool:
+        """True if the lens is one of a Plossl pair."""
+        return self.assembly_name(lens_index) == assemblies.PLOSSL_NAME
+
+    def replace_lens(
+        self, lens_index: int, new_lens: PlacedLens, split_plossl_pair: bool = False
+    ) -> None:
+        """Put ``new_lens`` (from ``make_lens`` or ``make_paraxial_lens``) in place of a lens.
+
+        It goes where the old lens's rear principal plane was, unless locked gaps say
+        otherwise (see ``raycrafter.core.replacement``). It takes over the old lens's place
+        in an assembly, the lock on the gap behind it and, if both are catalogue lenses,
+        whether it is flipped.
+
+        Parameters
+        ----------
+        lens_index : int
+            The lens to replace.
+        new_lens : PlacedLens
+            The replacement; its z does not matter. It is copied.
+        split_plossl_pair : bool
+            If the lens is one of a Plossl pair, the pair must be split first (its gap is
+            then unlocked); True does that. To replace both, use ``replace_plossl_pair``.
+
+        Raises
+        ------
+        ValueError
+            If the lens is one of a Plossl pair and ``split_plossl_pair`` is False, or the
+            new lens would overlap a neighbour. Nothing is changed then.
+        """
+        if self.in_plossl_pair(lens_index) and not split_plossl_pair:
+            raise ValueError(
+                "This lens is one of a Plossl pair: replace both lenses, or split the pair first"
+            )
+        old_lens = self.state.lenses[lens_index]
+        new_lens = copy.deepcopy(new_lens)
+        new_lens.flipped = old_lens.flipped and not (old_lens.is_paraxial or new_lens.is_paraxial)
+
+        state_before = copy.deepcopy(self.state)
+        if self.in_plossl_pair(lens_index):
+            assemblies.split_assembly(self.state, lens_index)
+        try:
+            self._replace_run(lens_index, lens_index, [new_lens])
+        except ValueError:
+            self.state = state_before  # put the pair back: a refusal changes nothing
+            raise
+
+    def replace_plossl_pair(self, lens_index: int, part_number: str) -> None:
+        """Replace both lenses of this lens's Plossl pair with two of ``part_number``.
+
+        The new pair is set up as ``make_plossl`` does (facing each other, PLOSSL_GAP_MM
+        apart) and placed as ``replace_lens`` places one lens, with the pair's own rear
+        principal plane where the old pair's was. It stays a Plossl pair.
+
+        Raises
+        ------
+        ValueError
+            If the lens is in no Plossl pair, the new part is a diverging lens, or the new
+            pair would overlap a neighbour. Nothing is changed then.
+        """
+        if not self.in_plossl_pair(lens_index):
+            raise ValueError("This lens is not one of a Plossl pair")
+        left, right = self.make_lens(part_number, 0.0), self.make_lens(part_number, 0.0)
+        if left.is_negative:
+            raise ValueError(f"A Plossl pair needs a positive lens, and {part_number} is not")
+        self._turn_to_face_as_plossl(left, right)
+        right.z = self._plossl_front_z(left, right)
+        members = self.assembly_indices(lens_index)
+        self._replace_run(members[0], members[-1], [left, right])
+
+    def _replace_run(self, first_index: int, last_index: int, new_lenses: list[PlacedLens]) -> None:
+        """``replacement.replace_lenses``, keeping a locked gap from the source plane."""
+        source_gap_mm = self._source_gap_mm()
+        replacement.replace_lenses(
+            self.state, first_index, last_index, new_lenses, self.lowest_first_front_z()
+        )
+        if first_index == 0:
+            self._keep_source_gap(source_gap_mm)
 
     # ---------------------------------------------------------------- air gaps
 
@@ -614,9 +701,7 @@ class OpticalModel:
         left_index, right_index = sorted((lens_index, partner_index))
         lenses = self.state.lenses
         left, right = lenses[left_index], lenses[right_index]
-
-        left.flipped = left.positive_element_is_first()  # moves the positive element to the back
-        right.flipped = not right.positive_element_is_first()  # keeps or puts it at the front
+        self._turn_to_face_as_plossl(left, right)
 
         original_right_z = right.z
         right.z = self._plossl_front_z(left, right)
@@ -627,6 +712,12 @@ class OpticalModel:
         self.state.image_z = max(self.state.image_z + shift, minimum_image_z)
 
         assemblies.make_assembly(self.state, left_index, right_index, assemblies.PLOSSL_NAME)
+
+    @staticmethod
+    def _turn_to_face_as_plossl(left: PlacedLens, right: PlacedLens) -> None:
+        """Flip two identical doublets as needed so their positive elements face each other."""
+        left.flipped = left.positive_element_is_first()  # moves the positive element to the back
+        right.flipped = not right.positive_element_is_first()  # keeps or puts it at the front
 
     @staticmethod
     def _plossl_front_z(left: PlacedLens, right: PlacedLens) -> float:

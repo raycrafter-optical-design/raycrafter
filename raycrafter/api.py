@@ -551,6 +551,54 @@ class Bench(DesignFileMethods, AssemblyMethods, GapMethods):
         """
         self._call("delete_lens", lens_index=int(lens_index))
 
+    def replace_lens(
+        self,
+        lens_index: int,
+        part_number: str | None = None,
+        paraxial_focal_length_mm: float | None = None,
+        plossl_pair: str | None = None,
+    ) -> LensInfo:
+        """Swap a lens for a catalogue lens or a paraxial one, in place; return its snapshot.
+
+        The new lens goes where the old lens's rear principal plane was, so a collimated
+        beam focuses in about the same place; a locked gap in front keeps the front vertex,
+        and one behind keeps the back vertex. It takes over the old lens's assembly and,
+        catalogue lens for catalogue lens, whether it is flipped.
+
+        Parameters
+        ----------
+        lens_index : int
+            The lens to replace.
+        part_number : str, optional
+            The catalogue lens to put in its place.
+        paraxial_focal_length_mm : float, optional
+            Or the focal length of an ideal thin lens to put in its place.
+        plossl_pair : str, optional
+            Needed for a lens of a Plossl pair: "replace_both" replaces both lenses with
+            ``part_number`` (it stays a Plossl pair), "split" splits the pair first.
+
+        Raises
+        ------
+        ValueError
+            If not exactly one of ``part_number`` and ``paraxial_focal_length_mm`` is given,
+            the lens is in a Plossl pair and ``plossl_pair`` is not given, or the new lens
+            would overlap a neighbour.
+
+        Example
+        -------
+        >>> bench = Bench(empty=True)
+        >>> _ = bench.add_paraxial_lens(200.0)
+        >>> bench.replace_lens(0, "AC254-200-A").part_number
+        'AC254-200-A'
+        """
+        arguments: dict[str, object] = {"lens_index": int(lens_index), "plossl_pair": plossl_pair}
+        if part_number is not None:
+            arguments["part_number"] = part_number
+        if paraxial_focal_length_mm is not None:
+            arguments["paraxial_focal_length_mm"] = float(paraxial_focal_length_mm)
+        self._call("replace_lens", **arguments)
+        return self.lenses[int(lens_index)]
+
     # ------------------------------------------------------------------ editing fields
 
     def set_field(

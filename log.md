@@ -308,3 +308,11 @@ carry the beam to the first lens (`beam_at_first_lens`). Rob chose an explicit s
 **Supersedes:** "beam is defined where it crosses the first lens's front vertex plane" in
 "Each field's rays are launched by RayCrafter" and the offset rule in "ZMX fields are aimed
 through the stop" (2026-11-24).
+
+## 2026-11-26: Replacing a lens keeps its rear principal plane (#63)
+**Decision:** "Replace with same f…", "Swap lens…" and "Replace with paraxial" put the new lens
+where the old one's rear principal plane was, so focus barely moves. A locked gap in front
+keeps the front vertex, one behind keeps the back vertex; an overlap is refused. For a lens
+of a Plossl pair the user replaces both or splits the pair. The picker's coating filter
+defaults to "suits the beams" (uncoated always suits); "same f" means same sign, within ±10%.
+**Why:** Rob's choice, for teaching. Keeping the front vertex or centre shifts the focus.

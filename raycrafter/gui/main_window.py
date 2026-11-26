@@ -11,7 +11,8 @@
   right-click it to lock or unlock it. Lenses joined by locked gaps move as one. The fields
   are defined at the source plane ("source"), which by default moves with the first lens;
   right-click its caption to unlock it, then drag it or type its gap.
-- Right-click a lens for Flip (F), Delete (Del or Backspace), Make Plossl, and the assembly
+- Right-click a lens for Flip (F), Delete (Del or Backspace), the replace actions
+  (``raycrafter.gui.lens_replacement``), Make Plossl, and the assembly
   actions: Make assembly (from lenses joined by locked gaps), Split assembly, and Save as
   user part. F flips a whole assembly. "Add user part" places a saved part, as one assembly.
 - The RayCrafter menu has About and Quit. The File menu (``raycrafter.gui.file_actions``) has
@@ -80,6 +81,7 @@ from raycrafter.gui.bench_viewer import BenchViewer
 from raycrafter.gui.field_editor import FieldEditor
 from raycrafter.gui.file_actions import FileActions
 from raycrafter.gui.lens_picker import LensPickerDialog
+from raycrafter.gui.lens_replacement import LensReplacer
 from raycrafter.gui.side_view import SideView
 from raycrafter.gui.style import style_sheet
 from raycrafter.gui.undo_keys import leave_undo_keys_to_window
@@ -125,6 +127,7 @@ class MainWindow(QMainWindow):
         self.next_redraw_is_undo_step = True
         self.next_redraw_counts_as_saved = False  # see show_replaced_design
         self.files = FileActions(self)  # the File menu
+        self.replacer = LensReplacer(self)  # the lens menu's replace actions
         self._build_widgets()
         self._build_menus()
         self._connect_signals()
@@ -391,6 +394,9 @@ class MainWindow(QMainWindow):
         """Show the lens picker; after Insert, let the user place the chosen lens on the axis."""
         if self.lens_picker is None:
             self.lens_picker = LensPickerDialog(self.model.catalog, parent=self)
+        self.lens_picker.set_design_wavelengths(
+            [beam.wavelength_nm for beam in self.model.state.fields]
+        )
         if self.lens_picker.exec() != LensPickerDialog.DialogCode.Accepted:
             return
         part_number = self.lens_picker.selected_part_number()
@@ -524,6 +530,9 @@ class MainWindow(QMainWindow):
 
         delete_action = menu.addAction("Delete\tDel")
         delete_action.triggered.connect(lambda: self.delete_lens(lens_index))
+
+        menu.addSeparator()
+        self.replacer.add_menu_entries(menu, lens_index)
 
         menu.addSeparator()
         # Lenses joined by locked gaps can be made one assembly, unless they already are.

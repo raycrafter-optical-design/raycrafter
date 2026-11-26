@@ -1,9 +1,11 @@
-"""The "Add catalogue lens" dialog: browse and filter the catalogue, then pick one lens to insert.
+"""The lens picker: browse and filter the catalogue, then pick one lens.
 
-The lenses are shown as a tree: category -> clear diameter -> lenses, positive lenses
-before negative ones and shortest focal length first. The part-number search box above
-the tree and the filters below it (coating, focal length range, hide positive / negative
-lenses) narrow the list. The filtering itself is done by
+It is the "Add catalogue lens" dialog, and also the dialog that chooses a lens to replace
+one on the bench (``prepare_for_replacement``). The lenses are shown as a tree: category ->
+clear diameter -> lenses, positive lenses before negative ones and shortest focal length
+first. The part-number search box above the tree and the filters below it (coating, focal
+length range, hide positive / negative lenses) narrow the list. By default only lenses whose
+coating suits the wavelengths of the beams are shown. The filtering itself is done by
 ``raycrafter.lenscatalog.selection``; this module only displays it.
 
 The dialog is kept between uses, so the filters stay as the user left them.
@@ -32,6 +34,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from raycrafter.core.replacement import SAME_FOCAL_LENGTH_TOLERANCE
 from raycrafter.gui.range_slider import RangeSlider
 from raycrafter.lenscatalog.catalog import CatalogEntry
 from raycrafter.lenscatalog.selection import (
@@ -43,6 +46,8 @@ from raycrafter.lenscatalog.selection import (
 )
 
 ALL_COATINGS = "All coatings"  # the coating drop-down's "no filter" option
+SUITS_BEAMS = "suits beams"  # data of the drop-down's default: coatings that suit the beams
+EXPAND_ALL_BELOW = 40  # with fewer lenses shown than this, every group is opened
 SLIDER_STEPS = 1000  # resolution of the focal length slider
 DIALOG_SIZE_PX = (680, 560)
 COATING_COMBO_WIDTH_PX = 170
@@ -60,14 +65,23 @@ class LensPickerDialog(QDialog):
         Part number -> CatalogEntry: the lenses to choose from.
     parent : QWidget, optional
         The window the dialog belongs to.
+    action_text : str
+        The text of the button that accepts the chosen lens, e.g. "Insert" or "Replace".
     """
 
-    def __init__(self, catalog: dict[str, CatalogEntry], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        catalog: dict[str, CatalogEntry],
+        parent: QWidget | None = None,
+        action_text: str = "Insert",
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Add catalogue lens")
         self.resize(*DIALOG_SIZE_PX)
         self.entries = list(catalog.values())
-        self.lens_filter = LensFilter(coating=None)  # all coatings, like the drop-down's default
+        self.action_text = action_text
+        self.lens_filter = LensFilter()
+        self.design_wavelengths_nm: tuple[float, ...] = ()  # the beams' (set_design_wavelengths)
 
         # The ends of the chosen focal length range, in mm. None means the handle is at that
         # end of the slider and follows the shortest (or longest) lens on the list, so that
@@ -104,6 +118,7 @@ class LensPickerDialog(QDialog):
 
         self.coating_combo = QComboBox()
         self.coating_combo.setView(QListView())  # see MainWindow: the native popup ignores CSS
+        self.coating_combo.addItem("Suits the beams", SUITS_BEAMS)  # see set_design_wavelengths
         self.coating_combo.addItem(ALL_COATINGS, None)
         for coating in available_coatings(self.entries):
             self.coating_combo.addItem(coating, coating)
@@ -136,7 +151,7 @@ class LensPickerDialog(QDialog):
 
         self.buttons = QDialogButtonBox()
         self.insert_button = self.buttons.addButton(
-            "Insert", QDialogButtonBox.ButtonRole.AcceptRole
+            self.action_text, QDialogButtonBox.ButtonRole.AcceptRole
         )
         self.buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
 
@@ -170,6 +185,43 @@ class LensPickerDialog(QDialog):
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
 
+    # ------------------------------------------------------------------ setting up a use
+
+    def set_design_wavelengths(self, wavelengths_nm: list[float]) -> None:
+        """Tell the dialog the wavelengths of the beams, for its "suits the beams" filter."""
+        self.design_wavelengths_nm = tuple(sorted(set(wavelengths_nm)))
+        listed = ", ".join(f"{wavelength:g}" for wavelength in self.design_wavelengths_nm)
+        self.coating_combo.setItemText(0, f"Suits the beams ({listed} nm)")
+        self.refresh()
+
+    def prepare_for_replacement(self, part_number: str, focal_length_mm: float | None) -> None:
+        """Set the dialog up to choose a lens to replace ``part_number`` with.
+
+        With a focal length, only lenses of the same sign within
+        ``replacement.SAME_FOCAL_LENGTH_TOLERANCE`` of it are shown ("Replace with same f");
+        with None, the focal length and sign filters are cleared ("Swap lens"). The search
+        text is cleared too, and the coating filter left as the user last set it.
+        """
+        self.setWindowTitle(f"Replace {part_number}")
+        self.search_box.blockSignals(True)  # one refresh at the end, not one per change
+        self.hide_positive_checkbox.blockSignals(True)
+        self.hide_negative_checkbox.blockSignals(True)
+        self.search_box.clear()
+        if focal_length_mm is None:
+            self.shortest_focal_length_mm = self.longest_focal_length_mm = None
+            self.hide_positive_checkbox.setChecked(False)
+            self.hide_negative_checkbox.setChecked(False)
+        else:
+            magnitude_mm = abs(focal_length_mm)
+            self.shortest_focal_length_mm = magnitude_mm * (1.0 - SAME_FOCAL_LENGTH_TOLERANCE)
+            self.longest_focal_length_mm = magnitude_mm * (1.0 + SAME_FOCAL_LENGTH_TOLERANCE)
+            self.hide_positive_checkbox.setChecked(focal_length_mm < 0)
+            self.hide_negative_checkbox.setChecked(focal_length_mm > 0)
+        self.search_box.blockSignals(False)
+        self.hide_positive_checkbox.blockSignals(False)
+        self.hide_negative_checkbox.blockSignals(False)
+        self.refresh()
+
     # ------------------------------------------------------------------ results
 
     def selected_part_number(self) -> str | None:
@@ -196,7 +248,10 @@ class LensPickerDialog(QDialog):
 
     def refresh(self) -> None:
         """Read the filter widgets, update the focal length slider and rebuild the tree."""
-        self.lens_filter.coating = self.coating_combo.currentData()
+        coating_choice = self.coating_combo.currentData()
+        suits_beams = coating_choice == SUITS_BEAMS
+        self.lens_filter.coating = None if suits_beams else coating_choice
+        self.lens_filter.wavelengths_nm = self.design_wavelengths_nm if suits_beams else None
         self.lens_filter.part_number_text = self.search_box.text()
         self.lens_filter.hide_positive = self.hide_positive_checkbox.isChecked()
         self.lens_filter.hide_negative = self.hide_negative_checkbox.isChecked()
@@ -265,10 +320,13 @@ class LensPickerDialog(QDialog):
     def rebuild_tree(self, shown_entries: list[CatalogEntry]) -> None:
         """Replace the tree's rows with the given lenses, keeping open groups and selection.
 
-        While a search text is typed, every group is opened, so the matches are visible.
+        While a search text is typed, or only a few lenses are shown, every group is opened,
+        so the matches are visible.
         """
         previously_selected = self.selected_part_number()
-        expand_everything = bool(self.lens_filter.part_number_text.strip())
+        expand_everything = (
+            bool(self.lens_filter.part_number_text.strip()) or len(shown_entries) < EXPAND_ALL_BELOW
+        )
 
         self.tree.blockSignals(True)  # no expand/collapse or selection signals while rebuilding
         self.tree.setUpdatesEnabled(False)

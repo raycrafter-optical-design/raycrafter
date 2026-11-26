@@ -57,6 +57,16 @@ COATING_NAMES = {
     "C": "C: 1050-1700 nm",
 }
 
+# The design wavelength range (nm) of each broadband coating, used to offer only lenses
+# whose coating suits the beams. The rarer codes (E, E1, D and the laser-line coatings such
+# as 532 or YAG) have no range here, so they are only listed under "All coatings".
+COATING_RANGES_NM = {
+    "A": (350.0, 700.0),
+    "AB": (400.0, 1100.0),
+    "B": (650.0, 1050.0),
+    "C": (1050.0, 1700.0),
+}
+
 # ---------------------------------------------------------------------------------------
 # Aspheres are not offered yet: LensSurface stores only a radius, so they would be traced
 # as spheres. Remove this exclusion once aspheres are supported; see
@@ -100,6 +110,7 @@ def entry_from_lens_record(part_number: str, lens_record: dict) -> CatalogEntry:
         coating=coating_name(lens_record["coating"]),
         vendor=VENDOR_NAME,
         mount_type=mount_type_of(lens_record),
+        coating_range_nm=COATING_RANGES_NM.get(lens_record["coating"]),
     )
 
 

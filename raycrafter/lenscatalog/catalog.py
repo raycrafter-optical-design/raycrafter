@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import gzip
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib import resources
 
@@ -60,6 +61,9 @@ class CatalogEntry:
         Who makes the lens, e.g. "Thorlabs".
     mount_type : str or None
         How the lens is mounted, e.g. "Unmounted"; None if the catalogue does not say.
+    coating_range_nm : (float, float) or None
+        The wavelengths (nm) the anti-reflection coating is designed for, e.g. (350, 700);
+        None for an uncoated lens, or if the catalogue does not give a range.
     """
 
     part_number: str
@@ -71,6 +75,7 @@ class CatalogEntry:
     coating: str
     vendor: str
     mount_type: str | None = None
+    coating_range_nm: tuple[float, float] | None = None
 
     @property
     def clear_diameter_mm(self) -> float:
@@ -81,6 +86,21 @@ class CatalogEntry:
     def is_negative(self) -> bool:
         """True for a diverging lens."""
         return self.focal_length < 0
+
+    def suits_wavelengths(self, wavelengths_nm: Iterable[float]) -> bool:
+        """True if the lens can be used at every one of these wavelengths (nm).
+
+        An uncoated lens suits any wavelength: it only reflects a little more light. A coated
+        lens suits the wavelengths inside its coating's range; outside it, the coating can
+        reflect more than bare glass. A coating with no known range suits none, so that it
+        is never offered as suitable without reason.
+        """
+        if self.coating == UNCOATED:
+            return True
+        if self.coating_range_nm is None:
+            return False
+        shortest_nm, longest_nm = self.coating_range_nm
+        return all(shortest_nm <= wavelength <= longest_nm for wavelength in wavelengths_nm)
 
 
 def read_packaged_catalog(file_name: str) -> dict:
