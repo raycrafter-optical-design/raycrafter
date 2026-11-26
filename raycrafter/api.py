@@ -1,9 +1,11 @@
 """Scripting RayCrafter from Python: ``Bench``, a lens bench you drive with method calls.
 
-A ``Bench`` can do everything the GUI and the AI agent tools can: search the lens catalogue,
-place, move, flip and delete lenses, make Plossl pairs, edit the fields (beams), move the image
-plane, autofocus, run the analyses, draw the plots, write the HTML report, and load and save
-Zemax .zmx files. It does not import Qt.
+A ``Bench`` can do everything the GUI (except undo) and the AI agent tools can: search the lens
+catalogue, place, move, flip and delete lenses, set and lock the gaps between them, group
+lenses into assemblies (such as Plossl pairs) and save them as user parts, edit the fields
+(beams), move the image plane, autofocus, run the analyses, draw the plots, write the HTML
+report, save and open project files, and import and export Zemax .zmx files. It does not
+import Qt.
 
 There are two kinds of bench:
 
@@ -68,9 +70,12 @@ from typing import cast
 
 from matplotlib.figure import Figure
 
-from raycrafter.core import analysis
+from raycrafter.assembly_methods import AssemblyMethods
+from raycrafter.core import analysis, gaps
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.state import OpticalState, state_from_dict
+from raycrafter.design_files import DesignFileMethods
+from raycrafter.gap_methods import GapMethods
 from raycrafter.lenscatalog import thorlabs
 from raycrafter.lenscatalog.catalog import CatalogEntry
 from raycrafter.lenscatalog.selection import search_catalog
@@ -107,10 +112,25 @@ class LensInfo:
         paraxial lens; None for an imported lens that is not in the catalogue.
     flipped : bool
         True if the lens is turned round relative to the catalogue.
-    plossl_group : int or None
-        Lenses that share a number form a Plossl pair and move together.
+    assembly : int or None
+        Lenses that share a number form an assembly (such as a Plossl pair), which moves and
+        flips as one.
+    assembly_name : str or None
+        The name of that assembly, e.g. ``"Plossl pair"``.
     is_paraxial : bool
         True for an ideal, aberration-free thin lens.
+    gap_after_mm : float
+        Air gap from the back vertex to the next lens's front vertex, or to the image plane
+        for the last lens (see ``Bench.set_gap``).
+    gap_after_locked : bool
+        True if that gap is locked (see ``Bench.lock_gap``).
+    vendor : str or None
+        Who makes the lens, e.g. ``"Thorlabs"``; None for an imported or paraxial lens.
+    mount_type : str or None
+        ``"Mounted"`` or ``"Unmounted"``; None if unknown, as for most catalogue lenses.
+    surface_range : tuple of (int, int)
+        Numbers of the lens's first and last surface, counted as in the exported ZMX file
+        (the object is surface 0).
     """
 
     index: int
@@ -121,16 +141,22 @@ class LensInfo:
     clear_diameter_mm: float
     focal_length_mm: float | None
     flipped: bool
-    plossl_group: int | None
+    assembly: int | None
+    assembly_name: str | None
     is_paraxial: bool
+    gap_after_mm: float
+    gap_after_locked: bool
+    vendor: str | None
+    mount_type: str | None
+    surface_range: tuple[int, int]
 
 
 @dataclass(frozen=True)
 class FieldInfo:
     """A snapshot of one field (a beam entering from the left), as in ``Bench.fields``.
 
-    The beam's diameter and offset are measured where it meets the front vertex of the first
-    lens (or the start of the axis when there are no lenses).
+    The beam's diameter, offset, angle and vergence are those at the source plane
+    (``Bench.source_z_mm``), which is at the first lens unless its gap has been changed.
 
     Attributes
     ----------
@@ -204,11 +230,15 @@ class DesignSummary:
 # ----------------------------------------------------------------------------- the bench
 
 
-class Bench:
+class Bench(DesignFileMethods, AssemblyMethods, GapMethods):
     """A lens bench: a row of lenses on an optical axis, beams of light and an image plane.
 
     ``Bench()`` makes a headless bench in this process. To drive the open RayCrafter window
-    instead, use ``Bench.connect()``; to start from a file, ``Bench.from_zmx(path)``.
+    instead, use ``Bench.connect()``; to start from a file, ``Bench.from_project(path)`` or
+    ``Bench.from_zmx(path)``. Saving, opening, importing and exporting are described in
+    ``raycrafter.design_files``; assemblies (such as Plossl pairs) and user parts in
+    ``raycrafter.assembly_methods``; the gaps, and the source plane where the beams are
+    defined, in ``raycrafter.gap_methods``.
 
     Parameters
     ----------
@@ -263,6 +293,18 @@ class Bench:
         bench._link = LinkClient(None if endpoint_path is None else Path(endpoint_path))
         bench._catalog = thorlabs.load_lenses()  # the same packaged catalogue the window has
         bench._call("get_design")  # fails here, with a clear message, if there is no window
+        return bench
+
+    @classmethod
+    def from_project(cls, file_path: str | Path) -> Bench:
+        """A headless bench holding the design in a RayCrafter project (.raycrafter) file.
+
+        Example
+        -------
+        >>> bench = Bench.from_project("my_design.raycrafter")  # doctest: +SKIP
+        """
+        bench = cls(empty=True)
+        bench.load_project(file_path)
         return bench
 
     @classmethod
@@ -393,11 +435,6 @@ class Bench:
         """The field that autofocus and the single-field analyses use (see ``select_field``)."""
         return self._state().selected_field_index
 
-    @property
-    def has_unsaved_changes(self) -> bool:
-        """True if the design differs from the one last saved, loaded or started with."""
-        return self._call("get_design")["has_unsaved_changes"]
-
     def state(self) -> OpticalState:
         """A copy of the complete design as RayCrafter stores it, every surface included.
 
@@ -473,10 +510,10 @@ class Bench:
     def move_lens(self, lens_index: int, front_z_mm: float) -> LensInfo:
         """Move a lens towards ``front_z_mm``, as dragging it in the window would.
 
-        A Plossl pair moves together. The lens stops when it meets a neighbour or the image
-        plane, so check the returned ``front_z_mm`` to see where it went. If the request
-        takes the lens past the middle of a neighbour, the two swap places, and the
-        returned snapshot has the lens's new index.
+        Lenses joined by locked gaps (such as a Plossl pair) move together. The lens stops
+        when it meets a neighbour or the image plane, so check the returned ``front_z_mm``
+        to see where it went. If the request takes the lens past the middle of a neighbour,
+        the two swap places, and the returned snapshot has the lens's new index.
 
         Example
         -------
@@ -491,7 +528,8 @@ class Bench:
     def flip_lens(self, lens_index: int) -> LensInfo:
         """Turn a lens round and return its snapshot.
 
-        Paraxial lenses (the same both ways) and lenses in a Plossl pair are left as they are.
+        Paraxial lenses (the same both ways) and lenses in an assembly are left as they are
+        (see ``flip_assembly``).
 
         Example
         -------
@@ -502,7 +540,7 @@ class Bench:
         return self.lenses[int(lens_index)]
 
     def delete_lens(self, lens_index: int) -> None:
-        """Take a lens off the bench. If it was in a Plossl pair, its partner stays.
+        """Take a lens off the bench. Its assembly, if any, is dissolved.
 
         Example
         -------
@@ -512,34 +550,6 @@ class Bench:
         []
         """
         self._call("delete_lens", lens_index=int(lens_index))
-
-    def make_plossl(self, lens_index: int) -> None:
-        """Snap a lens and an identical neighbour into a Plossl pair.
-
-        The neighbour must be the same positive catalogue lens, no further away than twice
-        its thickness, and not already paired. The two are turned to face each other with
-        their positive elements inside and put 1 mm apart; later lenses and the image plane
-        shift to make room. The pair then moves as one.
-
-        Raises
-        ------
-        ValueError
-            If the lens has no such neighbour.
-
-        Example
-        -------
-        >>> bench = Bench(empty=True)
-        >>> _ = bench.add_lens("AC254-050-A")
-        >>> _ = bench.add_lens("AC254-050-A")
-        >>> bench.make_plossl(0)
-        >>> [lens.plossl_group for lens in bench.lenses]
-        [1, 1]
-        """
-        self._call("make_plossl", lens_index=int(lens_index))
-
-    def split_plossl(self, lens_index: int) -> None:
-        """Undo a Plossl pair so its two lenses move independently. They stay where they are."""
-        self._call("split_plossl", lens_index=int(lens_index))
 
     # ------------------------------------------------------------------ editing fields
 
@@ -560,13 +570,13 @@ class Bench:
         field_index : int
             Which field (see ``fields``).
         diameter_mm : float, optional
-            Beam diameter at the first lens; must be positive.
+            Beam diameter at the source plane (see ``source_gap_mm``); must be positive.
         angle_deg : float, optional
             Angle of the beam to the axis (positive rises).
         vergence_dioptres : float, optional
             Positive converging, negative diverging, 0 collimated.
         offset_mm : float, optional
-            Height of the beam centre above the axis at the first lens.
+            Height of the beam centre above the axis at the source plane.
         wavelength_nm : float, optional
             Must be positive.
         colour : str, optional
@@ -648,6 +658,8 @@ class Bench:
     def set_image_z(self, image_z_mm: float) -> None:
         """Put the image plane at ``image_z_mm``, which must be behind the last lens.
 
+        Refused if the gap to the image plane is locked (see ``lock_gap``).
+
         Example
         -------
         >>> bench = Bench()
@@ -659,6 +671,8 @@ class Bench:
 
     def autofocus(self) -> float:
         """Move the image plane to the smallest RMS spot of the selected field.
+
+        Refused if the gap to the image plane is locked (see ``lock_gap``).
 
         Returns
         -------
@@ -801,52 +815,6 @@ class Bench:
             webbrowser.open(report_path.as_uri())
         return report_path
 
-    # ------------------------------------------------------------------ files
-
-    def new_design(self, discard_unsaved: bool = False) -> None:
-        """Start again with no lenses and one default field.
-
-        Raises
-        ------
-        ValueError
-            If there are unsaved changes and ``discard_unsaved`` is False.
-        """
-        self._call("new_design", discard_unsaved=discard_unsaved)
-
-    def load_zmx(self, file_path: str | Path, discard_unsaved: bool = False) -> list[str]:
-        """Replace the design with the one in a Zemax .zmx file.
-
-        Returns
-        -------
-        list of str
-            Notes on anything RayCrafter simplified or could not represent.
-
-        Raises
-        ------
-        ValueError
-            If the file cannot be read, or there are unsaved changes and ``discard_unsaved``
-            is False.
-
-        Example
-        -------
-        >>> notes = bench.load_zmx("my_design.zmx", discard_unsaved=True)  # doctest: +SKIP
-        """
-        result = self._call(
-            "load_zmx", file_path=_absolute(file_path), discard_unsaved=discard_unsaved
-        )
-        return result["notes"]
-
-    def save_zmx(self, file_path: str | Path) -> Path:
-        """Save the design as a Zemax .zmx file and return where it went.
-
-        Example
-        -------
-        >>> Bench().save_zmx("my_design.zmx")  # doctest: +SKIP
-        """
-        absolute_path = _absolute(file_path)
-        self._call("save_zmx", file_path=absolute_path)
-        return Path(absolute_path)
-
     # ------------------------------------------------------------------ internals
 
     def _call(self, tool_name: str, **arguments) -> dict:
@@ -888,6 +856,7 @@ class Bench:
     def _lens_info(self, state: OpticalState, index: int) -> LensInfo:
         """The snapshot of lens ``index`` in ``state``."""
         lens = state.lenses[index]
+        gap = gaps.air_gaps(state)[index]
         if lens.is_paraxial:
             focal_length = lens.paraxial_focal_length_mm
         elif lens.part_number in self._catalog:
@@ -903,8 +872,16 @@ class Bench:
             clear_diameter_mm=float(2.0 * lens.semi_aperture),
             focal_length_mm=None if focal_length is None else float(focal_length),
             flipped=lens.flipped,
-            plossl_group=lens.group_id,
+            assembly=lens.assembly_id,
+            assembly_name=None
+            if lens.assembly_id is None
+            else state.assembly_names[lens.assembly_id],
             is_paraxial=lens.is_paraxial,
+            gap_after_mm=float(gap.width_mm),
+            gap_after_locked=gap.locked,
+            vendor=lens.vendor,
+            mount_type=lens.mount_type,
+            surface_range=state.surface_range(index),
         )
 
     @staticmethod
@@ -922,9 +899,3 @@ class Bench:
             colour_follows_wavelength=beam.colour is None,
             selected=index == state.selected_field_index,
         )
-
-
-def _absolute(file_path: str | Path) -> str:
-    """The absolute form of a path, so a connected window (whose working folder differs from
-    the script's) reads and writes the file the script means."""
-    return str(Path(file_path).expanduser().resolve())

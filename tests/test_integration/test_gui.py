@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
 from raycrafter.gui.about_dialog import DOCS_URL, PROJECT_URL, AboutDialog  # noqa: E402
 from raycrafter.gui.analysis_panels import MtfPanel  # noqa: E402
 from raycrafter.gui.lens_picker import ALL_COATINGS, LensPickerDialog  # noqa: E402
-from raycrafter.gui.main_window import MainWindow  # noqa: E402
+from raycrafter.gui.main_window import EDIT_MENU_TITLE, MainWindow  # noqa: E402
 from raycrafter.gui.range_slider import RangeSlider  # noqa: E402
 from raycrafter.gui.style import force_light_colour_scheme  # noqa: E402
 
@@ -40,6 +40,30 @@ def discard_unsaved_changes(monkeypatch):
 
     monkeypatch.setattr(QMessageBox, "question", answer)
     return questions
+
+
+# Every window a test opens, held until the test process ends.
+OPENED_WINDOWS: list[MainWindow] = []
+
+
+@pytest.fixture(scope="module", autouse=True)
+def keep_windows_alive():
+    """Stop Python's garbage collector destroying the windows of finished tests.
+
+    It would do so at an arbitrary moment, often while Qt still had events queued for a
+    window's plots, and the whole test process then crashed with a segmentation fault.
+    Deleting the windows after each test crashed too, inside the destructors of their plots.
+    The application has one window, which lives until it exits, so neither happens there.
+    """
+    original_init = MainWindow.__init__
+
+    def init_and_keep(window, *args, **kwargs):
+        original_init(window, *args, **kwargs)
+        OPENED_WINDOWS.append(window)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(MainWindow, "__init__", init_and_keep)
+        yield
 
 
 def test_window_adds_pairs_and_deletes_lenses(application):
@@ -139,7 +163,7 @@ def test_placing_a_lens_with_the_ghost(application):
     existing = window.model.state.lenses[0]
 
     # Pointing at the existing lens snaps the ghost next to it; a click places it there.
-    side_view.start_placement(window.model.make_lens("LA1050"))
+    side_view.start_placement([window.model.make_lens("LA1050")])
     side_view.move_ghost(side_view.placement, scene_point_on_axis(side_view, existing.z + 1.0))
     assert side_view.placement.fits
     side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, existing.z + 1.0)))
@@ -150,7 +174,7 @@ def test_placing_a_lens_with_the_ghost(application):
     assert len(side_view.lens_graphics) == 2
 
     # Escape (here: cancel_placement) leaves the bench unchanged.
-    side_view.start_placement(window.model.make_lens("LA1050"))
+    side_view.start_placement([window.model.make_lens("LA1050")])
     side_view.cancel_placement()
     assert len(window.model.state.lenses) == 2
     assert all(graphics.region.movable for graphics in side_view.lens_graphics)
@@ -166,7 +190,7 @@ def test_placing_hovering_and_dragging_a_paraxial_lens(application):
     # The focal length box sets the new lens; a click on the axis places it.
     window.paraxial_focal_length_box.setValue(-80)
     window.add_paraxial_lens_button.click()
-    assert side_view.placement.lens.paraxial_focal_length_mm == -80.0
+    assert side_view.placement.lenses[0].paraxial_focal_length_mm == -80.0
     side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, 40.0)))
     paraxial_lens = window.model.state.lenses[0]
     assert paraxial_lens.is_paraxial and paraxial_lens.z == pytest.approx(40.0, abs=1.0)
@@ -252,6 +276,8 @@ def test_bench_viewer_lists_highlights_follows_and_deletes(application):
         ("0", "ACT508-200-A"),
         ("1", "LA1509-A"),
     ]
+    assert lens_rows[0].text(3).startswith("Thorlabs, Ø")
+    assert "surfaces 1–3" in lens_rows[0].text(3)
     assert viewer.field_section.childCount() == 2
     assert viewer.image_row.text(2) == f"{window.model.state.image_z:.1f}"
 
@@ -410,40 +436,84 @@ def test_side_view_fits_a_long_design_but_not_during_a_drag(application):
     assert z_min <= 0.0 and z_max > 760.0
     assert window.side_view.image_max_z() > 760.0  # the image plane can be dragged on
 
-    window.new_design()
+    window.files.new_design()
     window.recompute_and_redraw()
     assert window.side_view.getPlotItem().vb.viewRange()[0] == pytest.approx(default_z_range)
     window.close()
 
 
-def test_file_menu_new_save_and_load(application, discard_unsaved_changes, monkeypatch, tmp_path):
+def test_file_menu_new_save_open_import_and_export(
+    application, discard_unsaved_changes, monkeypatch, tmp_path
+):
     window = MainWindow()
     menu_titles = [action.text() for action in window.menuBar().actions()]
-    assert menu_titles == ["RayCrafter", "File", "Help"]
+    assert menu_titles == ["RayCrafter", "File", EDIT_MENU_TITLE, "Help"]
+    file_menu = window.menuBar().actions()[1].menu()
+    assert [action.text() for action in file_menu.actions() if action.text()] == [
+        "New", "Open...", "Save", "Save As...", "Save Without Original ZMX...",
+        "Import ZMX...", "Export ZMX...",
+    ]  # fmt: skip
     assert not window.model.has_unsaved_changes()  # the start-up bench counts as saved
+    assert window.windowTitle() == "Untitled[*] - RayCrafter"
 
-    # Save writes the file and marks the design saved.
+    # Save with no project file yet asks where, adds the extension and marks the design saved.
     window.model.add_lens("AC254-050-A")
     window.model.flip_lens(1)
+    window.model.add_field()
+    window.record_undo_step()  # what a redraw does once a change is complete
+    assert window.isWindowModified()
+    project_path = tmp_path / "design.raycrafter"
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *_args: (str(tmp_path / "design"), "")
+    )
+    assert window.files.save()
+    assert window.model.project_path == project_path
+    assert window.windowTitle() == "design.raycrafter[*] - RayCrafter"
+    assert not window.isWindowModified()
+
+    # Export ZMX writes the file but leaves the design unsaved.
+    window.model.state.image_z += 5.0
+    zmx_path = tmp_path / "design.zmx"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (str(zmx_path), ""))
+    assert window.files.export_zmx() and zmx_path.exists()
     assert window.model.has_unsaved_changes()
-    zmx_path = str(tmp_path / "design.zmx")
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (zmx_path, ""))
-    assert window.save_zmx()
-    assert not window.model.has_unsaved_changes()
 
     # New after a change asks first (the fixture answers "Discard"), then empties the bench.
-    window.model.state.image_z += 5.0
-    window.new_design()
+    window.files.new_design()
     assert len(discard_unsaved_changes) == 1
     assert window.model.state.lenses == [] and len(window.side_view.lens_graphics) == 0
+    assert window.windowTitle() == "Untitled[*] - RayCrafter"
 
-    # Load brings the saved design back, with its part numbers and orientation.
-    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (zmx_path, ""))
-    window.load_zmx()
+    # Open brings the project back, with both fields, part numbers and orientation.
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (str(project_path), ""))
+    window.files.open_project()
     lenses = window.model.state.lenses
     assert [lens.part_number for lens in lenses] == ["ACT508-200-A", "AC254-050-A"]
     assert lenses[1].flipped and len(window.side_view.lens_graphics) == 2
+    assert len(window.model.state.fields) == 2
     assert not window.model.has_unsaved_changes()
+
+    # Import ZMX brings in the exported system, which has no project file yet.
+    save_without_import = window.files.save_without_import_action
+    assert not save_without_import.isEnabled()
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (str(zmx_path), ""))
+    window.files.import_zmx()
+    assert window.model.project_path is None
+    assert window.model.state.imported_from.file_name == "design.zmx"
+    assert window.windowTitle() == "Untitled (imported from design.zmx)[*] - RayCrafter"
+    assert not window.model.has_unsaved_changes()
+    assert save_without_import.isEnabled()
+
+    # Once the design is edited, the title says so.
+    window.model.state.image_z += 5.0
+    window.record_undo_step()
+    assert window.windowTitle() == "Untitled (imported from design.zmx, modified)[*] - RayCrafter"
+
+    # Save Without Original ZMX asks first, then saves a design that is no longer an import.
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Save)
+    assert window.files.save_without_import()
+    assert window.model.state.imported_from is None and not save_without_import.isEnabled()
+    assert window.windowTitle() == "design.zmx.raycrafter[*] - RayCrafter"
     window.close()
 
 
@@ -451,7 +521,7 @@ def test_unsaved_changes_can_cancel_new(application, monkeypatch):
     window = MainWindow()
     window.model.add_lens("AC254-050-A")
     monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Cancel)
-    window.new_design()
+    window.files.new_design()
     assert len(window.model.state.lenses) == 2  # nothing was thrown away
     window.model.mark_saved()  # so the window can close without asking
     window.close()
@@ -568,3 +638,350 @@ def test_trackpad_scrolling_does_not_move_the_plots(application):
     assert panel.verticalScrollBar().value() == 0
     assert panel.mapToScene(0, 0) == QPointF(0, 0)
     panel.close()
+
+
+def drag_lens(side_view, lens_index: int, requested_front_z: float) -> None:
+    """One movement of a drag: the lens is not let go.
+
+    ``setRegion`` would also signal that the drag had finished, so its signals are blocked.
+    """
+    graphics = side_view.lens_graphics[lens_index]
+    thickness = side_view.model.state.lenses[lens_index].thickness
+    graphics.region.blockSignals(True)
+    graphics.region.setRegion((requested_front_z, requested_front_z + thickness))
+    graphics.region.blockSignals(False)
+    side_view.on_lens_dragged(graphics)
+
+
+def test_a_whole_drag_is_one_undo_step(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    assert not window.undo_action.isEnabled()  # the start-up autofocus cannot be undone
+    start_z = window.model.state.lenses[0].z
+
+    for front_z in (90.0, 80.0, 70.0):
+        drag_lens(window.side_view, 0, front_z)
+        application.processEvents()  # redraws happen during the drag
+    window.undo()  # ignored while the lens is held
+    assert window.model.state.lenses[0].z == pytest.approx(70.0)
+    window.side_view.on_lens_drag_finished()
+    application.processEvents()
+
+    window.undo_action.trigger()
+    application.processEvents()
+    assert window.model.state.lenses[0].z == start_z
+    assert not window.undo_action.isEnabled()
+    window.redo_action.trigger()
+    application.processEvents()
+    assert window.model.state.lenses[0].z == pytest.approx(70.0)
+    window.close()
+
+
+def test_undo_brings_back_a_deleted_lens_and_new_clears_history(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    window.delete_lens(0)
+    window.undo()  # before the redraw has run
+    application.processEvents()
+    assert len(window.model.state.lenses) == 1
+    assert len(window.side_view.lens_graphics) == 1
+
+    window.files.new_design()
+    application.processEvents()
+    assert not window.undo_action.isEnabled()
+    assert not window.redo_action.isEnabled()
+    window.close()
+
+
+def test_undo_with_lock_focus_does_not_get_stuck(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    window.model.state.image_z = 250.0  # well out of focus
+    window.request_update()
+    application.processEvents()
+    window.lock_focus_checkbox.setChecked(True)  # refocuses: a step
+    application.processEvents()
+
+    window.undo()  # back to 250 mm, which "Lock focus" at once refocuses
+    application.processEvents()
+    assert window.redo_action.isEnabled()
+    window.undo()  # the earlier move of the image plane
+    application.processEvents()
+    assert window.model.state.image_z > 300.0
+    assert window.redo_action.isEnabled()
+    window.close()
+
+
+def test_undo_keys_work_from_a_field_box_and_spun_values_undo_together(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    window.open_field_editor()
+    box = window.field_editor.value_boxes["angle_deg"]
+    box.setFocus()
+    for _ in range(3):
+        box.stepUp()
+        application.processEvents()
+    assert window.model.state.selected_field.angle_deg == pytest.approx(0.3)
+
+    QTest.keyClick(box, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    application.processEvents()
+    assert window.model.state.selected_field.angle_deg == 0.0
+    assert box.value() == 0.0
+
+    QTest.keyClick(
+        box,
+        Qt.Key.Key_Z,
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier,
+    )
+    application.processEvents()
+    assert box.value() == pytest.approx(0.3)
+    window.close()
+
+
+def click_gap_label(window, lens_index: int) -> None:
+    centre = window.side_view.gap_dimensions.label_scene_centre(lens_index)
+    window.side_view.on_scene_clicked(FakeClick(centre))
+
+
+def test_clicking_a_gap_and_typing_sets_it(application):
+    window = MainWindow()
+    window.show()
+    window.model.add_lens("ACT508-200-A")
+    window.side_view.rebuild_lens_graphics()
+    window.request_update()
+    application.processEvents()
+    side_view = window.side_view
+    image_gap_before = window.model.air_gaps()[1].width_mm
+
+    click_gap_label(window, 0)
+    editor = side_view.gap_editor
+    assert editor is not None and editor.value() == pytest.approx(10.0)
+    editor.selectAll()
+    QTest.keyClicks(editor, "42.5")  # includes no key that deletes or flips a lens
+    QTest.keyClick(editor, Qt.Key.Key_Return)
+    application.processEvents()
+    assert side_view.gap_editor is None
+    assert window.model.air_gaps()[0].width_mm == pytest.approx(42.5)
+    assert window.model.air_gaps()[1].width_mm == pytest.approx(image_gap_before)
+    assert side_view.gap_dimensions.labels[0].toPlainText() == "42.50 mm"
+
+    window.undo()
+    application.processEvents()
+    assert window.model.air_gaps()[0].width_mm == pytest.approx(10.0)
+    window.close()
+
+
+def test_escape_abandons_a_typed_gap_and_backspace_edits_the_text(application):
+    window = MainWindow()
+    window.show()
+    window.activateWindow()
+    application.processEvents()
+    before = window.model.air_gaps()[0].width_mm
+
+    click_gap_label(window, 0)
+    editor = window.side_view.gap_editor
+    window.side_view.hovered_index = 0  # Backspace would delete this lens if it reached it
+    QTest.keyClick(editor, Qt.Key.Key_Backspace)
+    QTest.keyClick(editor, Qt.Key.Key_Escape)
+    application.processEvents()
+    assert window.side_view.gap_editor is None
+    assert len(window.model.state.lenses) == 1
+    assert window.model.air_gaps()[0].width_mm == before
+    window.close()
+
+
+def test_accepting_an_untouched_gap_moves_nothing(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    before = window.model.state.image_z  # from autofocus, so it has many decimals
+
+    click_gap_label(window, 0)
+    window.side_view.gap_editor.accept_value()
+    assert window.model.state.image_z == before
+    window.close()
+
+
+def test_fixed_and_impossible_gaps_say_why(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+
+    window.side_view.set_gap(0, 0.0)  # the image plane cannot touch the lens
+    assert "at least" in window.statusBar().currentMessage()
+
+    window.lock_focus_checkbox.setChecked(True)
+    application.processEvents()
+    click_gap_label(window, 0)
+    assert window.side_view.gap_editor is None
+    assert "Lock focus" in window.statusBar().currentMessage()
+    window.close()
+
+
+def test_real_mouse_clicks_open_a_gap_and_clicking_away_accepts_it(application):
+    window = MainWindow()
+    window.show()
+    window.activateWindow()
+    application.processEvents()
+    side_view = window.side_view
+    label_centre = side_view.gap_dimensions.label_scene_centre(0)
+    on_label = side_view.mapFromScene(label_centre)
+
+    QTest.mouseClick(side_view.viewport(), Qt.MouseButton.LeftButton, pos=on_label)
+    application.processEvents()
+    editor = side_view.gap_editor
+    assert editor is not None and editor.hasFocus()
+    editor.selectAll()
+    QTest.keyClicks(editor, "150")
+
+    elsewhere = side_view.mapFromScene(scene_point_on_axis(side_view, 30.0))
+    QTest.mouseClick(side_view.viewport(), Qt.MouseButton.LeftButton, pos=elsewhere)
+    application.processEvents()
+    assert side_view.gap_editor is None
+    assert window.model.air_gaps()[0].width_mm == pytest.approx(150.0)
+    window.close()
+
+
+def test_a_gap_is_locked_from_its_menu_and_then_refuses_typing(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+
+    menu = window.build_gap_menu(0)  # the gap to the image plane
+    assert [action.text() for action in menu.actions()] == ["Lock gap"]
+    menu.actions()[0].trigger()
+    application.processEvents()
+    assert window.model.air_gaps()[0].locked
+    assert window.side_view.gap_dimensions.labels[0].shown_as[1] == "locked"
+
+    click_gap_label(window, 0)
+    assert window.side_view.gap_editor is None
+    assert "locked" in window.statusBar().currentMessage()
+
+    # The image plane now follows the lens, so "Lock focus" and dragging it are off.
+    assert not window.lock_focus_checkbox.isEnabled()
+    assert not window.side_view.image_line.movable
+    window.run_autofocus()
+    assert "locked" in window.statusBar().currentMessage()
+
+    window.build_gap_menu(0).actions()[0].trigger()  # now "Unlock gap"
+    application.processEvents()
+    assert not window.model.air_gaps()[0].locked
+    assert window.lock_focus_checkbox.isEnabled() and window.side_view.image_line.movable
+    window.close()
+
+
+def test_the_image_gap_cannot_be_locked_while_lock_focus_is_on(application):
+    window = MainWindow()
+    window.show()
+    window.lock_focus_checkbox.setChecked(True)
+    application.processEvents()
+    assert not window.build_gap_menu(0).actions()[0].isEnabled()
+
+    # A design opened with the image gap locked turns "Lock focus" off.
+    window.model.set_gap_locked(0, True)
+    window.show_replaced_design()
+    application.processEvents()
+    assert not window.lock_focus_checkbox.isChecked()
+    assert not window.side_view.image_line.movable
+    window.close()
+
+
+def test_locked_lenses_become_an_assembly_that_flips_saves_and_is_placed_again(
+    application, monkeypatch, tmp_path
+):
+    window = MainWindow()
+    window.model.parts_folder = tmp_path
+    window.show()
+    window.model.add_lens("LA1509-A")
+    window.side_view.rebuild_lens_graphics()
+    window.request_update()
+    application.processEvents()
+
+    menu_texts = lambda: [action.text() for action in window.build_lens_menu(0).actions()]  # noqa: E731
+    make_assembly = window.build_lens_menu(0).actions()[3]
+    assert make_assembly.text() == "Make assembly" and not make_assembly.isEnabled()
+    window.set_gap_locked(0, True)
+    window.build_lens_menu(0).actions()[3].trigger()
+    assert window.model.assembly_name(1) == "Assembly 1"
+    assert "Flip assembly\tF" in menu_texts() and "Split assembly" in menu_texts()
+
+    window.flip_lens(0)  # F on a lens in an assembly flips all of it
+    application.processEvents()
+    assert [lens.part_number for lens in window.model.state.lenses] == ["LA1509-A", "ACT508-200-A"]
+
+    monkeypatch.setattr(
+        "raycrafter.gui.main_window.QInputDialog.getText", lambda *_args, **_kw: ("Pair", True)
+    )
+    window.save_as_user_part(0)
+    assert [part.name for part in window.model.user_parts()] == ["Pair"]
+
+    window.fill_user_parts_menu()
+    window.user_parts_menu.actions()[0].trigger()  # starts placing the part
+    placement = window.side_view.placement
+    assert placement is not None and placement.name == "Pair" and len(placement.ghosts) == 2
+    window.side_view.on_scene_clicked(FakeClick(scene_point_on_axis(window.side_view, 40.0)))
+    assert window.side_view.placement is None
+    assert len(window.model.state.lenses) == 4
+    assert window.model.assembly_name(0) == "Pair" and window.model.assembly_name(1) == "Pair"
+    assert len(window.side_view.lens_graphics) == 4
+    window.close()
+
+
+def test_the_source_plane_is_unlocked_from_its_caption_then_dragged_and_typed(application):
+    from raycrafter.core.gaps import SOURCE_GAP_INDEX
+
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    side_view = window.side_view
+    lens_z = window.model.state.lenses[0].z
+    assert side_view.source_line.value() == lens_z and not side_view.source_line.movable
+    # Locked at 0 mm, its dimension is left out.
+    assert all(not gap.from_source for gap in side_view.gap_dimensions.gaps)
+
+    menu = window.build_gap_menu(SOURCE_GAP_INDEX)
+    assert [action.text() for action in menu.actions()] == ["Unlock gap"]
+    menu.actions()[0].trigger()
+    application.processEvents()
+    assert side_view.source_line.movable
+    assert side_view.gap_dimensions.gaps[0].from_source
+
+    side_view.source_line.setValue(lens_z - 30.0)  # as a drag does
+    application.processEvents()
+    assert window.model.source_gap().width_mm == pytest.approx(30.0)
+
+    click_gap_label(window, SOURCE_GAP_INDEX)
+    editor = side_view.gap_editor
+    editor.selectAll()
+    QTest.keyClicks(editor, "45")
+    QTest.keyClick(editor, Qt.Key.Key_Return)
+    application.processEvents()
+    assert window.model.source_gap().width_mm == pytest.approx(45.0)
+    window.close()
+
+
+def test_opening_a_project_with_lock_focus_on_leaves_nothing_unsaved(
+    application, monkeypatch, tmp_path
+):
+    """Lock focus refocusing an opened design once made it look changed (found in review)."""
+    window = MainWindow()
+    window.show()
+    window.model.state.image_z += 20.0  # saved away from best focus
+    project_path = tmp_path / "design.raycrafter"
+    window.model.save_project(project_path)
+    window.lock_focus_checkbox.setChecked(True)
+    application.processEvents()
+
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", lambda *_args, **_kw: (str(project_path), "")
+    )
+    window.files.open_project()
+    application.processEvents()
+    window.recompute_and_redraw()
+    assert not window.model.has_unsaved_changes()
+    window.close()

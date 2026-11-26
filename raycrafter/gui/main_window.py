@@ -6,10 +6,20 @@
   the box beside it.
 - Hover a lens and it turns a darker shade; that is the lens the actions apply to. Drag a
   lens to slide it along the axis; drag it past a neighbour's centre to swap them. Drag the
-  green line to move the image plane (not while "Lock focus" is on).
-- Right-click a lens for Flip (F), Delete (Del or Backspace) and Make / Split Plossl.
-- The RayCrafter menu has About and Quit; the File menu has New, Load ZMX and Save ZMX.
-  New, Load and Quit ask first if the design has changed since it was last saved or loaded.
+  green line to move the image plane (not while "Lock focus" is on or the gap to it is
+  locked). Click one of the gap dimensions below the lenses to type that distance;
+  right-click it to lock or unlock it. Lenses joined by locked gaps move as one. The fields
+  are defined at the source plane ("source"), which by default moves with the first lens;
+  right-click its caption to unlock it, then drag it or type its gap.
+- Right-click a lens for Flip (F), Delete (Del or Backspace), Make Plossl, and the assembly
+  actions: Make assembly (from lenses joined by locked gaps), Split assembly, and Save as
+  user part. F flips a whole assembly. "Add user part" places a saved part, as one assembly.
+- The RayCrafter menu has About and Quit. The File menu (``raycrafter.gui.file_actions``) has
+  New, Open, Save, Save As, Save Without Original ZMX, Import ZMX and Export ZMX. New, Open,
+  Import and Quit ask first if the design has changed since it was last saved, opened or
+  imported.
+- The Edit menu has Undo and Redo. One action (a whole drag, a typed value) is one step; New,
+  Open and Import clear the history.
 - "Add field" opens the field window (``raycrafter.gui.field_editor``), where beams are
   added, removed and edited while the bench updates live.
 
@@ -27,18 +37,19 @@ dragged (a lens or the image plane):
 
 from __future__ import annotations
 
+import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QPoint, Qt, QTimer, QUrl
 from PyQt6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
@@ -52,10 +63,10 @@ from PyQt6.QtWidgets import (
 
 from raycrafter import palette
 from raycrafter.core.analysis import FastTrace, airy_radius
+from raycrafter.core.gaps import MIN_IMAGE_GAP_MM, SOURCE_GAP_INDEX
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
 from raycrafter.core.state import PlacedLens
-from raycrafter.core.zmx_import import ZmxImportError
 from raycrafter.gui.about_dialog import DOCS_URL, AboutDialog
 from raycrafter.gui.analysis_panels import (
     FieldCurvaturePanel,
@@ -67,11 +78,17 @@ from raycrafter.gui.analysis_panels import (
 )
 from raycrafter.gui.bench_viewer import BenchViewer
 from raycrafter.gui.field_editor import FieldEditor
+from raycrafter.gui.file_actions import FileActions
 from raycrafter.gui.lens_picker import LensPickerDialog
-from raycrafter.gui.side_view import MIN_IMAGE_GAP_MM, SideView
+from raycrafter.gui.side_view import SideView
 from raycrafter.gui.style import style_sheet
+from raycrafter.gui.undo_keys import leave_undo_keys_to_window
 from raycrafter.report import write_and_open_report
 
+# macOS adds AutoFill, Start Dictation and Emoji & Symbols to any menu called "Edit", none of
+# which is any use here, and Qt has no setting to stop it. A zero-width space after the name
+# looks the same but is not recognised, so the menu holds only RayCrafter's own items.
+EDIT_MENU_TITLE = "Edit\u200b" if sys.platform == "darwin" else "Edit"
 SLOW_PLOT_DELAY_MS = 120  # MTF, ray fan and field curvature wait this long after the last change
 STALE_PLOT_OPACITY = 0.4  # the slower plots are this faded while a drag makes them out of date
 DEFAULT_PARAXIAL_FOCAL_LENGTH_MM = 100
@@ -79,6 +96,7 @@ PARAXIAL_FOCAL_LENGTH_RANGE_MM = (-2000, 2000)
 FOCAL_LENGTH_BOX_WIDTH_PX = 82  # room for "-2000 mm" and the arrows, leaving the rest to buttons
 NARROW_BUTTON_STYLE = "padding: 6px 8px;"  # a button only as wide as its text needs
 HINT_MIN_HEIGHT_PX = 52  # height reserved for the help text at the foot of the control panel
+STATUS_MESSAGE_MS = 5000
 
 
 class MainWindow(QMainWindow):
@@ -102,6 +120,11 @@ class MainWindow(QMainWindow):
         self.field_editor: FieldEditor | None = None  # made on first use, then kept
         self.bench_viewer: BenchViewer | None = None  # made on first use, then kept
         self.f_number_readout: str | None = None  # last f-number text, kept during a drag
+        # How the next redraw enters the undo history (see record_undo_step).
+        self.undo_merge_key: Hashable | None = None
+        self.next_redraw_is_undo_step = True
+        self.next_redraw_counts_as_saved = False  # see show_replaced_design
+        self.files = FileActions(self)  # the File menu
         self._build_widgets()
         self._build_menus()
         self._connect_signals()
@@ -121,8 +144,12 @@ class MainWindow(QMainWindow):
         self.recompute_and_redraw()
 
         # The start-up bench (after its autofocus) counts as saved: New, Load and Quit ask
-        # before throwing away a design that differs from the saved one.
+        # before throwing away a design that differs from the saved one. It is also where
+        # undo stops.
         self.model.mark_saved()
+        self.model.clear_undo_history()
+        self.update_undo_actions()
+        self.files.update_title()
 
     # ------------------------------------------------------------------ setup
 
@@ -176,11 +203,20 @@ class MainWindow(QMainWindow):
         """The framed panel of buttons."""
         self.add_catalogue_lens_button = QPushButton("Add catalogue lens")
         self.add_paraxial_lens_button = QPushButton("Add paraxial lens")
+        self.add_user_part_button = QPushButton("Add user part")
+        self.add_user_part_button.setToolTip(
+            'Place an assembly saved with "Save as user part" (right-click an assembly)'
+        )
+        # The menu is filled each time it opens, so parts saved meanwhile appear in it.
+        self.user_parts_menu = QMenu(self.add_user_part_button)
+        self.user_parts_menu.aboutToShow.connect(self.fill_user_parts_menu)
+        self.add_user_part_button.setMenu(self.user_parts_menu)
         self.paraxial_focal_length_box = QSpinBox()
         self.paraxial_focal_length_box.setRange(*PARAXIAL_FOCAL_LENGTH_RANGE_MM)
         self.paraxial_focal_length_box.setValue(DEFAULT_PARAXIAL_FOCAL_LENGTH_MM)
         self.paraxial_focal_length_box.setSuffix(" mm")
         self.paraxial_focal_length_box.setMaximumWidth(FOCAL_LENGTH_BOX_WIDTH_PX)
+        leave_undo_keys_to_window(self.paraxial_focal_length_box)
         self.paraxial_focal_length_box.setToolTip(
             "Focal length of the next paraxial (ideal thin) lens; negative for a diverging lens"
         )
@@ -195,13 +231,16 @@ class MainWindow(QMainWindow):
         self.lock_focus_checkbox = QCheckBox("Lock focus")  # off by default
         self.lock_focus_checkbox.setToolTip(
             "Keep the image plane at best focus as lenses or the beams change, "
-            "whenever that focus is in view"
+            "whenever that focus is in view. Not available while the gap to the image "
+            "plane is locked."
         )
 
         # Reminder of where the per-lens actions are, since they are not buttons.
         hint_label = QLabel(
-            "Right-click a lens to flip it (F), delete it (Del) or make a Plossl pair. "
-            "Drag a lens past its neighbour to swap their order."
+            "Right-click a lens to flip it (F), delete it (Del), make a Plossl pair or an "
+            "assembly. "
+            "Drag a lens past its neighbour to swap their order. Click a gap to type it; "
+            "right-click it to lock it."
         )
         hint_label.setObjectName("hintLabel")
         hint_label.setWordWrap(True)
@@ -228,6 +267,7 @@ class MainWindow(QMainWindow):
         controls.setSpacing(8)
         controls.addWidget(self.add_catalogue_lens_button)
         controls.addLayout(paraxial_row)
+        controls.addWidget(self.add_user_part_button)
         controls.addWidget(self.add_field_button)
         controls.addLayout(autofocus_row)
         controls.addWidget(self.report_button)
@@ -245,7 +285,7 @@ class MainWindow(QMainWindow):
         return control_panel
 
     def _build_menus(self) -> None:
-        """The RayCrafter menu (About, Quit), the File menu (New, Load ZMX, Save ZMX) and Help.
+        """The RayCrafter menu (About, Quit), File (see ``file_actions``), Edit and Help.
 
         On macOS, Qt moves About and Quit into the application menu, which is named after
         the app, so they appear where Mac users expect them; the menu roles tell it which.
@@ -271,10 +311,21 @@ class MainWindow(QMainWindow):
             role=QAction.MenuRole.QuitRole,
         )
 
-        file_menu = menu_bar.addMenu("File")
-        add_action(file_menu, "New", self.new_design, shortcut=QKeySequence.StandardKey.New)
-        add_action(file_menu, "Load ZMX...", self.load_zmx, shortcut=QKeySequence.StandardKey.Open)
-        add_action(file_menu, "Save ZMX...", self.save_zmx, shortcut=QKeySequence.StandardKey.Save)
+        self.files.build_menu(menu_bar.addMenu("File"))
+
+        edit_menu = menu_bar.addMenu(EDIT_MENU_TITLE)
+        self.undo_action = add_action(
+            edit_menu, "Undo", self.undo, shortcut=QKeySequence.StandardKey.Undo
+        )
+        self.redo_action = add_action(edit_menu, "Redo", self.redo)
+        # Shift with the undo keys redoes on every system, besides the system's own keys.
+        shift_redo = QKeySequence("Ctrl+Shift+Z")
+        other_redo_keys = [
+            keys
+            for keys in QKeySequence.keyBindings(QKeySequence.StandardKey.Redo)
+            if keys != shift_redo
+        ]
+        self.redo_action.setShortcuts([shift_redo, *other_redo_keys])
 
         help_menu = menu_bar.addMenu("Help")
         add_action(
@@ -300,7 +351,11 @@ class MainWindow(QMainWindow):
 
         self.side_view.changed.connect(self.request_update)
         self.side_view.lens_menu_requested.connect(self.show_lens_menu)
+        self.side_view.gap_menu_requested.connect(self.show_gap_menu)
         self.side_view.placement_finished.connect(self.on_placement_finished)
+        self.side_view.message_requested.connect(
+            lambda message: self.statusBar().showMessage(message, STATUS_MESSAGE_MS)
+        )
 
         # Releasing a dragged item brings back the readouts that are skipped during a drag.
         self.side_view.drag_finished.connect(self.request_update)
@@ -322,8 +377,13 @@ class MainWindow(QMainWindow):
 
     # --------------------------------------------------------------- controls
 
-    def request_update(self) -> None:
-        """Schedule one recompute; repeated requests before it runs collapse into one."""
+    def request_update(self, undo_merge_key: Hashable | None = None) -> None:
+        """Schedule one recompute; repeated requests before it runs collapse into one.
+
+        ``undo_merge_key`` names a value that changes in small steps, so that changes made
+        in quick succession are undone together (see ``UndoHistory.record``).
+        """
+        self.undo_merge_key = undo_merge_key
         if not self.update_timer.isActive():
             self.update_timer.start(0)
 
@@ -336,19 +396,37 @@ class MainWindow(QMainWindow):
         part_number = self.lens_picker.selected_part_number()
         if part_number is None:
             return
-        self.start_lens_placement(self.model.make_lens(part_number))
+        self.start_lens_placement([self.model.make_lens(part_number)])
 
     def start_paraxial_lens_placement(self) -> None:
         """Let the user place a paraxial lens with the focal length shown beside the button."""
         focal_length_mm = float(self.paraxial_focal_length_box.value())
         if focal_length_mm != 0.0:
-            self.start_lens_placement(self.model.make_paraxial_lens(focal_length_mm))
+            self.start_lens_placement([self.model.make_paraxial_lens(focal_length_mm)])
 
-    def start_lens_placement(self, new_lens: PlacedLens) -> None:
-        """Make a new lens follow the pointer along the axis until a click places it."""
-        self.side_view.start_placement(new_lens)
+    def fill_user_parts_menu(self) -> None:
+        """List the saved user parts in the "Add user part" menu, read afresh from disk."""
+        self.user_parts_menu.clear()
+        parts = self.model.user_parts()
+        if not parts:
+            empty_action = self.user_parts_menu.addAction("No user parts saved yet")
+            empty_action.setEnabled(False)
+        for part in parts:
+            action = self.user_parts_menu.addAction(f"{part.name}\t{part.length_mm:.1f} mm")
+            action.triggered.connect(
+                lambda _checked=False, part=part: self.start_lens_placement(
+                    part.lenses_at(0.0), part.name
+                )
+            )
+
+    def start_lens_placement(
+        self, new_lenses: list[PlacedLens], assembly_name: str | None = None
+    ) -> None:
+        """Make new lenses (one lens, or a user part) follow the pointer until a click."""
+        self.side_view.start_placement(new_lenses, assembly_name)
+        name = assembly_name or new_lenses[0].part_number
         self.statusBar().showMessage(
-            f"Click on the axis to place {new_lens.part_number}. Esc or right-click to cancel."
+            f"Click on the axis to place {name}. Esc or right-click to cancel."
         )
 
     def on_placement_finished(self, placed: bool) -> None:
@@ -369,21 +447,63 @@ class MainWindow(QMainWindow):
         self.request_update()
 
     def flip_lens(self, lens_index: int) -> None:
-        """Turn one lens around (not available inside a Plossl pair)."""
-        self.model.flip_lens(lens_index)
+        """Turn one lens around; a lens in an assembly turns the whole assembly round."""
+        if self.model.state.lenses[lens_index].assembly_id is None:
+            self.model.flip_lens(lens_index)
+        else:
+            self.model.flip_assembly(lens_index)
+            self.side_view.rebuild_lens_graphics()  # the lenses inside it changed order
         self.request_update()
 
     def make_plossl(self, lens_index: int) -> None:
         """Snap a lens and its identical neighbour into a Plossl pair, then refocus."""
         if self.model.plossl_partner(lens_index) is not None:
             self.model.make_plossl(lens_index)
-            self.model.autofocus()  # the pair has a new focal length, so the old focus is stale
+            if not self.model.state.image_gap_locked:
+                self.model.autofocus()  # the pair has a new focal length: the focus is stale
             self.request_update()
 
-    def split_plossl(self, lens_index: int) -> None:
-        """Release a lens's Plossl pair."""
-        self.model.split_plossl(lens_index)
+    def make_assembly(self, lens_index: int) -> None:
+        """Make the lenses joined to this one by locked gaps into one assembly."""
+        block = self.model.block_indices(lens_index)
+        self.model.make_assembly(block[0], block[-1])
         self.request_update()
+
+    def split_assembly(self, lens_index: int) -> None:
+        """Dissolve a lens's assembly (e.g. a Plossl pair), unlocking the gaps inside it."""
+        self.model.split_assembly(lens_index)
+        self.request_update()
+
+    def save_as_user_part(self, lens_index: int) -> None:
+        """Ask for a name, then save the lens's assembly as a user part.
+
+        If a part of that name exists, ask before replacing it.
+        """
+        name, accepted = QInputDialog.getText(
+            self,
+            "Save as user part",
+            "Name of the new user part:",
+            text=self.model.assembly_name(lens_index) or "",
+        )
+        name = name.strip()
+        if not accepted or not name:
+            return
+        overwrite = False
+        if any(part.name == name for part in self.model.user_parts()):
+            answer = QMessageBox.question(
+                self,
+                "Replace user part?",
+                f"There is already a user part called {name!r}. Replace it?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            overwrite = True
+        try:
+            file_path = self.model.save_assembly_as_part(lens_index, name, overwrite)
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(f"Could not save the part: {error}", STATUS_MESSAGE_MS)
+            return
+        self.statusBar().showMessage(f"Saved user part {name!r} to {file_path}", 8000)
 
     def show_lens_menu(self, lens_index: int, global_position: QPoint) -> None:
         """Pop up the actions for one lens at the pointer."""
@@ -395,20 +515,30 @@ class MainWindow(QMainWindow):
         A tab in an entry's text puts the keyboard shortcut in a right-hand column.
         """
         lens = self.model.state.lenses[lens_index]
-        in_pair = lens.group_id is not None
+        in_assembly = lens.assembly_id is not None
         menu = QMenu(self)
 
-        flip_action = menu.addAction("Flip\tF")
-        flip_action.setEnabled(not in_pair and not lens.is_paraxial)
+        flip_action = menu.addAction("Flip assembly\tF" if in_assembly else "Flip\tF")
+        flip_action.setEnabled(in_assembly or not lens.is_paraxial)
         flip_action.triggered.connect(lambda: self.flip_lens(lens_index))
 
         delete_action = menu.addAction("Delete\tDel")
         delete_action.triggered.connect(lambda: self.delete_lens(lens_index))
 
         menu.addSeparator()
-        if in_pair:
-            split_action = menu.addAction("Split Plossl")
-            split_action.triggered.connect(lambda: self.split_plossl(lens_index))
+        # Lenses joined by locked gaps can be made one assembly, unless they already are.
+        block = self.model.block_indices(lens_index)
+        assembly_action = menu.addAction("Make assembly")
+        assembly_action.setToolTip("Lock the gaps between lenses first to choose which")
+        assembly_action.setEnabled(
+            len(block) > 1 and block != self.model.assembly_indices(lens_index)
+        )
+        assembly_action.triggered.connect(lambda: self.make_assembly(lens_index))
+        if in_assembly:
+            split_action = menu.addAction("Split assembly")
+            split_action.triggered.connect(lambda: self.split_assembly(lens_index))
+            save_action = menu.addAction("Save as user part…")
+            save_action.triggered.connect(lambda: self.save_as_user_part(lens_index))
         else:
             plossl_action = menu.addAction("Make Plossl")
             plossl_action.setEnabled(self.model.plossl_partner(lens_index) is not None)
@@ -425,9 +555,53 @@ class MainWindow(QMainWindow):
         menu.aboutToHide.connect(self.side_view.hide_plossl_preview)
         return menu
 
+    def show_gap_menu(self, lens_index: int, global_position: QPoint) -> None:
+        """Pop up the actions for the gap behind one lens at the pointer."""
+        self.build_gap_menu(lens_index).exec(global_position)
+
+    def build_gap_menu(self, lens_index: int) -> QMenu:
+        """The context menu for the gap behind one lens: Lock gap, or Unlock gap.
+
+        ``lens_index`` is SOURCE_GAP_INDEX for the gap from the source plane to the first lens.
+
+        The gaps inside an assembly cannot be unlocked, and the gap to the image plane
+        cannot be locked while "Lock focus" is on, as both would set the image plane.
+        """
+        if lens_index == SOURCE_GAP_INDEX:
+            gap = self.model.source_gap()
+            if gap is None:
+                return QMenu(self)  # no lenses: no gap from the source plane
+        else:
+            gap = self.model.air_gaps()[lens_index]
+        menu = QMenu(self)
+        if gap.locked:
+            action = menu.addAction("Unlock gap")
+            action.setEnabled(not gap.in_assembly)
+        else:
+            action = menu.addAction("Lock gap")
+            action.setEnabled(not (gap.to_image and self.lock_focus_checkbox.isChecked()))
+        action.triggered.connect(lambda: self.set_gap_locked(lens_index, not gap.locked))
+        return menu
+
+    def set_gap_locked(self, lens_index: int, locked: bool) -> None:
+        """Lock or unlock the gap behind a lens, or say why that is not allowed."""
+        try:
+            if lens_index == SOURCE_GAP_INDEX:
+                self.model.set_source_gap_locked(locked)
+            else:
+                self.model.set_gap_locked(lens_index, locked)
+        except ValueError as error:
+            self.statusBar().showMessage(str(error), STATUS_MESSAGE_MS)
+            return
+        self.request_update()
+
     def run_autofocus(self) -> None:
-        """Move the image plane to the minimum-RMS-spot position."""
-        self.model.autofocus()
+        """Move the image plane to the minimum-RMS-spot position, unless its gap is locked."""
+        try:
+            self.model.autofocus()
+        except ValueError as error:
+            self.statusBar().showMessage(str(error), STATUS_MESSAGE_MS)
+            return
         self.request_update()
 
     def open_field_editor(self) -> None:
@@ -472,95 +646,71 @@ class MainWindow(QMainWindow):
             self.field_editor.refresh()
         self.request_update()
 
+    # ------------------------------------------------------------------ undo and redo
+
+    def undo(self) -> None:
+        """Edit > Undo."""
+        self._step_through_history(self.model.undo)
+
+    def redo(self) -> None:
+        """Edit > Redo."""
+        self._step_through_history(self.model.redo)
+
+    def _step_through_history(self, step: Callable[[], bool]) -> None:
+        """Run the model's undo or redo and show the result, unless something is being held."""
+        if self.is_dragging():
+            return
+        if self.update_timer.isActive():  # a change not yet drawn must be recorded first
+            self.update_timer.stop()
+            self.recompute_and_redraw()
+        if step():
+            self.show_replaced_design()
+
+    def record_undo_step(self) -> None:
+        """Called by each redraw made with nothing held, so a whole drag is one step.
+
+        Redraws that follow undo, redo, New or Load are not user actions: anything "Lock
+        focus" changes during one becomes part of the step already shown.
+        """
+        if self.next_redraw_is_undo_step:
+            self.model.record_undo_step(self.undo_merge_key)
+        else:
+            self.model.amend_undo_step()
+        if self.next_redraw_counts_as_saved:
+            # "Lock focus" may have refocused a design just opened; that is part of opening
+            # it, as the start-up autofocus is part of starting, not an unsaved change.
+            self.model.mark_saved()
+            self.next_redraw_counts_as_saved = False
+        self.next_redraw_is_undo_step = True
+        self.undo_merge_key = None
+        self.update_undo_actions()
+        self.files.update_title()  # once per completed change, not on every drag event
+
+    def update_undo_actions(self) -> None:
+        """Grey out Undo or Redo when there is no step to take."""
+        self.undo_action.setEnabled(self.model.history.can_undo)
+        self.redo_action.setEnabled(self.model.history.can_redo)
+
     # ------------------------------------------------------------------ files
 
-    def confirm_discard_changes(self, action_text: str) -> bool:
-        """If there are unsaved changes, ask whether to save them first.
+    def show_replaced_design(self, counts_as_saved: bool = False) -> None:
+        """Redraw after undo, redo, New or Load, none of which is itself an undo step.
 
-        Parameters
-        ----------
-        action_text : str
-            What is about to happen, e.g. "starting a new design".
-
-        Returns
-        -------
-        bool
-            True to go ahead (nothing to lose, saved, or discarded); False to stop.
+        ``counts_as_saved`` is True after New, Open and Import: the design as redrawn
+        (after any "Lock focus" refocus) is the saved one.
         """
-        if not self.model.has_unsaved_changes():
-            return True
-        answer = QMessageBox.question(
-            self,
-            "Unsaved changes",
-            f"The design has changed since it was last saved. Save it before {action_text}?",
-            QMessageBox.StandardButton.Save
-            | QMessageBox.StandardButton.Discard
-            | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Save,
-        )
-        if answer == QMessageBox.StandardButton.Save:
-            return self.save_zmx()
-        return answer == QMessageBox.StandardButton.Discard
+        self.show_new_design()
+        self.next_redraw_is_undo_step = False
+        self.next_redraw_counts_as_saved = counts_as_saved
 
     def show_new_design(self) -> None:
-        """Redraw everything after the model's state was replaced (New or Load)."""
+        """Redraw everything after the lenses or the whole design changed behind the view."""
         self.side_view.cancel_placement()
         self.side_view.rebuild_lens_graphics()
         if self.field_editor is not None:
             self.field_editor.refresh()
         self.f_number_readout = None
         self.request_update()
-
-    def new_design(self) -> None:
-        """File > New: an empty bench with one default field."""
-        if not self.confirm_discard_changes("starting a new design"):
-            return
-        self.model.new_design()
-        self.show_new_design()
-
-    def load_zmx(self) -> None:
-        """File > Load ZMX: replace the design with the system in a Zemax file."""
-        if not self.confirm_discard_changes("loading another design"):
-            return
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
-            self, "Load Zemax file", "", "Zemax files (*.zmx)"
-        )
-        if not file_path:
-            return  # dialog cancelled
-        try:
-            notes = self.model.load_zmx(file_path)
-        except ZmxImportError as error:
-            QMessageBox.critical(self, "Load failed", f"Could not load {file_path}:\n{error}")
-            return
-        self.show_new_design()
-        if notes:
-            QMessageBox.information(
-                self, "Loaded with changes", "\n\n".join(["Some details were simplified:"] + notes)
-            )
-        self.statusBar().showMessage(f"Loaded {file_path}", 5000)
-
-    def save_zmx(self) -> bool:
-        """File > Save ZMX: ask where to save, then export the system as a Zemax .zmx file.
-
-        Returns
-        -------
-        bool
-            True if the file was written.
-        """
-        file_path, _selected_filter = QFileDialog.getSaveFileName(
-            self, "Save Zemax file", "lens_system.zmx", "Zemax files (*.zmx)"
-        )
-        if not file_path:
-            return False  # dialog cancelled
-        if not file_path.lower().endswith(".zmx"):
-            file_path += ".zmx"
-        try:
-            self.model.save_zmx(file_path)
-        except Exception as error:  # show any export problem instead of crashing the GUI
-            QMessageBox.critical(self, "Save failed", f"Could not save {file_path}:\n{error}")
-            return False
-        self.statusBar().showMessage(f"Saved {file_path}", 5000)
-        return True
 
     def open_documentation(self) -> None:
         """Help > RayCrafter Documentation: open the online documentation in the web browser."""
@@ -572,7 +722,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Closing the window (or Quit) asks first if there are unsaved changes."""
-        if self.confirm_discard_changes("quitting"):
+        if self.files.confirm_discard_changes("quitting"):
             event.accept()
         else:
             event.ignore()
@@ -593,6 +743,21 @@ class MainWindow(QMainWindow):
         """Lock focus on: the image plane follows best focus and cannot be dragged."""
         self.side_view.set_image_line_locked(locked)
         self.request_update()
+
+    def apply_image_gap_lock(self) -> None:
+        """A locked gap to the image plane and "Lock focus" conflict, so only the lock applies.
+
+        While the gap is locked (e.g. after opening a project or undoing), "Lock focus" is
+        turned off and greyed out. Cheap enough to run on every redraw.
+        """
+        state = self.model.state
+        image_gap_locked = bool(state.lenses) and state.image_gap_locked
+        if image_gap_locked and self.lock_focus_checkbox.isChecked():
+            self.lock_focus_checkbox.blockSignals(True)  # no redraw of its own: one is running
+            self.lock_focus_checkbox.setChecked(False)
+            self.lock_focus_checkbox.blockSignals(False)
+            self.side_view.set_image_line_locked(False)
+        self.lock_focus_checkbox.setEnabled(not image_gap_locked)
 
     def refocus_if_focus_in_view(self) -> None:
         """With "Lock focus" on, move the image plane to best focus if that focus is visible.
@@ -619,8 +784,11 @@ class MainWindow(QMainWindow):
         """Re-trace the system; refresh the side view, spot, through-focus and readouts."""
         state = self.model.state
         start = time.perf_counter()
+        self.apply_image_gap_lock()
         if self.lock_focus_checkbox.isChecked():
             self.refocus_if_focus_in_view()
+        if not self.is_dragging():
+            self.record_undo_step()  # after any refocus, which is part of the same step
         fast_trace = self.model.trace_fast()
         through_focus = self.model.compute_through_focus(fast_trace)
         trace_ms = (time.perf_counter() - start) * 1000

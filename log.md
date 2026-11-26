@@ -247,3 +247,64 @@ tool call and falls back to its own headless model if none answers; results say 
 **Why:** The Claude app starts the MCP server itself over stdio, so it is a different process from
 the window. Having the window host MCP over HTTP was rejected: the desktop app launches local
 servers rather than connecting to running ones. The fallback keeps the server useful with no window.
+
+## 2026-11-26: Undo keeps snapshots of the state (#37)
+**Decision:** `core.history.UndoHistory` keeps whole `OpticalState` copies, recorded by the
+front end once nothing is held, so a drag is one step. Small changes to one value in quick
+succession merge into one step. New and Load clear the history.
+**Why:** Snapshots cover anything later added to the state (locks, goals) with no extra code,
+and are cheap. Merging stops a spun number box making dozens of steps. Clearing on New and
+Load is simplest, and unsaved changes are already asked about. Merge and clearing: Rob agreed.
+
+## 2026-11-26: Typed gaps are refused rather than adjusted (#35)
+**Decision:** A gap that is too small (surfaces would overlap, or under 1 mm to the image) is
+refused and the minimum is shown. With "Lock focus" on, the gap to the image plane cannot be
+typed. The gap inside a Plossl pair is shown but fixed. Dragging is unchanged, so it can still
+overlap concave lenses at the rim.
+**Why:** Silently changing a typed number would mislead, and "Lock focus" would overwrite a
+typed image gap at once. The Plossl and dragging rules follow the issue. Rob agreed.
+
+## 2026-11-26: Project files embed the ZMX they were imported from (#40)
+**Decision:** A `.raycrafter` project made by Import ZMX keeps the file's exact bytes (base64),
+name, SHA-256, importing version and import notes in `imported_from`, on `OpticalState`. It is a
+record only and is never loaded; it is replaced by the next import and cleared by New. Always
+embedded, documented. "Lock focus" is not stored. After Import ZMX the design counts as saved.
+**Why:** The import is lossy and still improving, so the source allows re-import later,
+reproducible import bugs and importer regression tests. Storing only a path/hash was rejected
+as files move. Rob agreed.
+
+## 2026-11-26: Imported projects keep the design as imported, until forgotten (#40)
+**Decision:** `imported_from` also stores the bench exactly as the importer made it, so
+RayCrafter can tell whether the design was changed since import and what a newer importer
+does differently. "Save Without Original ZMX" (`save_project(forget_import=True)`) drops the
+record, and the design stops being an import. Bench file methods live in `design_files.py`.
+**Why:** After edits the original file alone says only where a design started. A hash of the
+imported bench was rejected: it says that something changed, not what. Rob's choice.
+
+## 2026-11-26: Gap locks are a flag per lens; a Plossl pair is a locked pair (#36)
+**Decision:** Each lens has `locked_to_next`, and the state has `image_gap_locked`. Lenses
+joined by locked gaps form a block that drags and swaps as one. `group_id` stays as the identity
+of a Plossl pair (to become the assembly id in #43), whose gap is always locked. A locked image
+gap moves the image with the last lens and refuses autofocus, "Lock focus" and new lenses
+behind it; typing a locked gap is refused. Rob chose this over replacing `group_id` with locks.
+**Why:** One mechanism for moving things together, while a pair keeps an identity for flipping
+and saving as a part. Refusing follows "Typed gaps are refused rather than adjusted".
+
+## 2026-11-26: Assemblies replace Plossl groups; user parts are files in the user's folder (#43)
+**Decision:** `group_id` became `assembly_id`, with a name per assembly in the state. A Plossl
+pair is an assembly named "Plossl pair". Locking gaps then "Make assembly" groups a block;
+flipping reverses and flips its lenses in place. "Save as user part" writes one JSON file
+(lenses in the project-file form) to the platform data folder (`core/user_parts.py`). Scripts
+lose `plossl_group` and `split_plossl` for `assembly` and `split_assembly` (0.0.x, no alias).
+**Why:** Rob chose the user folder over the project file, so parts are shared between designs.
+Bench assembly methods live in `assembly_methods.py` to keep `api.py` under 1000 lines.
+
+## 2026-11-26: Fields are defined at a source plane with its own z (#41)
+**Decision:** `OpticalState.source_z` is where each field's diameter, offset, angle and vergence
+apply. Its gap to the first lens is locked at 0 mm by default and then follows whichever lens
+is first, so designs behave as before; unlocked, it stays put and lenses stop at it. ZMX import
+puts it at a stop in front of the first lens (offset 0, EPD as is). The MTF and ZMX export
+carry the beam to the first lens (`beam_at_first_lens`). Rob chose an explicit source z.
+**Supersedes:** "beam is defined where it crosses the first lens's front vertex plane" in
+"Each field's rays are launched by RayCrafter" and the offset rule in "ZMX fields are aimed
+through the stop" (2026-11-24).

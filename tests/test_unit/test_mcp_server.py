@@ -1,12 +1,20 @@
 """The MCP server publishes the agent tools and reports errors as tool errors."""
 
 import json
+from pathlib import Path
 
 import anyio
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
+from raycrafter.mcp_server.link import LinkClient
 from raycrafter.mcp_server.server import TOOL_NAMES, build_server
+
+
+def test_the_tests_cannot_reach_an_open_window():
+    """A server made as these tests make one must not find the user's own window."""
+    users_endpoint_path = Path.home() / ".raycrafter" / "agent_link.json"
+    assert LinkClient().endpoint_path != users_endpoint_path
 
 
 def test_every_tool_is_listed_with_a_description():

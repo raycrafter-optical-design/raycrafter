@@ -27,7 +27,7 @@ from optiland.rays import RealRays
 from scipy.optimize import minimize_scalar
 
 from raycrafter.core.optic_builder import build_optic, build_optic_for_beam
-from raycrafter.core.ray_launch import launch_rays, pupil_points, trace_rays
+from raycrafter.core.ray_launch import beam_at_first_lens, launch_rays, pupil_points, trace_rays
 from raycrafter.core.state import BeamField, OpticalState
 
 SPOT_RINGS = 6  # hexapolar rings for the spot diagram (127 rays)
@@ -311,9 +311,9 @@ def _trace_ray_paths(state: OpticalState, optic: Optic, beam: BeamField) -> RayP
         z_local[surface_index + 1 :, ray_index] = np.nan
         y_local[surface_index + 1 :, ray_index] = np.nan
 
-    # Shift z so that the first vertex sits at the first lens (or the start of the axis).
+    # Shift z so that the first surface sits at the first lens (or the start of the axis).
     first_vertex_z = float(optic.surfaces[1].geometry.cs.z)
-    z_absolute = z_local - first_vertex_z + state.beam_reference_z()
+    z_absolute = z_local - first_vertex_z + state.first_surface_z()
     return RayPaths(z=z_absolute, y=y_local)
 
 
@@ -327,9 +327,13 @@ def _system_summary(state: OpticalState, optic: Optic) -> SystemSummary | None:
     if not state.lenses:
         return None
     paraxial = optic.paraxial
-    back_focal_point_z = state.image_z + float(paraxial.F2())
+    # An afocal system (e.g. two lenses a typed gap apart that makes a beam expander) has no
+    # focal point: both lengths are then infinite, which is the answer rather than a fault.
+    with np.errstate(divide="ignore"):
+        back_focal_point_z = state.image_z + float(paraxial.F2())
+        effective_focal_length = float(paraxial.f2())
     return SystemSummary(
-        effective_focal_length=float(paraxial.f2()),
+        effective_focal_length=effective_focal_length,
         back_focal_length=float(back_focal_point_z - state.last_back_z()),
     )
 
@@ -485,7 +489,9 @@ def compute_mtf(state: OpticalState) -> MtfResult:
     same cutoff, so the user can see how far the system is from perfect.
 
     This uses Optiland's own object and pupil model (``build_optic_for_beam``), which cannot
-    describe a field's offset: the MTF is for the beam centred on the first lens.
+    describe a field's offset: the MTF is for the beam centred on the first lens. A source
+    plane in front of the first lens is allowed for by carrying the beam forward to the lens
+    (``ray_launch.beam_at_first_lens``).
 
     Optiland's MTF needs the ray through the edge of the pupil, so when a lens rim cuts the
     beam the MTF is computed for the part of the beam that gets through on axis (which is
@@ -494,11 +500,14 @@ def compute_mtf(state: OpticalState) -> MtfResult:
     """
     no_result = MtfResult(np.empty(0), np.empty(0), np.empty(0), np.empty(0))
     beam = state.selected_field
-    beam_diameter_mm = min(beam.diameter_mm, transmitted_beam_diameter(state))
+    beam_at_lens = beam_at_first_lens(state, beam)
+    # Both diameters are at the source plane; the beam's width scales the same way to the lens.
+    width_scale = beam_at_lens.diameter_mm / beam.diameter_mm
+    beam_diameter_mm = min(beam.diameter_mm, transmitted_beam_diameter(state)) * width_scale
     if beam_diameter_mm <= 0.0:
         return no_result
     try:
-        optic = build_optic_for_beam(state, beam, beam_diameter_mm=beam_diameter_mm)
+        optic = build_optic_for_beam(state, beam_at_lens, beam_diameter_mm=beam_diameter_mm)
         mtf = FFTMTF(optic, num_rays=MTF_RAYS)
     except ValueError:
         # Optiland raises "Working F/# could not be calculated due to raytrace errors" when

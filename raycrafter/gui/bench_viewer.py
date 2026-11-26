@@ -2,9 +2,10 @@
 
 Scripts and AI agents refer to lenses and fields by index (``bench.lenses[0]``, ``lens_index=0``),
 so the user needs a way to see which number is which. This small, non-modal window lists the
-lenses (index, part number, where they sit on the axis), the fields and the image plane, and
-keeps the positions up to date while lenses are dragged. Clicking a row highlights that item in
-the side view. The selected lens or fields can be deleted from here; nothing else is edited.
+lenses (index, part number, where they sit on the axis, and details of the part such as its
+vendor and surface numbers), the fields and the image plane, and keeps the positions up to date
+while lenses are dragged. Clicking a row highlights that item in the side view. The selected
+lens or fields can be deleted from here; nothing else is edited.
 
 The window shows the model; it does not change it. Highlighting and deleting are requested
 with signals, which the main window carries out.
@@ -33,20 +34,33 @@ from raycrafter.gui.field_editor import colour_swatch
 COLUMNS = ["Index", "Item", "z (mm)", "Details"]
 LENS, FIELD, IMAGE = "lens", "field", "image"  # the kinds of row
 ROW_KIND_ROLE = Qt.ItemDataRole.UserRole  # where each row keeps (kind, index)
-WINDOW_SIZE_PX = (560, 360)
+WINDOW_SIZE_PX = (720, 360)
+
+
+def part_details(state: OpticalState, lens_index: int) -> list[str]:
+    """The lens as a part: vendor and mount (if known), clear aperture and surface numbers."""
+    lens = state.lenses[lens_index]
+    first, last = state.surface_range(lens_index)
+    surfaces = f"surface {first}" if first == last else f"surfaces {first}–{last}"
+    details = [lens.vendor, lens.mount_type, f"Ø{2.0 * lens.semi_aperture:g} mm", surfaces]
+    return [detail for detail in details if detail is not None]
 
 
 def lens_rows(state: OpticalState) -> list[tuple[str, int, list[str]]]:
     """One (kind, index, cell texts) per lens, for the lens section of the list."""
     rows = []
     for index, lens in enumerate(state.lenses):
-        details = []
+        details = part_details(state, index)
         if lens.flipped:
             details.append("flipped")
-        if lens.group_id is not None:
-            details.append(f"Plossl pair {lens.group_id}")
+        if lens.assembly_id is not None:
+            details.append(f"in {state.assembly_names[lens.assembly_id]} ({lens.assembly_id})")
         if lens.is_paraxial:
             details.append("ideal thin lens")
+        if lens.locked_to_next:
+            details.append("gap behind locked")
+        elif index == len(state.lenses) - 1 and state.image_gap_locked:
+            details.append("gap to image locked")
         position = f"{lens.z:.1f}" if lens.is_paraxial else f"{lens.z:.1f} – {lens.back_z:.1f}"
         rows.append((LENS, index, [str(index), lens.part_number, position, ", ".join(details)]))
     return rows

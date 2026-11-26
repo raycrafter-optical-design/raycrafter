@@ -1,6 +1,7 @@
 """Tests of loading Zemax files back into a bench (``raycrafter.core.zmx_import``)."""
 
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -8,6 +9,7 @@ from optiland.fileio import load_zemax_file, save_zemax_file
 from optiland.optic import Optic
 
 from raycrafter.core import OpticalModel
+from raycrafter.core.ray_launch import beam_at_first_lens
 from raycrafter.core.zmx_import import ZmxImportError, load_zmx
 
 
@@ -89,9 +91,16 @@ def test_vergence_counts_the_air_before_the_first_lens(tmp_path):
         save_zemax_file(optic, zmx_path)
 
     loaded = load_zmx(zmx_path, OpticalModel().catalog)
-    assert loaded.state.selected_field.vergence_dioptres == pytest.approx(-1000.0 / 150.0)
-    # The 5 mm entrance pupil is at the stop; the beam has widened by 150/100 at the lens.
-    assert loaded.state.selected_field.diameter_mm == pytest.approx(7.5)
+    # The source plane is at the stop, 50 mm before the lens: there the beam is the 5 mm
+    # entrance pupil, diverging from the object 100 mm away.
+    state = loaded.state
+    assert state.lenses[0].z - state.source_z == pytest.approx(50.0)
+    assert state.selected_field.vergence_dioptres == pytest.approx(-1000.0 / 100.0)
+    assert state.selected_field.diameter_mm == pytest.approx(5.0)
+    # At the lens it comes from a point 150 mm away, and has widened by 150/100.
+    at_lens = beam_at_first_lens(state, state.selected_field)
+    assert at_lens.vergence_dioptres == pytest.approx(-1000.0 / 150.0)
+    assert at_lens.diameter_mm == pytest.approx(7.5)
 
 
 # A small Zemax file written by hand, in the style of a laser scanning system: the stop (a
@@ -154,8 +163,13 @@ def test_fields_are_aimed_through_a_stop_in_front_of_the_first_lens(tmp_path):
     loaded = load_zmx(zmx_path, OpticalModel().catalog)
     fields = loaded.state.fields
     assert [field.angle_deg for field in fields] == [0.0, 4.0, 8.0]
+    # Defined at the stop, where every chief ray crosses the axis, so they reach the lens
+    # 40 mm on, off axis.
+    assert loaded.state.lenses[0].z - loaded.state.source_z == pytest.approx(40.0)
+    assert [field.offset_mm for field in fields] == [0.0, 0.0, 0.0]
     expected_offsets = [40.0 * np.tan(np.radians(field.angle_deg)) for field in fields]
-    assert [field.offset_mm for field in fields] == pytest.approx(expected_offsets)
+    at_lens = [beam_at_first_lens(loaded.state, field).offset_mm for field in fields]
+    assert at_lens == pytest.approx(expected_offsets)
     assert len({field.colour for field in fields}) == 3  # each angle its own colour
 
     # Each beam lands where Optiland, tracing the file itself, puts it, with the same spot.
@@ -220,3 +234,13 @@ def test_a_conic_surface_is_refused(mixed_bench, tmp_path):
 def test_new_design_empties_the_bench(mixed_bench):
     mixed_bench.new_design()
     assert mixed_bench.state.lenses == [] and len(mixed_bench.state.fields) == 1
+
+
+def test_a_value_that_is_not_a_number_is_an_import_error(tmp_path):
+    """A bad number in a line only RayCrafter reads (SQAP) once escaped as ValueError and
+    closed the GUI (found in review)."""
+    zmx_path = Path(write_scanner_zmx(tmp_path))
+    text = zmx_path.read_text(encoding="utf-8").replace("  DISZ 5\n", "  DISZ 5\n  SQAP 5 x\n", 1)
+    zmx_path.write_text(text, encoding="utf-8")
+    with pytest.raises(ZmxImportError, match="not a number"):
+        load_zmx(str(zmx_path), OpticalModel().catalog)

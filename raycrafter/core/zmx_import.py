@@ -11,14 +11,18 @@ named "Imported lens N".
 Some things a Zemax file can describe have no place in RayCrafter yet. Aspheres, mirrors,
 tilts and decentres make the import fail with ``ZmxImportError``. Others are simplified,
 and each simplification is reported in ``ZmxImport.notes`` so the user can be told.
+Because the import is lossy, the file's exact bytes are kept with the design
+(``OpticalState.imported_from``) and saved in its project file, so it can be imported again.
 
 Fields: Zemax gives all fields one entrance pupil and object, and pairs every field angle
 with every wavelength. Each field angle becomes a RayCrafter field at the primary
 wavelength, and each other wavelength an on-axis field. When there are several angles,
 each is drawn in its own colour, as Zemax does. When the stop is in air in front of the
-first lens (a scan mirror, say), each beam's chief ray passes through the centre of the
-stop, so it reaches the first lens off axis; otherwise the beams are centred on the first
-lens, as RayCrafter's own fields are.
+first lens (a scan mirror, say), the source plane, where the beams are defined, is put at
+the stop: each beam's chief ray passes through its centre, so it reaches the first lens off
+axis. Otherwise the source plane is at the first lens and the beams are centred on it, as
+RayCrafter's own fields are. Either way the gap from the source plane is locked, so moving
+the first lens carries the beams with it.
 
 Clear apertures: Zemax blocks rays only at surfaces with an aperture (CLAP, FLAP, SQAP);
 a semi-diameter (DIAM) only sets the drawn size. RayCrafter blocks rays at every lens rim.
@@ -33,18 +37,26 @@ import re
 import warnings
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 
 import numpy as np
 from optiland.fileio import load_zemax_file
 
 from raycrafter import palette
-from raycrafter.core.optic_builder import build_optic
+from raycrafter.core.optic_builder import is_diverging
 from raycrafter.core.prescription import (
     LensSurface,
     flipped_prescription,
     prescription_from_zmx_text,
 )
-from raycrafter.core.state import BeamField, OpticalState, PlacedLens
+from raycrafter.core.state import (
+    AXIS_START_Z,
+    BeamField,
+    ImportedSource,
+    OpticalState,
+    PlacedLens,
+    raycrafter_version,
+)
 from raycrafter.lenscatalog.catalog import CatalogEntry
 
 FIRST_SURFACE_Z = 100.0  # mm; a Zemax file has no axis start, so its surface 1 is put here
@@ -110,28 +122,48 @@ def load_zmx(file_path: str, catalog: dict[str, CatalogEntry]) -> ZmxImport:
         notes: list[str] = []
         grouping = _lenses_from_surfaces(surfaces, surface_extras, catalog, notes)
 
-        # The beam is defined at the first lens; with none, the fields are just on axis.
+        # The beam is defined at the stop or the first lens; with none, just on axis.
         first_lens_z = grouping.lenses[0].z if grouping.lenses else grouping.image_z
         first_lens_surface = grouping.lens_surface_numbers[0][0] if grouping.lenses else None
-        fields = _fields_from_optic(optic, first_lens_z, first_lens_surface, notes)
+        fields, source_z = _fields_from_optic(optic, first_lens_z, first_lens_surface, notes)
+        if not grouping.lenses:
+            source_z = AXIS_START_Z
 
         ray_extent = _traced_ray_extent(optic)
         _note_lenses_that_block_more_than_zemax(grouping, ray_extent, notes)
         _note_apertures_in_air(grouping.air_apertures, ray_extent, notes)
 
-        state = OpticalState(lenses=grouping.lenses, image_z=grouping.image_z, fields=fields)
-        for lens in state.lenses:
+        for lens in grouping.lenses:
             if not lens.is_paraxial and lens.part_number.startswith("Imported"):
-                lens.is_negative = _is_diverging(lens)
+                lens.is_negative = is_diverging(lens)
+
+    state = OpticalState(
+        lenses=grouping.lenses, image_z=grouping.image_z, fields=fields, source_z=source_z
+    )
+    # The file itself, and the bench as imported, are kept with the design (ImportedSource).
+    try:
+        content = Path(file_path).read_bytes()
+    except OSError as error:
+        raise ZmxImportError(f"The file could not be read: {error}") from error
+    state.imported_from = ImportedSource.from_bytes(
+        file_format="zmx",
+        file_name=Path(file_path).name,
+        content=content,
+        imported_by=raycrafter_version(),
+        imported_design=state,
+        notes=notes,
+    )
     return ZmxImport(state, notes)
 
 
 # ------------------------------------------------------- what Optiland does not read
 #
-# Optiland workaround (Optiland 0.6.3, upstream issue not yet filed): its Zemax reader
-# ignores square apertures (SQAP) and surface comments (COMM), and keeps the semi-diameter
-# (DIAM) only for the stop. RayCrafter needs all three, so they are read from the file text
-# here. Once Optiland reads them, this section and its callers should use Optiland instead.
+# Optiland workaround (Optiland 0.6.3): its Zemax reader ignores square apertures (SQAP) and
+# surface comments (COMM), and keeps the semi-diameter (DIAM) only for the stop. RayCrafter
+# needs all three, so they are read from the file text here. Fixed on Optiland main, not yet
+# released: https://github.com/optiland/optiland/issues/931 (SQAP) and
+# https://github.com/optiland/optiland/issues/928 (DIAM); see optiland_fix.md. Once a release
+# reads them, this section and its callers should use Optiland instead.
 
 
 @dataclass
@@ -182,10 +214,15 @@ def _read_surface_extras(file_path: str, surface_count: int) -> list[SurfaceExtr
                 continue
             if words[0] == "COMM":
                 surface.comment = line.strip()[len("COMM") :].strip()
-            elif words[0] == "DIAM" and len(words) > 1:
-                surface.semi_diameter_mm = float(words[1])
-            elif words[0] == "SQAP" and len(words) > 2:
-                surface.square_half_widths_mm = (float(words[1]), float(words[2]))
+            try:
+                if words[0] == "DIAM" and len(words) > 1:
+                    surface.semi_diameter_mm = float(words[1])
+                elif words[0] == "SQAP" and len(words) > 2:
+                    surface.square_half_widths_mm = (float(words[1]), float(words[2]))
+            except ValueError as error:
+                raise ZmxImportError(
+                    f"The file has a value that is not a number: {line.strip()!r}"
+                ) from error
         extras.append(surface)
     return extras
 
@@ -452,17 +489,6 @@ def _imported_lens(
     )
 
 
-def _is_diverging(lens: PlacedLens) -> bool:
-    """True if the lens on its own has a negative focal length.
-
-    A block with no power (a flat plate or a beam-splitter cube) is not diverging, although
-    Optiland gives its focal length as minus infinity.
-    """
-    alone = OpticalState(lenses=[lens], image_z=lens.back_z + 10.0)
-    focal_length_mm = float(build_optic(alone).paraxial.f2())
-    return bool(np.isfinite(focal_length_mm) and focal_length_mm < 0)
-
-
 # ------------------------------------------------------------------ catalogue matching
 
 
@@ -499,6 +525,8 @@ def _match_catalogue(
                     z=front_z,
                     flipped=flipped,
                     is_negative=entry.is_negative,
+                    vendor=entry.vendor,
+                    mount_type=entry.mount_type,
                 )
     return None
 
@@ -624,7 +652,7 @@ def _note_lenses_that_block_more_than_zemax(
             )
         else:
             effect = "this may block rays that Zemax lets through"
-        is_catalogue_lens = not lens.part_number.startswith(("Imported", "Paraxial"))
+        is_catalogue_lens = lens.vendor is not None
         size = "its catalogue size" if is_catalogue_lens else "the size the file draws it"
         notes.append(
             f"{lens.part_number} has no aperture in the file, so Zemax blocks no rays there. "
@@ -667,17 +695,16 @@ def _blocks_rays(aperture: ClearAperture, ray_extent: RayExtent, surface_number:
 
 def _fields_from_optic(
     optic, first_lens_z: float, first_lens_surface: int | None, notes: list[str]
-) -> list[BeamField]:
+) -> tuple[list[BeamField], float]:
     """RayCrafter fields from the file's aperture, object, stop, field angles and wavelengths.
 
-    Each beam is described where it meets the first lens (see ``BeamField``):
+    Each beam is described at the source plane (see ``BeamField``), which is put at the stop
+    if the stop is in air in front of the first lens, and otherwise at the first lens:
 
-    - its vergence is that of light from the object, ``first_lens_z - object_z`` away;
-    - if the stop is in air in front of the first lens, the chief ray of a beam at angle a
-      crosses the axis at the stop, so it meets the first lens ``d tan(a)`` above the axis,
-      d being the distance from stop to lens. The entrance pupil diameter is the beam's
-      width at the stop, so a beam from a near object is wider by the time it reaches the
-      lens: by (s + d) / s, s being the distance from object to stop.
+    - the beam's width there is the entrance pupil diameter, and its vergence that of light
+      from the object;
+    - at the stop the chief ray of every beam crosses the axis, so the offset is zero; the
+      beam then meets the first lens off axis, as in Zemax.
 
     Parameters
     ----------
@@ -689,6 +716,11 @@ def _fields_from_optic(
         The file surface number of the first lens's front surface (None with no lenses).
     notes : list of str
         Notes for the user are appended here.
+
+    Returns
+    -------
+    tuple of (list of BeamField, float)
+        The fields, and the z (mm) of the source plane on the bench.
     """
     surfaces = optic.surfaces.surfaces
     object_distance_mm = float(surfaces[0].thickness)
@@ -696,14 +728,11 @@ def _fields_from_optic(
     stop_number = int(optic.surfaces.stop_index)
     stop_z = FIRST_SURFACE_Z + sum(float(surface.thickness) for surface in surfaces[1:stop_number])
     stop_is_in_front = first_lens_surface is not None and stop_number < first_lens_surface
-    stop_to_lens_mm = first_lens_z - stop_z if stop_is_in_front else 0.0
+    source_z = stop_z if stop_is_in_front else first_lens_z
 
     aperture = optic.aperture
     if aperture is not None and aperture.ap_type == "EPD":
         diameter_mm = float(aperture.value)
-        if stop_is_in_front and np.isfinite(object_z) and stop_z != object_z:
-            object_to_stop_mm = stop_z - object_z
-            diameter_mm *= abs((object_to_stop_mm + stop_to_lens_mm) / object_to_stop_mm)
     else:
         diameter_mm = DEFAULT_BEAM_DIAMETER_MM
         notes.append(
@@ -711,8 +740,11 @@ def _fields_from_optic(
             f"{DEFAULT_BEAM_DIAMETER_MM:g} mm."
         )
 
-    object_to_lens_mm = first_lens_z - object_z
-    vergence = 0.0 if np.isinf(object_to_lens_mm) else -1000.0 / object_to_lens_mm
+    object_to_source_mm = source_z - object_z
+    if np.isinf(object_to_source_mm) or object_to_source_mm == 0.0:
+        vergence = 0.0
+    else:
+        vergence = -1000.0 / object_to_source_mm
 
     field_type = getattr(optic.fields.field_definition, "name", str(optic.fields.field_definition))
     angles = [float(field_point.y) for field_point in optic.fields.fields] or [0.0]
@@ -740,7 +772,7 @@ def _fields_from_optic(
             diameter_mm=diameter_mm,
             angle_deg=angle_deg,
             vergence_dioptres=vergence,
-            offset_mm=stop_to_lens_mm * float(np.tan(np.radians(angle_deg))),
+            offset_mm=0.0,
             wavelength_nm=round(wavelength_um * 1000.0, 3),
             colour=angle_colours.get(angle_deg),
         )
@@ -754,4 +786,4 @@ def _fields_from_optic(
             "Each field angle was loaded at the primary wavelength, and each other wavelength "
             "as an on-axis field."
         )
-    return fields
+    return fields, source_z

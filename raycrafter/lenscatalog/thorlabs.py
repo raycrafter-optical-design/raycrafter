@@ -16,6 +16,8 @@ Example
 
 from __future__ import annotations
 
+import re
+
 from raycrafter.lenscatalog.catalog import (
     ACHROMATIC_TRIPLETS,
     ACHROMATS,
@@ -29,6 +31,7 @@ from raycrafter.lenscatalog.catalog import (
 )
 
 CATALOG_FILE_NAME = "thorlabs.json.gz"
+VENDOR_NAME = "Thorlabs"
 
 # Thorlabs family -> RayCrafter category. Families not listed take the category named by
 # their Thorlabs category in VENDOR_CATEGORY_TO_CATEGORY.
@@ -75,6 +78,16 @@ def category_of(lens_record: dict) -> str:
     return VENDOR_CATEGORY_TO_CATEGORY[lens_record["category"]]
 
 
+def mount_type_of(lens_record: dict) -> str | None:
+    """The mount type, "Mounted" or "Unmounted", if the record's description gives it.
+
+    The catalogue has no field for the mounting and only a few descriptions mention it. The
+    other lenses give None (unknown) rather than being assumed to be unmounted.
+    """
+    match = re.search(r"\b(un)?mounted\b", lens_record["description"], re.IGNORECASE)
+    return match.group().capitalize() if match else None
+
+
 def entry_from_lens_record(part_number: str, lens_record: dict) -> CatalogEntry:
     """Make a CatalogEntry from one lens record of the Thorlabs catalogue."""
     return CatalogEntry(
@@ -85,6 +98,8 @@ def entry_from_lens_record(part_number: str, lens_record: dict) -> CatalogEntry:
         category=category_of(lens_record),
         family=lens_record["family"],
         coating=coating_name(lens_record["coating"]),
+        vendor=VENDOR_NAME,
+        mount_type=mount_type_of(lens_record),
     )
 
 

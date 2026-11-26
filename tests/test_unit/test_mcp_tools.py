@@ -21,6 +21,13 @@ def test_summary_matches_the_known_act508_200_a_focal_lengths(tools):
     assert summary["f_number"] == pytest.approx(20.0, abs=0.1)
 
 
+def test_lenses_report_their_part_metadata(tools):
+    lens = tools.get_design()["lenses"][0]
+    assert lens["vendor"] == "Thorlabs" and lens["mount_type"] is None
+    assert lens["surface_range"] == [1, 3]
+    assert tools.get_lens("TRH254-040-A")["mount_type"] == "Unmounted"
+
+
 def test_every_result_is_valid_json(tools):
     tools.add_field()
     results = [
@@ -111,6 +118,21 @@ def test_destructive_file_tools_protect_unsaved_work(tools, tmp_path):
     assert tools.new_design()["lenses"] == []
 
 
+def test_project_tools_save_and_open_the_whole_design(tools, tmp_path):
+    tools.add_field()
+    with pytest.raises(ValueError, match="no project file"):
+        tools.save_project()
+    saved_to = tools.save_project(str(tmp_path / "design.raycrafter"))["saved_to"]
+    assert tools.get_design()["project_file"] == saved_to
+    assert not tools.get_design()["has_unsaved_changes"]
+
+    tools.new_design()
+    loaded = tools.load_project(saved_to)
+    assert len(loaded["fields"]) == 2 and loaded["imported_from"] is None
+    with pytest.raises(ValueError, match="Could not open"):
+        tools.load_project(str(tmp_path / "missing.raycrafter"))
+
+
 def test_loading_a_missing_file_is_a_value_error(tools, tmp_path):
     with pytest.raises(ValueError, match="Could not load"):
         tools.load_zmx(str(tmp_path / "missing.zmx"))
@@ -147,3 +169,16 @@ def test_set_field_colour(tools):
     assert tools.model.state.fields[0].colour is None
     with pytest.raises(ValueError, match="hex colour"):
         tools.set_field(0, colour="red")
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda tools: tools.set_field(0, offset_mm=float("nan")),
+        lambda tools: tools.set_field(0, angle_deg=float("inf")),
+        lambda tools: tools.set_image_z(float("nan")),
+    ],
+)
+def test_numbers_that_are_not_finite_are_refused(tools, call):
+    with pytest.raises(ValueError, match="finite"):
+        call(tools)

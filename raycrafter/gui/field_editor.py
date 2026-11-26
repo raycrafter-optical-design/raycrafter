@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
 
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.state import BeamField
+from raycrafter.gui.undo_keys import leave_undo_keys_to_window
 
 SWATCH_SIZE_PX = 12  # the colour square beside each field in the list
 LIST_WIDTH_PX = 110
@@ -136,11 +137,13 @@ class FieldEditor(QDialog):
 
     Signals
     -------
-    fields_changed
-        A field was added, removed, edited or selected; the model is already updated.
+    fields_changed(object)
+        A field was added, removed, edited or selected; the model is already updated. The
+        argument is None, or for a value box a key naming the value changed, so that undo
+        can treat a run of small steps as one.
     """
 
-    fields_changed = pyqtSignal()
+    fields_changed = pyqtSignal(object)
 
     def __init__(self, model: OpticalModel, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -169,6 +172,7 @@ class FieldEditor(QDialog):
             box.setSingleStep(step)
             box.setDecimals(decimals)
             box.setFixedWidth(SPIN_BOX_WIDTH_PX)
+            leave_undo_keys_to_window(box)
             # Bind the attribute name now; the lambda would otherwise see the loop's last one.
             box.valueChanged.connect(
                 lambda value, attribute=attribute: self.set_field_value(attribute, value)
@@ -295,20 +299,20 @@ class FieldEditor(QDialog):
             return
         self.model.select_field(row)
         self.fill_form(self.model.state.selected_field)
-        self.fields_changed.emit()
+        self.fields_changed.emit(None)
 
     def add_field(self) -> None:
         """Add a copy of the selected field and select it."""
         self.model.add_field()
         self.refresh()
-        self.fields_changed.emit()
+        self.fields_changed.emit(None)
 
     def remove_selected_fields(self) -> None:
         """Remove every field selected in the list (one always remains)."""
         rows = [index.row() for index in self.field_list.selectedIndexes()]
         self.model.remove_fields(rows)
         self.refresh()
-        self.fields_changed.emit()
+        self.fields_changed.emit(None)
 
     def set_field_value(self, attribute: str, value: float) -> None:
         """A value box changed: apply it to the selected field straight away."""
@@ -316,7 +320,7 @@ class FieldEditor(QDialog):
         if attribute == "wavelength_nm":
             self._update_current_swatch()
             self._show_colour(self.model.state.selected_field)
-        self.fields_changed.emit()
+        self.fields_changed.emit(("field", self.model.state.selected_field_index, attribute))
 
     def choose_colour(self) -> None:
         """Let the user pick the selected field's colour."""
@@ -334,4 +338,4 @@ class FieldEditor(QDialog):
         self.model.state.selected_field.colour = colour
         self._show_colour(self.model.state.selected_field)
         self._update_current_swatch()
-        self.fields_changed.emit()
+        self.fields_changed.emit(None)

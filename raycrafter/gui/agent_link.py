@@ -95,6 +95,7 @@ class AgentLink(QObject):
             request.result = tool(**request.arguments)
             if request.tool_name in EDITING_TOOL_NAMES:
                 self.window.show_new_design()
+                self.window.files.update_title()  # a save or load changes the title too
             if request.tool_name in TOOL_NAMES:  # not for a script quietly copying the design
                 self.window.statusBar().showMessage(
                     f"Agent: {request.tool_name}", STATUS_MESSAGE_MS

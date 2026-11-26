@@ -10,12 +10,13 @@ import numpy as np
 LENS = "#3b7dd8"  # blue
 LENS_HOVER = "#1c4f9c"  # darker blue for the lens under the pointer
 PARAXIAL_ARROW = "#1d3e6c"  # arrowheads of a paraxial lens: LENS at half brightness
-PLOSSL = "#7048e8"  # purple: a lens in a Plossl pair
-PLOSSL_HOVER = "#4c2fb0"
+ASSEMBLY = "#7048e8"  # purple: a lens in an assembly (e.g. a Plossl pair)
+ASSEMBLY_HOVER = "#4c2fb0"
 PLOSSL_PREVIEW = "#e03131"  # dashed red outline of a proposed Plossl pair
 GHOST_BLOCKED = "#e03131"  # red: a lens being placed where there is no room for it
 RAY = "#e8a317"  # amber: the rays in the app icon
 IMAGE = "#2f9e44"  # green: the image plane and "current image plane" markers
+SOURCE = "#b5650d"  # brown-orange: the source plane, where the beams are defined
 TANGENTIAL = "#3b7dd8"  # also the through-focus curve
 SAGITTAL = "#e8590c"
 AIRY = "#868e96"  # Airy disk, Airy radius and diffraction limit
@@ -24,6 +25,10 @@ FAINT = "#ced4da"  # zero lines and borders
 AXIS_LINE = "#adb5bd"  # dashed optical axis in the side view
 SIDE_GRID = "#e9ecef"  # faint square grid behind the side view
 TIMING = "#adb5bd"  # trace/draw timing text
+GAP_LINE = "#868e96"  # gap dimension lines in the side view
+GAP_EDITABLE = "#1c4f9c"  # label of a gap that can be typed
+GAP_FIXED = "#868e96"  # label of a gap that cannot (e.g. while "Lock focus" sets it)
+GAP_LOCKED = "#c2255c"  # label (and its box) of a locked gap
 CANVAS_BORDER = "#adb5bd"  # thin frame around each plot
 
 # Colours for telling field angles apart, in the order Zemax uses (blue, green, red, ...),

@@ -46,7 +46,7 @@ def test_make_plossl_pairs_two_identical_lenses(two_identical_lenses):
     model.make_plossl(0)
 
     left, right = model.state.lenses
-    assert left.group_id is not None and left.group_id == right.group_id
+    assert left.assembly_id is not None and left.assembly_id == right.assembly_id
     # Crown elements face each other: the left lens's stronger element is at its back.
     assert left.flipped == left.positive_element_is_first()
     assert right.flipped != right.positive_element_is_first()
@@ -62,8 +62,8 @@ def test_a_plossl_pair_moves_as_one_and_splits(two_identical_lenses):
     model.move_lens(0, requested_front_z=left.z - 5.0)
     assert right.z - left.z == pytest.approx(spacing)
 
-    model.split_plossl(0)
-    assert left.group_id is None and right.group_id is None
+    model.split_assembly(0)
+    assert left.assembly_id is None and right.assembly_id is None
 
 
 def test_negative_lenses_cannot_form_a_plossl_pair():
@@ -86,7 +86,7 @@ def test_deleting_one_lens_of_a_pair_releases_the_other(two_identical_lenses):
     model.make_plossl(0)
     model.delete_lens(0)
     assert len(model.state.lenses) == 1
-    assert model.state.lenses[0].group_id is None
+    assert model.state.lenses[0].assembly_id is None
 
 
 def test_zmx_export_writes_a_file(tmp_path, two_identical_lenses):

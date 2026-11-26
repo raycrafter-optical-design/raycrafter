@@ -26,7 +26,8 @@ from optiland.materials.warnings import OptilandMaterialWarning
 from optiland.optic import Optic
 from optiland.physical_apertures import RadialAperture
 
-from raycrafter.core.state import AXIS_START_Z, BeamField, OpticalState
+from raycrafter.core import ray_launch
+from raycrafter.core.state import AXIS_START_Z, BeamField, OpticalState, PlacedLens
 
 
 def object_distance_mm(beam_vergence: float) -> float:
@@ -64,6 +65,20 @@ def build_optic(state: OpticalState) -> Optic:
     optic.fields.add(y=0.0)
     optic.wavelengths.add(beam.wavelength_um, is_primary=True)
     return optic
+
+
+def is_diverging(lens: PlacedLens) -> bool:
+    """True if the lens on its own has a negative focal length.
+
+    Used for lenses whose sign is not given by the catalogue (imported lenses, and lenses
+    read from a project file). A block with no power (a flat plate or a beam-splitter cube)
+    is not diverging, although Optiland gives its focal length as minus infinity.
+    """
+    if lens.paraxial_focal_length_mm is not None:
+        return lens.paraxial_focal_length_mm < 0
+    alone = OpticalState(lenses=[lens], image_z=lens.back_z + 10.0)
+    focal_length_mm = float(build_optic(alone).paraxial.f2())
+    return bool(np.isfinite(focal_length_mm) and focal_length_mm < 0)
 
 
 def build_optic_for_beam(
@@ -176,7 +191,10 @@ def save_zmx(state: OpticalState, file_path: str) -> None:
     """
     selected = state.selected_field
     field_angles = sorted({abs(beam.angle_deg) for beam in state.fields})
-    optic = build_optic_for_beam(state, selected, field_angles=field_angles)
+    # Zemax's object and pupil are at the first lens, so describe the beam there.
+    optic = build_optic_for_beam(
+        state, ray_launch.beam_at_first_lens(state, selected), field_angles=field_angles
+    )
     for wavelength_nm in sorted({beam.wavelength_nm for beam in state.fields}):
         if wavelength_nm != selected.wavelength_nm:
             optic.wavelengths.add(wavelength_nm / 1000.0)
