@@ -22,6 +22,8 @@ class RangeSlider(QWidget):
     ----------
     minimum, maximum : int
         The slider's range; both handles start at the ends of it.
+    handle_radius_px : int
+        Size of the handles; the context bar uses small ones.
 
     Signals
     -------
@@ -31,9 +33,12 @@ class RangeSlider(QWidget):
 
     values_changed = pyqtSignal(int, int)
 
-    def __init__(self, minimum: int = 0, maximum: int = 1000) -> None:
+    def __init__(
+        self, minimum: int = 0, maximum: int = 1000, handle_radius_px: int = HANDLE_RADIUS_PX
+    ) -> None:
         super().__init__()
         self.minimum, self.maximum = minimum, maximum
+        self.handle_radius_px = handle_radius_px
         self.low_value, self.high_value = minimum, maximum
         self.dragged_handle: str | None = None  # "low" or "high" while a handle is held
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -41,7 +46,7 @@ class RangeSlider(QWidget):
 
     def sizeHint(self) -> QSize:
         """Wide enough to be usable; tall enough for the handles."""
-        return QSize(160, 2 * HANDLE_RADIUS_PX + 6)
+        return QSize(160, 2 * self.handle_radius_px + 6)
 
     def values(self) -> tuple[int, int]:
         """The low and high values."""
@@ -58,7 +63,7 @@ class RangeSlider(QWidget):
 
     def _groove_span_px(self) -> tuple[float, float]:
         """x of the groove's left and right ends; the handle centres travel between them."""
-        return HANDLE_RADIUS_PX + 1.0, self.width() - HANDLE_RADIUS_PX - 1.0
+        return self.handle_radius_px + 1.0, self.width() - self.handle_radius_px - 1.0
 
     def _x_of_value(self, value: int) -> float:
         left, right = self._groove_span_px()
@@ -90,7 +95,8 @@ class RangeSlider(QWidget):
         painter.setPen(QPen(QColor(palette.LENS), 1.5))
         painter.setBrush(QBrush(QColor("white")))
         for handle_x in (low_x, high_x):
-            painter.drawEllipse(QPointF(handle_x, centre_y), HANDLE_RADIUS_PX, HANDLE_RADIUS_PX)
+            radius = self.handle_radius_px
+            painter.drawEllipse(QPointF(handle_x, centre_y), radius, radius)
         painter.end()
 
     # ------------------------------------------------------------- mouse

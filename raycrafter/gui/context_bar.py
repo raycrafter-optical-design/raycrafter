@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from raycrafter.gui.scaled_slider import ScaledSlider
+from raycrafter.gui.style import CONTEXT_BAR_BOX_HEIGHT_PX
 from raycrafter.gui.tool_icons import ITALIC_F, focus_lock_icon
 from raycrafter.gui.tool_palette import Tool
 
@@ -176,9 +177,9 @@ class ContextBar(QToolBar):
         self.empty_page = self._new_page()
         self.paraxial_page = self._build_paraxial_page()
         self.user_part_page = self._build_user_part_page()
-        self.page_of_tool = {
-            Tool.ADD_PARAXIAL_LENS: self.paraxial_page,
-            Tool.ADD_USER_PART: self.user_part_page,
+        self.page_of_tool: dict[Tool, QWidget] = {
+            Tool.ADD_PARAXIAL_LENS: self.paraxial_page.parentWidget(),
+            Tool.ADD_USER_PART: self.user_part_page.parentWidget(),
         }
         self.addWidget(self.pages)
 
@@ -279,14 +280,18 @@ class ContextBar(QToolBar):
             lambda row: self.user_part_activated.emit(self.user_part_box.itemData(row))
         )
         # The bar's boxes are all one height: a combo box is otherwise taller than a spin box.
-        self.user_part_box.setFixedHeight(self.focal_length.box.sizeHint().height())
+        self.user_part_box.setFixedHeight(CONTEXT_BAR_BOX_HEIGHT_PX)
         layout.addWidget(self.user_part_box)
         return layout
 
+    def add_page(self, tool: Tool, page: QWidget) -> None:
+        """Use a page made elsewhere (e.g. the lens browser's filters) for a tool."""
+        self.pages.addWidget(page)
+        self.page_of_tool[tool] = page
+
     def show_page(self, tool: Tool) -> None:
         """Show the settings of a tool (an empty bar for a tool without any)."""
-        layout = self.page_of_tool.get(tool, self.empty_page)
-        self.pages.setCurrentWidget(layout.parentWidget())
+        self.pages.setCurrentWidget(self.page_of_tool.get(tool, self.empty_page.parentWidget()))
 
     # ------------------------------------------------------------------ values
 

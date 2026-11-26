@@ -72,6 +72,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -104,13 +105,13 @@ from raycrafter.gui.context_bar import ContextBar, hide_title_text, put_in_title
 from raycrafter.gui.field_editor import FieldEditor
 from raycrafter.gui.file_actions import FileActions
 from raycrafter.gui.gap_optimiser import GapOptimiser
-from raycrafter.gui.lens_picker import LensPickerDialog
+from raycrafter.gui.lens_browser import LensBrowser
 from raycrafter.gui.lens_replacement import LensReplacer
 from raycrafter.gui.report_actions import ReportActions
 from raycrafter.gui.side_view import SideView
 from raycrafter.gui.style import style_sheet
 from raycrafter.gui.tool_actions import ToolActions
-from raycrafter.gui.tool_palette import ToolPalette
+from raycrafter.gui.tool_palette import Tool, ToolPalette
 
 if TYPE_CHECKING:
     from raycrafter.gui.view_3d import View3DWindow
@@ -142,7 +143,6 @@ class MainWindow(QMainWindow):
         pg.setConfigOptions(background="w", foreground=palette.TEXT, antialias=True)
 
         self.model = model if model is not None else OpticalModel()
-        self.lens_picker: LensPickerDialog | None = None  # made on first use, then kept
         self.field_editor: FieldEditor | None = None  # made on first use, then kept
         self.bench_viewer: BenchViewer | None = None  # made on first use, then kept
         self.view_3d: View3DWindow | None = None  # made on first use, then kept
@@ -215,15 +215,22 @@ class MainWindow(QMainWindow):
             [("Field curvature", self.field_curvature_panel), ("Distortion", self.distortion_panel)]
         )
 
+        # The bottom-right corner shows the field curvature and distortion, or the lens
+        # browser while the "Add catalogue lens" tool is active (see show_in_bottom_right).
+        self.lens_browser = LensBrowser(self.model.catalog)
+        self.bottom_right = QStackedWidget()
+        self.bottom_right.addWidget(self.field_tabs)
+        self.bottom_right.addWidget(self.lens_browser)
+
         bottom_row = QHBoxLayout()
-        for tab_widget in (self.spot_tabs, self.mtf_tabs, self.field_tabs):
+        for tab_widget in (self.spot_tabs, self.mtf_tabs, self.bottom_right):
             bottom_row.addWidget(tab_widget, stretch=1)
 
         central = QWidget()
         layout = QVBoxLayout(central)
         # Plot widgets report a large preferred height, which skewed the 2:3 split between the
         # side view and the bottom row; ignoring it lets the stretch factors alone decide.
-        for plot_area in (self.side_view, self.spot_tabs, self.mtf_tabs, self.field_tabs):
+        for plot_area in (self.side_view, self.spot_tabs, self.mtf_tabs, self.bottom_right):
             plot_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
         layout.addWidget(self.side_view, stretch=2)
         layout.addLayout(bottom_row, stretch=3)
@@ -237,6 +244,7 @@ class MainWindow(QMainWindow):
         self.context_bar = ContextBar(self)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.context_bar)
         self.lock_focus_button = self.context_bar.lock_focus_button  # "Lock focus"
+        self.context_bar.add_page(Tool.ADD_CATALOGUE_LENS, self.lens_browser.filter_controls)
 
     def _build_menus(self) -> None:
         """The RayCrafter menu (About, Quit), File (see ``file_actions``), Edit, View and Help.
@@ -816,8 +824,21 @@ class MainWindow(QMainWindow):
         else:
             self.ray_fan_panel.show_result(self.model.compute_ray_fan(), field_position)
 
+    def show_in_bottom_right(self, widget: QWidget) -> None:
+        """Show the field curvature and distortion tabs, or a tool's panel, bottom right."""
+        if self.bottom_right.currentWidget() is widget:
+            return
+        self.bottom_right.setCurrentWidget(widget)
+        if widget is self.field_tabs:
+            self.update_field_tab()  # it was not kept up to date while hidden
+
     def update_field_tab(self) -> None:
-        """Compute whichever of field curvature and distortion is showing, as for the MTF."""
+        """Compute whichever of field curvature and distortion is showing, as for the MTF.
+
+        Nothing is computed while a tool's panel covers them (see ``show_in_bottom_right``).
+        """
+        if self.bottom_right.currentWidget() is not self.field_tabs:
+            return
         state = self.model.state
         selected = state.selected_field
         if self.field_tabs.currentWidget() is self.field_curvature_panel:

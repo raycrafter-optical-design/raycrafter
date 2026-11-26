@@ -1,11 +1,11 @@
 """The lens menu's replace actions: swap a lens on the bench for another, in place (#63).
 
-- "Replace with same f…" opens the lens picker showing only lenses of about the same focal
+- "Replace with same f…" opens the lens browser showing only lenses of about the same focal
   length (same sign, within ``replacement.SAME_FOCAL_LENGTH_TOLERANCE``).
-- "Swap lens…" opens the lens picker with no focal length filter, to swap for any lens.
+- "Swap lens…" opens the lens browser with no focal length filter, to swap for any lens.
 - "Replace with paraxial" puts an ideal thin lens of the same focal length in its place.
 
-In both pickers the coating filter starts at "suits the beams". Where the new lens goes is
+The browser is the "Add catalogue lens" tool's (see ``ToolActions.start_replacement``). Where the new lens goes is
 decided by ``raycrafter.core.replacement``. If the lens is one of a Plossl pair, the user is
 asked whether to replace both lenses (it stays a Plossl pair) or to split the pair and
 replace only this one.
@@ -19,9 +19,8 @@ from typing import TYPE_CHECKING
 
 from PyQt6.QtWidgets import QMenu, QMessageBox
 
-from raycrafter.gui.lens_picker import LensPickerDialog
-
 if TYPE_CHECKING:
+    from raycrafter.core.state import PlacedLens
     from raycrafter.gui.main_window import MainWindow
 
 STATUS_MESSAGE_MS = 5000
@@ -40,9 +39,6 @@ class LensReplacer:
 
     def __init__(self, window: MainWindow) -> None:
         self.window = window
-        # Made on first use, then kept, so its filters stay as the user left them. It is not
-        # the "Add catalogue lens" picker, whose focal length filter it would otherwise reset.
-        self.picker: LensPickerDialog | None = None
 
     def add_menu_entries(self, menu: QMenu, lens_index: int) -> None:
         """Add the three replace entries to the lens menu."""
@@ -57,29 +53,35 @@ class LensReplacer:
         paraxial_action.triggered.connect(lambda: self.replace_with_paraxial(lens_index))
 
     def replace_with_catalogue_lens(self, lens_index: int, same_focal_length: bool) -> None:
-        """Let the user pick a catalogue lens, then put it in place of this one.
+        """Let the user choose a catalogue lens in the lens browser to replace this one.
 
         Parameters
         ----------
         lens_index : int
             The lens to replace.
         same_focal_length : bool
-            If True, the picker shows only lenses of about the same focal length.
+            If True, the browser shows only lenses of about the same focal length.
         """
         model = self.window.model
         lens = model.state.lenses[lens_index]
         focal_length_mm = model.lens_focal_length_mm(lens_index) if same_focal_length else None
         if focal_length_mm is not None and not math.isfinite(focal_length_mm):
             focal_length_mm = None  # a lens with no power: there is no focal length to match
+        self.window.tools.start_replacement(lens, focal_length_mm, self.replace_with_part)
 
-        if self.picker is None:
-            self.picker = LensPickerDialog(model.catalog, self.window, action_text="Replace")
-        self.picker.set_design_wavelengths([beam.wavelength_nm for beam in model.state.fields])
-        self.picker.prepare_for_replacement(lens.part_number, focal_length_mm)
-        if self.picker.exec() != LensPickerDialog.DialogCode.Accepted:
-            return
-        part_number = self.picker.selected_part_number()
-        if part_number is None:
+    def replace_with_part(self, lens: PlacedLens, part_number: str) -> None:
+        """Put the catalogue lens ``part_number`` in place of ``lens``, if it is still there.
+
+        If the lens is one of a Plossl pair, the user is first asked what to do about the pair.
+        """
+        model = self.window.model
+        lens_index = next(
+            (index for index, other in enumerate(model.state.lenses) if other is lens), None
+        )
+        if lens_index is None:  # e.g. deleted while the browser was open
+            self.window.statusBar().showMessage(
+                f"{lens.part_number} is no longer on the bench", STATUS_MESSAGE_MS
+            )
             return
 
         choice = None

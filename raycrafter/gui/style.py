@@ -18,6 +18,7 @@ from raycrafter import palette
 
 PLOT_BOTTOM_GAP_PX = 5  # space between each plot's bottom axis label and its border
 PLOT_MIN_SIZE_PX = (280, 260)  # smallest size of each analysis plot
+CONTEXT_BAR_BOX_HEIGHT_PX = 24  # drop-downs in the context bar match its spin boxes
 
 # DOWN_ARROW_PATH and UP_ARROW_PATH are replaced at start-up by the paths of generated
 # images; see write_arrow_image.
@@ -45,6 +46,7 @@ QLineEdit { background: white; border: 1px solid #ced4da; border-radius: 4px; pa
 QLineEdit:focus { border: 1px solid #3b7dd8; }
 QTreeView { background: white; border: 1px solid #ced4da; border-radius: 4px; outline: 0; }
 QTreeView::item { padding: 2px 0px; }
+QTreeView#lensTree { font-size: 12px; }  /* the lens browser: 90% of the usual size */
 QTreeView::item:selected { background: #3b7dd8; color: white; }
 QHeaderView::section { background: #f8f9fa; color: #495057; border: none;
                        border-bottom: 1px solid #dee2e6; padding: 4px 6px; }
@@ -75,6 +77,15 @@ QToolBar QToolButton:checked { background: #cfd4da; }
 QToolBar#contextBar QToolButton { border: 1px solid #ced4da; background: #f8f9fa; padding: 0px; }
 QToolBar#contextBar QToolButton#signButton { font-size: 18px; min-width: 22px; max-width: 22px;
                                              min-height: 22px; max-height: 22px; }
+/* Show or hide positive (green) and negative (red) lenses: pressed means hidden, drawn faded. */
+QToolBar#contextBar QToolButton#positiveLensesButton,
+QToolBar#contextBar QToolButton#negativeLensesButton { font-size: 18px; font-weight: 600;
+    min-width: 22px; max-width: 22px; min-height: 22px; max-height: 22px; }
+QToolBar#contextBar QToolButton#positiveLensesButton { color: #2f9e44; }
+QToolBar#contextBar QToolButton#negativeLensesButton { color: #e03131; }
+QToolBar#contextBar QToolButton#positiveLensesButton:checked,
+QToolBar#contextBar QToolButton#negativeLensesButton:checked { color: #ced4da;
+    background: #f1f3f5; border-color: #dee2e6; }
 QToolBar#contextBar QToolButton#lockFocusButton { min-width: 40px; max-width: 40px;
                                                   min-height: 28px; max-height: 28px; }
 QToolBar#contextBar QToolButton#lockFocusButton:checked { background: #fff5f5;

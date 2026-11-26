@@ -1,6 +1,6 @@
 """Filtering and grouping catalogue lenses for the lens picker.
 
-This is the logic behind the GUI's "Add catalogue lens" dialog, kept free of Qt so it can be
+This is the logic behind the GUI's lens browser (the "Add catalogue lens" tool), kept free of Qt so it can be
 tested on its own and reused by other front ends. ``LensFilter`` decides which lenses are shown;
 ``group_for_tree`` arranges them as category -> clear diameter -> lenses. ``search_catalog`` is
 the simpler keyword-and-range search used by scripts and AI agents.
@@ -30,7 +30,7 @@ INCH_DIAMETER_LABELS = {0.25: '1/4"', 0.5: '1/2"', 1.0: '1"', 1.5: '1.5"', 2.0: 
 
 @dataclass
 class LensFilter:
-    """Which lenses the picker shows.
+    """Which lenses the lens browser shows.
 
     Attributes
     ----------
@@ -40,6 +40,9 @@ class LensFilter:
         Show only lenses whose |focal length| lies within this range (inclusive, mm).
         None means no limit. The magnitude is used so that one range serves both positive
         and negative lenses; the sign is chosen with ``hide_positive`` and ``hide_negative``.
+    diameter_range_mm : (float, float) or None
+        Show only lenses whose clear diameter lies within this range (inclusive, mm). None
+        means no limit.
     hide_positive, hide_negative : bool
         Leave out converging or diverging lenses.
     part_number_text : str
@@ -51,16 +54,20 @@ class LensFilter:
 
     coating: str | None = None
     focal_length_range_mm: tuple[float, float] | None = None
+    diameter_range_mm: tuple[float, float] | None = None
     hide_positive: bool = False
     hide_negative: bool = False
     part_number_text: str = ""
     wavelengths_nm: tuple[float, ...] | None = None
 
-    def matches_ignoring_focal_length(self, entry: CatalogEntry) -> bool:
-        """True if the lens passes every test except the focal length range.
+    def matches(
+        self, entry: CatalogEntry, check_focal_length: bool = True, check_diameter: bool = True
+    ) -> bool:
+        """True if the lens should be shown.
 
-        The picker sets its focal length slider's limits from the lenses that pass these
-        tests, so this is kept separate from ``matches``.
+        The browser sets each range slider's limits from the lenses that pass every other
+        test, so either range test can be left out with ``check_focal_length=False`` or
+        ``check_diameter=False``.
         """
         if self.coating is not None and entry.coating != self.coating:
             return False
@@ -70,16 +77,11 @@ class LensFilter:
             return False
         if not entry.is_negative and self.hide_positive:
             return False
-        return self.part_number_text.strip().upper() in entry.part_number.upper()
-
-    def matches(self, entry: CatalogEntry) -> bool:
-        """True if the lens should be shown."""
-        if not self.matches_ignoring_focal_length(entry):
+        if self.part_number_text.strip().upper() not in entry.part_number.upper():
             return False
-        if self.focal_length_range_mm is None:
-            return True
-        shortest, longest = self.focal_length_range_mm
-        return shortest <= abs(entry.focal_length) <= longest
+        if check_focal_length and not _within(abs(entry.focal_length), self.focal_length_range_mm):
+            return False
+        return not check_diameter or _within(entry.clear_diameter_mm, self.diameter_range_mm)
 
     def apply(self, entries: Iterable[CatalogEntry]) -> list[CatalogEntry]:
         """The entries that should be shown, in their original order."""
@@ -148,6 +150,11 @@ def search_catalog(
     return matches
 
 
+def _within(value: float, value_range: tuple[float, float] | None) -> bool:
+    """True if ``value`` lies in the inclusive range; every value lies in a range of None."""
+    return value_range is None or value_range[0] <= value <= value_range[1]
+
+
 def available_coatings(entries: Iterable[CatalogEntry]) -> list[str]:
     """The distinct coating names of the given lenses: UNCOATED first, then alphabetical."""
     coatings = {entry.coating for entry in entries}
@@ -162,8 +169,16 @@ def focal_length_span_mm(entries: Iterable[CatalogEntry]) -> tuple[float, float]
     return min(magnitudes), max(magnitudes)
 
 
+def diameter_span_mm(entries: Iterable[CatalogEntry]) -> tuple[float, float] | None:
+    """Smallest and largest clear diameter (mm) of the given lenses; None if there are none."""
+    diameters = [entry.clear_diameter_mm for entry in entries]
+    if not diameters:
+        return None
+    return min(diameters), max(diameters)
+
+
 def tree_order(entry: CatalogEntry) -> tuple:
-    """Sort key for the picker: positive lenses before negative, then shortest |f| first.
+    """Sort key for the lens browser: positive lenses before negative, then shortest |f| first.
 
     The part number breaks ties, so lenses that differ only in coating sit together.
     """

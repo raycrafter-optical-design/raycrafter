@@ -17,7 +17,7 @@ from raycrafter.gui import report_actions  # noqa: E402
 from raycrafter.gui.about_dialog import DOCS_URL, PROJECT_URL, AboutDialog  # noqa: E402
 from raycrafter.gui.analysis_panels import MtfPanel  # noqa: E402
 from raycrafter.gui.gap_optimiser import Choice  # noqa: E402
-from raycrafter.gui.lens_picker import ALL_COATINGS, SUITS_BEAMS, LensPickerDialog  # noqa: E402
+from raycrafter.gui.lens_browser import ALL_COATINGS, SUITS_BEAMS  # noqa: E402
 from raycrafter.gui.main_window import EDIT_MENU_TITLE, MainWindow  # noqa: E402
 from raycrafter.gui.range_slider import RangeSlider  # noqa: E402
 from raycrafter.gui.style import force_light_colour_scheme  # noqa: E402
@@ -147,40 +147,75 @@ def test_light_colour_scheme_is_forced(application):
     assert button_text_colour.lightness() < 128
 
 
-def test_lens_picker_filters_and_selects(application):
+def test_lens_browser_filters_and_selects(application):
     window = MainWindow()
-    picker = LensPickerDialog(window.model.catalog, parent=window)
-    assert picker.coating_combo.currentData() == SUITS_BEAMS  # the default
-    assert not picker.insert_button.isEnabled()  # nothing selected yet
+    browser = window.lens_browser
+    controls = browser.filter_controls
+    assert controls.coating_combo.currentData() == SUITS_BEAMS  # the default
+    assert browser.tree.columnCount() == 3  # no coating column: it is in the part number
 
-    picker.coating_combo.setCurrentIndex(picker.coating_combo.findText(ALL_COATINGS))
-    all_coatings_count = len(picker._lens_items())
-    picker.coating_combo.setCurrentIndex(picker.coating_combo.findText("Uncoated"))
-    assert 0 < len(picker._lens_items()) < all_coatings_count
-    picker.coating_combo.setCurrentIndex(picker.coating_combo.findText(ALL_COATINGS))
+    controls.coating_combo.setCurrentIndex(controls.coating_combo.findText(ALL_COATINGS))
+    all_coatings_count = len(browser._lens_items())
+    controls.coating_combo.setCurrentIndex(controls.coating_combo.findText("Uncoated"))
+    assert 0 < len(browser._lens_items()) < all_coatings_count
+    controls.coating_combo.setCurrentIndex(controls.coating_combo.findText(ALL_COATINGS))
 
-    picker.search_box.setText("act508-200")
-    assert {item.text(0) for item in picker._lens_items()} >= {"ACT508-200-A", "ACT508-200-B"}
-    assert picker.select_part_number("ACT508-200-A")
-    assert picker.selected_part_number() == "ACT508-200-A"
-    assert picker.insert_button.isEnabled()
+    browser.search_box.setText("act508-200")
+    assert {item.text(0) for item in browser._lens_items()} >= {"ACT508-200-A", "ACT508-200-B"}
+    assert browser.select_part_number("ACT508-200-A")
+    assert browser.selected_part_number() == "ACT508-200-A"
 
-    picker.hide_positive_checkbox.setChecked(True)  # the selected lens is filtered out
-    assert picker._lens_items() == []
-    assert not picker.insert_button.isEnabled()
+    controls.hide_positive_button.setChecked(True)  # pressed: positive lenses are hidden
+    assert browser._lens_items() == []
+    assert browser.selected_part_number() is None
     window.close()
 
 
-def test_lens_picker_focal_length_slider_narrows_the_list(application):
+def test_lens_browser_range_sliders_narrow_the_list(application):
     window = MainWindow()
-    picker = LensPickerDialog(window.model.catalog, parent=window)
-    shown_before = len(picker._lens_items())
-    picker.focal_length_slider.values_changed.emit(0, 500)  # the shorter half, on a log scale
-    shortest, longest = picker.lens_filter.focal_length_range_mm
-    assert longest < picker.slider_span_mm[1]
-    focal_lengths = [abs(float(item.text(1))) for item in picker._lens_items()]
+    browser = window.lens_browser
+    controls = browser.filter_controls
+    shown_before = len(browser._lens_items())
+    controls.focal_length_slider.values_changed.emit(0, 500)  # the shorter half, on a log scale
+    shortest, longest = browser.lens_filter.focal_length_range_mm
+    assert longest < browser.focal_length_range.span[1]
+    focal_lengths = [abs(float(item.text(1))) for item in browser._lens_items()]
     assert 0 < len(focal_lengths) < shown_before
     assert max(focal_lengths) <= longest
+    assert controls.focal_length_text.text().endswith(" mm")
+
+    # The diameter slider narrows the list further; its span follows the |f| range.
+    shown_before = len(browser._lens_items())
+    controls.diameter_slider.values_changed.emit(500, 1000)  # the wider lenses
+    narrowest, widest = browser.lens_filter.diameter_range_mm
+    assert narrowest > browser.diameter_range.span[0]
+    assert 0 < len(browser._lens_items()) < shown_before
+    window.close()
+
+
+def test_add_catalogue_lens_tool_places_the_lens_chosen_in_the_browser(application):
+    """#70: the browser takes the bottom-right corner; the chosen lens is placed, again and
+    again, until Escape brings back the plots."""
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    side_view, browser = window.side_view, window.lens_browser
+    window.tool_palette.tool_actions[Tool.ADD_CATALOGUE_LENS].trigger()
+    assert window.bottom_right.currentWidget() is browser
+    assert window.context_bar.pages.currentWidget() is browser.filter_controls
+    assert side_view.placement is None  # no lens chosen yet
+
+    browser.search_box.setText("LA1050")
+    assert browser.select_part_number(browser._lens_items()[0].text(0))
+    assert side_view.placement is not None
+    part_number = side_view.placement.lenses[0].part_number
+    side_view.on_scene_clicked(FakeClick(scene_point_on_axis(side_view, 30.0)))
+    assert side_view.placement is not None  # the tool stays on
+    assert [lens.part_number for lens in window.model.state.lenses].count(part_number) == 1
+
+    window.tools.escape()
+    assert window.bottom_right.currentWidget() is window.field_tabs
+    assert window.model.state.lenses[side_view.selected_index].part_number == part_number
     window.close()
 
 
@@ -1150,17 +1185,20 @@ def test_replacing_a_lens_from_the_lens_menu(application, monkeypatch):
     menu_texts = [action.text() for action in window.build_lens_menu(0).actions()]
     assert {"Replace with same f…", "Swap lens…", "Replace with paraxial"} <= set(menu_texts)
 
-    def choose_and_accept(picker):
-        shown = {item.text(0): item for item in picker._lens_items()}
-        focal_lengths = [float(item.text(1)) for item in shown.values()]
-        assert focal_lengths and all(180.0 <= f <= 220.0 for f in focal_lengths)
-        assert not any(part.endswith("-B") or part.endswith("-C") for part in shown)
-        assert all(item.isExpanded() for item in picker._group_items())  # just scroll to choose
-        assert picker.select_part_number("AC254-200-A")
-        return LensPickerDialog.DialogCode.Accepted
-
-    monkeypatch.setattr(LensPickerDialog, "exec", choose_and_accept)
+    browser = window.lens_browser
+    browser.search_box.setText("LA1")  # the user's own filters, put back afterwards
     lens_menu_action(window, 0, "Replace with same f…").trigger()
+    assert browser.replacing and window.bottom_right.currentWidget() is browser
+    shown = {item.text(0): item for item in browser._lens_items()}
+    focal_lengths = [float(item.text(1)) for item in shown.values()]
+    assert focal_lengths and all(180.0 <= f <= 220.0 for f in focal_lengths)
+    assert not any(part.endswith("-B") or part.endswith("-C") for part in shown)
+    assert all(item.isExpanded() for item in browser._group_items())  # just scroll to choose
+    assert window.side_view.placement is None  # choosing a lens makes no ghost here
+    assert browser.select_part_number("AC254-200-A")
+    browser.replace_button.click()
+    assert not browser.replacing and window.tool_palette.current_tool() == Tool.MOVE
+    assert browser.search_box.text() == "LA1"
     assert [lens.part_number for lens in window.model.state.lenses] == ["AC254-200-A"]
     assert len(window.side_view.lens_graphics) == 1
 
@@ -1174,18 +1212,21 @@ def test_replacing_one_lens_of_a_plossl_pair_asks_first(application, monkeypatch
     window = MainWindow()
     window.make_plossl(0)
 
-    def choose_and_accept(picker):
-        picker.coating_combo.setCurrentIndex(picker.coating_combo.findText(ALL_COATINGS))
-        assert picker.select_part_number("AC508-150-A")
-        return LensPickerDialog.DialogCode.Accepted
+    browser = window.lens_browser
+    coatings = browser.filter_controls.coating_combo
 
-    monkeypatch.setattr(LensPickerDialog, "exec", choose_and_accept)
+    def choose_and_replace():
+        window.replacer.replace_with_catalogue_lens(1, same_focal_length=False)
+        coatings.setCurrentIndex(coatings.findText(ALL_COATINGS))
+        assert browser.select_part_number("AC508-150-A")
+        browser.replace_button.click()
+
     monkeypatch.setattr(window.replacer, "ask_about_plossl_pair", lambda **_kwargs: None)
-    window.replacer.replace_with_catalogue_lens(1, same_focal_length=False)  # cancelled
+    choose_and_replace()  # cancelled
     assert [lens.part_number for lens in window.model.state.lenses] == ["ACT508-200-A"] * 2
 
     monkeypatch.setattr(window.replacer, "ask_about_plossl_pair", lambda **_kwargs: "both")
-    window.replacer.replace_with_catalogue_lens(1, same_focal_length=False)
+    choose_and_replace()
     assert [lens.part_number for lens in window.model.state.lenses] == ["AC508-150-A"] * 2
     assert window.model.in_plossl_pair(0)
     window.close()
@@ -1347,8 +1388,7 @@ def test_drop_downs_use_a_styled_list_rather_than_the_native_popup(application):
     window = MainWindow()
     window.open_field_editor()
     assert type(window.field_editor.light_kind_box.view()) is QListView
-    picker = LensPickerDialog(window.model.catalog, parent=window)
-    assert type(picker.coating_combo.view()) is QListView
+    assert type(window.lens_browser.filter_controls.coating_combo.view()) is QListView
 
 
 def test_the_3d_view_follows_the_bench_once_changes_settle(application):

@@ -9,9 +9,14 @@ Choosing a tool shows its settings in the context bar and starts it:
   context bar follows the pointer; each click places one. Changing them changes the ghost.
   These values for the next lens are kept apart from those of a selected lens.
 - Add user part: the same, for the part chosen in the context bar's drop-down.
-- Add catalogue lens: for now, opens the lens picker; the chosen lens is placed once, then
-  the palette goes back to Move. (The picker moves into the main window later, #70.)
+- Add catalogue lens: the lens browser takes the place of the bottom-right plots and its
+  filters fill the context bar (``raycrafter.gui.lens_browser``). The lens chosen in it
+  follows the pointer; each click places one.
 - Add field: for now, opens the field window and goes back to Move (#70).
+
+The lens menu's "Replace with same f…" and "Swap lens…" use the lens browser too
+(``start_replacement``): it shows the lenses that could take the place of one on the bench,
+with Replace and Cancel buttons.
 
 The add tools that place things stay active: after each placement a new ghost follows the
 pointer. Escape, a right click, V or choosing another tool ends them. Going back to Move
@@ -20,10 +25,10 @@ selects the lens just placed, so its settings can be changed at once.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from raycrafter.core.placement import PARAXIAL_SEMI_APERTURE_MM
-from raycrafter.gui.lens_picker import LensPickerDialog
 from raycrafter.gui.tool_palette import Tool
 
 if TYPE_CHECKING:
@@ -52,6 +57,10 @@ class ToolActions:
         self.restarting_placement = False
         # The focal length and diameter (mm) of the next paraxial lens to be placed.
         self.next_paraxial_mm = (DEFAULT_PARAXIAL_FOCAL_LENGTH_MM, DEFAULT_PARAXIAL_DIAMETER_MM)
+        # While the lens browser is choosing a replacement: the lens to replace, and what to
+        # do with the chosen part number (see start_replacement).
+        self.lens_to_replace: PlacedLens | None = None
+        self.replace_with: Callable[[PlacedLens, str], None] | None = None
 
         self.bar.set_paraxial_values_mm(*self.next_paraxial_mm)
         self.palette.tool_chosen.connect(self.choose_tool)
@@ -60,6 +69,10 @@ class ToolActions:
         self.bar.user_part_activated.connect(lambda _name: self.start_user_part_placement())
         window.side_view.placement_finished.connect(self.on_placement_finished)
         window.side_view.lens_selected.connect(self.on_lens_selected)
+        browser = window.lens_browser
+        browser.lens_selected.connect(self.on_catalogue_lens_chosen)
+        browser.replace_confirmed.connect(self.on_replacement_confirmed)
+        browser.replace_cancelled.connect(lambda: self.choose_tool(Tool.MOVE))
 
     @property
     def tool(self) -> Tool:
@@ -68,13 +81,19 @@ class ToolActions:
 
     def choose_tool(self, tool: Tool) -> None:
         """Make ``tool`` the active tool: show its settings and start it."""
-        side_view = self.window.side_view
+        window = self.window
+        side_view = window.side_view
         just_placed = side_view.last_placed_lenses
         side_view.last_placed_lenses = []
         self.palette.set_tool(tool)
         side_view.set_selected_lens(None)  # selecting is for the Move tool
+        self.lens_to_replace = self.replace_with = None
+        window.lens_browser.end_replacement()  # if one was going on, it is abandoned
         self.bar.show_page(tool)
         self._replace_placement(None)  # whatever was being placed belongs to the old tool
+        window.show_in_bottom_right(
+            window.lens_browser if tool == Tool.ADD_CATALOGUE_LENS else window.field_tabs
+        )
         if tool == Tool.MOVE and just_placed:
             self.select_lens(just_placed[0])
         if tool == Tool.ADD_PARAXIAL_LENS:
@@ -84,7 +103,10 @@ class ToolActions:
             self.bar.set_user_parts(self.user_part_labels())
             self.start_user_part_placement()
         elif tool == Tool.ADD_CATALOGUE_LENS:
-            self.open_lens_picker()
+            window.lens_browser.set_design_wavelengths(
+                [beam.wavelength_nm for beam in window.model.state.fields]
+            )
+            self.on_catalogue_lens_chosen(window.lens_browser.selected_part_number())
         elif tool == Tool.ADD_FIELD:
             self.window.open_field_editor()
             self.choose_tool(Tool.MOVE)
@@ -164,20 +186,44 @@ class ToolActions:
             return
         self._replace_placement(parts[name].lenses_at(0.0), name)
 
-    def open_lens_picker(self) -> None:
-        """Show the lens picker; after Insert, let the user place the chosen lens once."""
-        window = self.window
-        if window.lens_picker is None:
-            window.lens_picker = LensPickerDialog(window.model.catalog, parent=window)
-        window.lens_picker.set_design_wavelengths(
-            [beam.wavelength_nm for beam in window.model.state.fields]
-        )
-        accepted = window.lens_picker.exec() == LensPickerDialog.DialogCode.Accepted
-        part_number = window.lens_picker.selected_part_number() if accepted else None
-        if part_number is None:
-            self.choose_tool(Tool.MOVE)
+    def on_catalogue_lens_chosen(self, part_number: str | None) -> None:
+        """A lens was chosen in the browser: its ghost follows the pointer (None: no ghost)."""
+        if self.tool != Tool.ADD_CATALOGUE_LENS or self.window.lens_browser.replacing:
             return
-        self._replace_placement([window.model.make_lens(part_number)])
+        if part_number is None:
+            self._replace_placement(None)
+        else:
+            self._replace_placement([self.window.model.make_lens(part_number)])
+
+    # ------------------------------------------------------------------ replacing
+
+    def start_replacement(
+        self,
+        lens: PlacedLens,
+        focal_length_mm: float | None,
+        replace_with: Callable[[PlacedLens, str], None],
+    ) -> None:
+        """Let the user choose, in the lens browser, a catalogue lens to replace ``lens``.
+
+        With a focal length, only lenses of about that focal length are offered (see
+        ``LensBrowser.start_replacement``). Once the user presses Replace,
+        ``replace_with(lens, part_number)`` is called and the palette goes back to Move;
+        Cancel, Escape or another tool abandons the replacement.
+        """
+        self.choose_tool(Tool.ADD_CATALOGUE_LENS)
+        self._replace_placement(None)  # no ghost: the new lens goes where the old one is
+        self.window.lens_browser.start_replacement(lens.part_number, focal_length_mm)
+        self.lens_to_replace, self.replace_with = lens, replace_with
+        self.window.statusBar().showMessage(
+            f"Choose a lens to replace {lens.part_number}, then press Replace. Esc cancels."
+        )
+
+    def on_replacement_confirmed(self, part_number: str) -> None:
+        """Replace was pressed: go back to Move, then put the chosen lens in place."""
+        lens, replace_with = self.lens_to_replace, self.replace_with
+        self.choose_tool(Tool.MOVE)
+        if lens is not None and replace_with is not None:
+            replace_with(lens, part_number)
 
     def _replace_placement(self, new_lenses, assembly_name: str | None = None) -> None:
         """End any placement without ending the tool, then start placing ``new_lenses``."""
@@ -202,5 +248,5 @@ class ToolActions:
             self.start_paraxial_lens_placement()
         elif self.tool == Tool.ADD_USER_PART:
             self.start_user_part_placement()
-        else:
-            self.choose_tool(Tool.MOVE)  # a catalogue lens, placed once for now
+        elif self.tool == Tool.ADD_CATALOGUE_LENS:
+            self.on_catalogue_lens_chosen(self.window.lens_browser.selected_part_number())
