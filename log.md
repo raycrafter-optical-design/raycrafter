@@ -359,3 +359,18 @@ HTML report embeds it with a copy of three.js 0.160.0, so a design is shared as 
 that works offline (about 1.5 MB). A live web page was left for later (#68).
 **Why:** Rob's choices. VTK, installed with Optiland, would be fussier to embed in Qt. A
 hosted viewer needs a site, and a browser cannot recompute a design from its project file.
+
+## 2026-11-26: A Plossl pair is made from one lens, centred on its optical centre (#67)
+**Decision:** "Make Plossl" duplicates a positive lens. The pair is centred midway between the
+original's principal planes. Locked gaps keep their length, so the lenses joined by them move
+outwards, and a pair that would overlap anything is refused. Singlets have curved faces inside.
+**Why:** The issue asked for the pair about the optical centre; positive lenses only was Rob's
+choice. Refusing follows "Typed gaps are refused rather than adjusted". For achromats the pair
+reaches further forwards than back, which centring on the glass would avoid. Rob agreed.
+
+## 2026-11-26: Collimating "after the element" means the lens or assembly behind the gap (#66)
+**Decision:** The gap menu measures either the system's output or the light leaving the element
+behind the gap: the next lens, or all of its assembly. The core takes any lens behind the gap
+(`measure_after_lens_index`) and leaves later lenses out of the search, rims included.
+**Why:** An assembly is used as one unit. The issue expects other measurement points later,
+which the core already allows. Rob agreed.
