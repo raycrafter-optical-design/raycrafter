@@ -69,7 +69,7 @@ from raycrafter.gui.style import PLOT_BOTTOM_GAP_PX, join_with_gaps, scaled_font
 SIDE_PLOT_MIN_HEIGHT_PX = 240  # the side view is never squeezed below this height
 SIDE_PLOT_TOP_GAP_PX = 8  # space between the top edge and the top of the y axis
 SIDE_GRID_CELL_PX = 40  # grid cells are this many screen pixels on each side
-TIMING_EDGE_GAP_PX = 12  # timings sit this far from the top and right edges
+TIMING_EDGE_GAP_PX = 7  # timings sit this far from the top and right edges
 TIMING_FONT_SCALE = 2 / 3  # timing text is this fraction of the default axis number size
 TICK_FONT_SCALE = 0.9  # the axis numbers are a little smaller than the default
 LENS_NAME_GAP_PX = 3  # gap between the top of a lens and its name tag
