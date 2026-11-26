@@ -14,7 +14,8 @@ Choosing a tool shows its settings in the context bar and starts it:
 - Add field: for now, opens the field window and goes back to Move (#70).
 
 The add tools that place things stay active: after each placement a new ghost follows the
-pointer. Escape, a right click, V or choosing another tool ends them.
+pointer. Escape, a right click, V or choosing another tool ends them. Going back to Move
+selects the lens just placed, so its settings can be changed at once.
 """
 
 from __future__ import annotations
@@ -67,10 +68,15 @@ class ToolActions:
 
     def choose_tool(self, tool: Tool) -> None:
         """Make ``tool`` the active tool: show its settings and start it."""
+        side_view = self.window.side_view
+        just_placed = side_view.last_placed_lenses
+        side_view.last_placed_lenses = []
         self.palette.set_tool(tool)
-        self.window.side_view.set_selected_lens(None)  # selecting is for the Move tool
+        side_view.set_selected_lens(None)  # selecting is for the Move tool
         self.bar.show_page(tool)
         self._replace_placement(None)  # whatever was being placed belongs to the old tool
+        if tool == Tool.MOVE and just_placed:
+            self.select_lens(just_placed[0])
         if tool == Tool.ADD_PARAXIAL_LENS:
             self.bar.set_paraxial_values_mm(*self.next_paraxial_mm)
             self.start_paraxial_lens_placement()
@@ -82,6 +88,12 @@ class ToolActions:
         elif tool == Tool.ADD_FIELD:
             self.window.open_field_editor()
             self.choose_tool(Tool.MOVE)
+
+    def select_lens(self, lens: PlacedLens) -> None:
+        """Select a lens on the bench (if it is still there), as a click on it would."""
+        lenses = self.window.model.state.lenses
+        index = next((index for index, other in enumerate(lenses) if other is lens), None)
+        self.window.side_view.set_selected_lens(index)
 
     def escape(self) -> None:
         """Escape: end the active tool and go back to Move."""

@@ -66,6 +66,8 @@ QToolBar#toolPalette { background: #e9ecef; border: none; border-right: 1px soli
 QToolBar QLabel { font-size: 11px; color: #495057; }
 QToolBar QLabel#italicF { font-family: 'Times New Roman'; font-style: italic; font-size: 18px;
                           color: #343a40; }
+QToolBar QLabel#documentTitle { font-size: 12px; font-weight: 600; color: #868e96;
+                                padding: 0px 8px; }
 QToolBar QLabel#diameterSign { font-size: 15px; color: #343a40; }
 QToolBar QToolButton { border: none; border-radius: 5px; padding: 3px; color: #343a40; }
 QToolBar QToolButton:hover { background: #dee2e6; }

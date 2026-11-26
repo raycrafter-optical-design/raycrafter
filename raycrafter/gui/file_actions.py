@@ -296,6 +296,9 @@ class FileActions:
         # on macOS).
         self.window.setWindowTitle(f"{name}[*] - RayCrafter")
         self.window.setWindowModified(self.model.has_unsaved_changes())
+        # On macOS the system's title is hidden (it would cover the context bar), so the bar
+        # shows the name instead.
+        self.window.context_bar.set_document_title(name, self.model.has_unsaved_changes())
         if self.save_without_import_action is not None:
             self.save_without_import_action.setEnabled(self.model.state.imported_from is not None)
 

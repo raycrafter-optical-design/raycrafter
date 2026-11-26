@@ -131,6 +131,7 @@ class SideView(pg.PlotWidget):
         )
 
         self.placement: Placement | None = None  # set while new lenses follow the pointer
+        self.last_placed_lenses: list[PlacedLens] = []  # put on the bench by the last click
         self.gap_editor: GapEditor | None = None  # set while a gap is being typed
 
         # The (min, max) of each axis, in mm; changed only by fit_to_design.
@@ -760,6 +761,7 @@ class SideView(pg.PlotWidget):
         if not (placement.fits and placement.is_visible()):
             return
         self._end_placement(placement)
+        self.last_placed_lenses = placement.lenses
         self.model.insert_lenses(
             placement.lenses, max_image_z=self.image_max_z(), assembly_name=placement.assembly_name
         )

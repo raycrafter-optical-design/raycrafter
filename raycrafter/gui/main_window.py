@@ -55,7 +55,14 @@ from typing import TYPE_CHECKING
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QPoint, Qt, QTimer, QUrl
-from PyQt6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence, QShortcut
+from PyQt6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QDesktopServices,
+    QKeySequence,
+    QShortcut,
+    QShowEvent,
+)
 from PyQt6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -93,7 +100,7 @@ from raycrafter.gui.analysis_panels import (
     make_tabs,
 )
 from raycrafter.gui.bench_viewer import BenchViewer
-from raycrafter.gui.context_bar import ContextBar, put_in_title_bar
+from raycrafter.gui.context_bar import ContextBar, hide_title_text, put_in_title_bar
 from raycrafter.gui.field_editor import FieldEditor
 from raycrafter.gui.file_actions import FileActions
 from raycrafter.gui.gap_optimiser import GapOptimiser
@@ -144,6 +151,7 @@ class MainWindow(QMainWindow):
         self.undo_merge_key: Hashable | None = None
         self.next_redraw_is_undo_step = True
         self.next_redraw_counts_as_saved = False  # see show_replaced_design
+        self.title_text_hidden = False  # see showEvent
         self.files = FileActions(self)  # the File menu
         self.replacer = LensReplacer(self)  # the lens menu's replace actions
         self.gap_optimiser = GapOptimiser(self)  # the gap menu's optimise actions
@@ -652,6 +660,13 @@ class MainWindow(QMainWindow):
     def show_about(self) -> None:
         """RayCrafter > About: the icon, name, version and project link."""
         AboutDialog(self).exec()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """On the first show, hide macOS's window title, which would cover the context bar."""
+        super().showEvent(event)
+        if not self.title_text_hidden:
+            hide_title_text(self)
+            self.title_text_hidden = True
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Closing the window (or Quit) asks first if there are unsaved changes."""

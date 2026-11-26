@@ -6,14 +6,19 @@ Whatever the tool, the focus-lock button sits at the far right, after a separato
 
 On macOS the bar is drawn in the window's title bar, as Affinity Photo does
 (``put_in_title_bar``); a press on an empty part of it moves the window, as the title bar
-would. The bar keeps clear of the window buttons (red, yellow, green) at its left end.
+would. The bar keeps clear of the window buttons (red, yellow, green) at its left end. macOS
+would draw the window title over the bar's controls, so the title is hidden there
+(``hide_title_text``) and the bar shows the document's name itself, left of the focus lock.
 """
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import sys
 
 from PyQt6.QtCore import QEvent, QObject, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -49,6 +54,45 @@ NO_USER_PARTS = "No user parts saved yet"
 # title bar. PyQt6 has no name for it yet: it reuses the bit of the obsolete
 # MaximizeUsingFullscreenGeometryHint, so that name is used for it here.
 EXPANDED_CLIENT_AREA_HINT = Qt.WindowType.MaximizeUsingFullscreenGeometryHint
+
+
+NS_WINDOW_TITLE_HIDDEN = 1  # NSWindowTitleVisibility.hidden
+
+
+def hide_title_text(window: QMainWindow) -> None:
+    """On macOS, stop the system drawing the window title (it would cover the bar's controls).
+
+    The title itself is kept, for the Dock, the Window menu and Mission Control. Qt has no
+    setting for this, so the native window's ``titleVisibility`` is set through the
+    Objective-C runtime. Call once the native window exists (e.g. on the first show).
+    """
+    # Only on the native macOS platform: elsewhere (e.g. the off-screen platform the tests
+    # use) winId() is not an NSView, and sending it a message would crash.
+    if QGuiApplication.platformName() != "cocoa":
+        return
+    objc_library_path = ctypes.util.find_library("objc")
+    if objc_library_path is None:
+        return
+    objc = ctypes.cdll.LoadLibrary(objc_library_path)
+    objc.sel_registerName.restype = ctypes.c_void_p
+    objc.sel_registerName.argtypes = [ctypes.c_char_p]
+    # objc_msgSend is called through prototypes of the exact argument types each message
+    # takes: on Apple silicon a call with the wrong prototype passes its arguments wrongly.
+    message_send_address = ctypes.cast(objc.objc_msgSend, ctypes.c_void_p).value
+    if message_send_address is None:
+        return
+    send_no_argument = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(
+        message_send_address
+    )
+    send_integer = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long)(
+        message_send_address
+    )
+    native_view = int(window.winId())  # on macOS, the window's NSView
+    native_window = send_no_argument(native_view, objc.sel_registerName(b"window"))
+    if native_window:
+        send_integer(
+            native_window, objc.sel_registerName(b"setTitleVisibility:"), NS_WINDOW_TITLE_HIDDEN
+        )
 
 
 def put_in_title_bar(window: QMainWindow) -> None:
@@ -142,6 +186,12 @@ class ContextBar(QToolBar):
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         spacer.installEventFilter(self.dragger)
         self.addWidget(spacer)
+
+        # The document's name (see set_document_title); on macOS the window title is hidden.
+        self.document_title = QLabel()
+        self.document_title.setObjectName("documentTitle")
+        self.document_title.installEventFilter(self.dragger)  # it is part of the title bar
+        self.addWidget(self.document_title)
         self.addSeparator()
 
         self.lock_focus_button = QToolButton()
@@ -264,6 +314,10 @@ class ContextBar(QToolBar):
     def chosen_user_part(self) -> str | None:
         """The name of the user part shown in the drop-down, or None if there are none."""
         return self.user_part_box.currentData()
+
+    def set_document_title(self, title: str, modified: bool) -> None:
+        """Show the document's name, with " (edited)" while it has unsaved changes."""
+        self.document_title.setText(f"{title} (edited)" if modified else title)
 
     def _show_lock_state(self, locked: bool) -> None:
         """A closed red padlock while focus is locked, an open grey one otherwise."""

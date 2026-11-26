@@ -287,8 +287,14 @@ def test_add_tools_stay_on_until_escape_or_another_tool(application):
     assert side_view.placement.lenses[0].paraxial_focal_length_mm == -50.0
     assert palette.current_tool() == Tool.ADD_PARAXIAL_LENS
 
+    # Escape goes back to Move with the lens just placed selected, ready to be adjusted.
     tools.escape()
     assert palette.current_tool() == Tool.MOVE and side_view.placement is None
+    last_placed = side_view.selected_index
+    assert window.model.state.lenses[last_placed].z == pytest.approx(400.0, abs=1.0)
+    bar = window.context_bar
+    assert bar.pages.currentWidget() is bar.paraxial_page.parentWidget()
+    assert bar.paraxial_values_mm() == (100.0, pytest.approx(50.8))
 
     # A right click (a cancelled placement) ends the tool too; V chooses Move.
     palette.tool_actions[Tool.ADD_PARAXIAL_LENS].trigger()
@@ -600,6 +606,7 @@ def test_file_menu_new_save_open_import_and_export(
     ]  # fmt: skip
     assert not window.model.has_unsaved_changes()  # the start-up bench counts as saved
     assert window.windowTitle() == "Untitled[*] - RayCrafter"
+    assert window.context_bar.document_title.text().startswith("Untitled")
 
     # Save with no project file yet asks where, adds the extension and marks the design saved.
     window.model.add_lens("AC254-050-A")
