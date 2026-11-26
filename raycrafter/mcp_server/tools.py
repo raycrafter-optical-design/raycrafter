@@ -634,7 +634,12 @@ class DesignTools:
         return self.get_design()
 
     def optimise_gap(
-        self, lens_index: int, goal: str, apply: bool = True, lock: bool = False
+        self,
+        lens_index: int,
+        goal: str,
+        apply: bool = True,
+        lock: bool = False,
+        flip_if_better: bool = False,
     ) -> dict:
         """Find (and by default set) the gap behind a lens that best meets a goal.
 
@@ -647,12 +652,18 @@ class DesignTools:
         and merit before and after, and ``at_bound`` (true if the best gap is at an end of
         the allowed range, so there may be no real solution). With ``apply`` false the bench
         is not changed; with ``lock`` true the gap is locked afterwards.
+
+        Each lens next to the gap is also tried turned round (a lens the wrong way round
+        cannot be fixed by spacing). If that is clearly better, ``flip_lens_index``,
+        ``flipped_gap_mm`` and ``flipped_merit`` say so; with ``flip_if_better`` true that
+        lens is then flipped and its gap applied. Lenses are never flipped otherwise.
         """
         if lens_index != SOURCE_GAP_INDEX:
             self._check_lens_index(lens_index)
         result = self.model.optimise_gap(lens_index, goal)
         if apply:
-            self.model.apply_gap_optimisation(result, lock=bool(lock))
+            flip = bool(flip_if_better) and result.flip_lens_index is not None
+            self.model.apply_gap_optimisation(result, lock=bool(lock), flip=flip)
         optimisation = {
             name: _number(value) if isinstance(value, float) else value
             for name, value in asdict(result).items()

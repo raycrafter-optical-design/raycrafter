@@ -2,12 +2,15 @@
 
 Each one finds the best length for the gap with ``raycrafter.core.gap_optimisation``, then
 shows the gap and the merit before and after. The user can apply it, and lock the gap
-(ticked by default, as the usual next step is to keep the gap that was found). Applying is
-one undo step. Nothing is calculated until the user asks, and never during a drag.
+(ticked by default, as the usual next step is to keep the gap that was found). If turning
+a lens next to the gap round does clearly better (#56), the dialog says so and offers
+"Flip and apply"; a lens is never flipped without that. Applying is one undo step. Nothing
+is calculated until the user asks, and never during a drag.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
@@ -25,6 +28,14 @@ MERIT_NAMES = {
     COLLIMATE: "RMS angle of the output rays",
     FOCUS: "RMS spot radius on the image plane",
 }
+
+
+@dataclass(frozen=True)
+class Choice:
+    """What the user chose in the result dialog: whether to flip the suggested lens and lock."""
+
+    flip: bool
+    lock: bool
 
 
 class GapOptimiser:
@@ -76,30 +87,33 @@ class GapOptimiser:
         finally:
             QApplication.restoreOverrideCursor()
 
-        lock = self.ask_to_apply(result)
-        if lock is None:
+        choice = self.ask_to_apply(result)
+        if choice is None:
             return
-        self.window.model.apply_gap_optimisation(result, lock=lock)
+        self.window.model.apply_gap_optimisation(result, lock=choice.lock, flip=choice.flip)
+        gap_mm = result.flipped_gap_mm if choice.flip else result.gap_after_mm
         self.window.request_update()
-        self.window.statusBar().showMessage(
-            f"Gap set to {result.gap_after_mm:.3f} mm", STATUS_MESSAGE_MS
-        )
+        self.window.statusBar().showMessage(f"Gap set to {gap_mm:.3f} mm", STATUS_MESSAGE_MS)
 
-    def ask_to_apply(self, result: GapOptimisation) -> bool | None:
-        """Show the result; return whether to lock the gap, or None if not to apply it."""
+    def ask_to_apply(self, result: GapOptimisation) -> Choice | None:
+        """Show the result and ask what to do; None if the user cancels."""
         box = QMessageBox(self.window)
         box.setWindowTitle("Collimate output" if result.goal == COLLIMATE else "Focus")
         box.setText(self.describe(result))
         lock_box = QCheckBox("Lock the gap")
         lock_box.setChecked(True)
         box.setCheckBox(lock_box)
+        flip_button = None
+        if result.flip_lens_index is not None:
+            flip_button = box.addButton("Flip and apply", QMessageBox.ButtonRole.AcceptRole)
         apply_button = box.addButton("Apply", QMessageBox.ButtonRole.AcceptRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(apply_button)
+        box.setDefaultButton(flip_button or apply_button)
         box.exec()
-        if box.clickedButton() is not apply_button:
+        clicked = box.clickedButton()
+        if clicked is None or clicked not in (flip_button, apply_button):
             return None
-        return lock_box.isChecked()
+        return Choice(flip=clicked is flip_button, lock=lock_box.isChecked())
 
     def describe(self, result: GapOptimisation) -> str:
         """The result in words: which gap, the gap and merit before and after, any warning."""
@@ -119,6 +133,14 @@ class GapOptimiser:
             f"Rays of the selected field that get through: {result.rays_through_after} of "
             f"{result.rays_launched}",
         ]
+        if result.flip_lens_index is not None and result.flipped_merit is not None:
+            flipped_part = lenses[result.flip_lens_index].part_number
+            lines += [
+                "",
+                f"{flipped_part} turned round does clearly better: gap "
+                f"{result.flipped_gap_mm:.3f} mm, {MERIT_NAMES[result.goal].lower()} "
+                f"{format_merit(result.flipped_merit)} {unit}.",
+            ]
         if result.at_bound:
             lines += [
                 "",

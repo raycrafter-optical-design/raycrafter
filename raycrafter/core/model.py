@@ -432,10 +432,25 @@ class OpticalModel:
         return gap_optimisation.optimise_gap(self.state, lens_index, goal, smallest_source_gap_mm)
 
     def apply_gap_optimisation(
-        self, result: gap_optimisation.GapOptimisation, lock: bool = False
+        self, result: gap_optimisation.GapOptimisation, lock: bool = False, flip: bool = False
     ) -> None:
-        """Set the gap ``optimise_gap`` found and, if ``lock``, lock it."""
-        gap_optimisation.apply_gap(self.state, result.lens_index, result.goal, result.gap_after_mm)
+        """Set the gap ``optimise_gap`` found and, if ``lock``, lock it.
+
+        With ``flip``, first turn round the lens the result suggests flipping, and set the
+        gap found for that orientation instead.
+
+        Raises
+        ------
+        ValueError
+            If ``flip`` is True but the result suggests no flip.
+        """
+        gap_mm = result.gap_after_mm
+        if flip:
+            if result.flip_lens_index is None or result.flipped_gap_mm is None:
+                raise ValueError("Flipping a lens would not do clearly better here")
+            self.flip_lens(result.flip_lens_index)
+            gap_mm = result.flipped_gap_mm
+        gap_optimisation.apply_gap(self.state, result.lens_index, result.goal, gap_mm)
         if lock:
             if result.lens_index == gaps.SOURCE_GAP_INDEX:
                 self.set_source_gap_locked(True)

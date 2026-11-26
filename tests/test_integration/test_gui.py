@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
 
 from raycrafter.gui.about_dialog import DOCS_URL, PROJECT_URL, AboutDialog  # noqa: E402
 from raycrafter.gui.analysis_panels import MtfPanel  # noqa: E402
+from raycrafter.gui.gap_optimiser import Choice  # noqa: E402
 from raycrafter.gui.lens_picker import ALL_COATINGS, SUITS_BEAMS, LensPickerDialog  # noqa: E402
 from raycrafter.gui.main_window import EDIT_MENU_TITLE, MainWindow  # noqa: E402
 from raycrafter.gui.range_slider import RangeSlider  # noqa: E402
@@ -1099,10 +1100,39 @@ def test_collimating_from_the_gap_menu(application, monkeypatch):
     monkeypatch.setattr(
         window.gap_optimiser,
         "ask_to_apply",
-        lambda result: shown.append(window.gap_optimiser.describe(result)) or True,
+        lambda result: (
+            shown.append(window.gap_optimiser.describe(result)) or Choice(flip=False, lock=True)
+        ),
     )
     window.gap_optimiser.optimise(0, "collimate")
     assert model.air_gaps()[0].width_mm == pytest.approx(150.0, abs=1e-3)
     assert model.air_gaps()[0].locked
     assert "80.000 mm  →  150.000 mm" in shown[0]
+    window.close()
+
+
+def test_the_gap_dialog_suggests_flipping_a_lens(application, monkeypatch):
+    """Issue #56: AC254-050-A the wrong way round is reported, and flipped only on request."""
+    window = MainWindow()
+    model = window.model
+    model.delete_lens(0)
+    for part_number, front_z in (("AC254-100-A", 100.0), ("AC254-050-A", 220.0)):
+        model.insert_lens(model.make_lens(part_number, front_z))
+    model.state.selected_field.diameter_mm = 20.0
+    model.state.image_z = 500.0
+    window.show_new_design()
+
+    shown = []
+    monkeypatch.setattr(
+        window.gap_optimiser,
+        "ask_to_apply",
+        lambda result: (
+            shown.append(window.gap_optimiser.describe(result)) or Choice(flip=True, lock=False)
+        ),
+    )
+    window.gap_optimiser.optimise(0, "collimate")
+    assert "AC254-050-A turned round does clearly better" in shown[0]
+    assert model.state.lenses[1].flipped
+    assert model.air_gaps()[0].width_mm == pytest.approx(140.35, abs=0.02)
+    assert not model.air_gaps()[0].locked
     window.close()

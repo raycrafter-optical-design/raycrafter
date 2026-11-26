@@ -150,7 +150,12 @@ class GapMethods:
         self._call("set_source_z", source_z_mm=float(source_z_mm))
 
     def optimise_gap(
-        self, lens_index: int, goal: str = "collimate", apply: bool = True, lock: bool = False
+        self,
+        lens_index: int,
+        goal: str = "collimate",
+        apply: bool = True,
+        lock: bool = False,
+        flip_if_better: bool = False,
     ) -> GapOptimisation:
         """Find, and by default set, the gap behind a lens that best meets a goal.
 
@@ -172,6 +177,10 @@ class GapMethods:
             If False, only report the best gap; the bench is not changed.
         lock : bool
             If True, lock the gap once it is set.
+        flip_if_better : bool
+            Each lens next to the gap is also tried turned round. If that is clearly better,
+            the result's ``flip_lens_index`` names the lens; with this True, it is flipped
+            and its own best gap set. Lenses are never flipped otherwise.
 
         Returns
         -------
@@ -193,6 +202,7 @@ class GapMethods:
             goal=goal,
             apply=bool(apply),
             lock=bool(lock),
+            flip_if_better=bool(flip_if_better),
         )["optimisation"]
         # JSON has no NaN, so a merit with no light came back as None.
         for name in ("merit_before", "merit_after"):

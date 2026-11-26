@@ -143,3 +143,63 @@ def test_agents_can_ask_without_applying(catalog):
     result = tools.optimise_gap(0, "collimate", lock=True)
     assert result["lenses"][0]["gap_after_mm"] == pytest.approx(150.0, abs=1e-3)
     assert result["lenses"][0]["gap_after_locked"]
+
+
+# ------------------------------------------------------------------ suggesting a flip (#56)
+
+
+def doublet_pair(catalog, flip_second: bool = False) -> OpticalModel:
+    """AC254-100-A then AC254-050-A with a 20 mm beam: the example in issue #56."""
+    model = make_bench(
+        catalog, [("AC254-100-A", 100.0), ("AC254-050-A", 220.0)], beam_diameter_mm=20.0
+    )
+    if flip_second:
+        model.flip_lens(1)
+    return model
+
+
+def test_flipping_the_second_doublet_is_suggested(catalog):
+    """In catalogue orientation the residual is about 600 µrad; flipped, about 85 µrad."""
+    model = doublet_pair(catalog)
+    result = model.optimise_gap(0, COLLIMATE)
+    assert result.merit_after == pytest.approx(601, abs=5)
+    assert result.flip_lens_index == 1
+    assert result.flipped_merit == pytest.approx(85, abs=2)
+    assert result.flipped_gap_mm == pytest.approx(140.35, abs=0.02)
+    assert not model.state.lenses[1].flipped  # suggested, not done
+
+
+def test_no_flip_is_suggested_once_the_lens_is_the_right_way_round(catalog):
+    result = doublet_pair(catalog, flip_second=True).optimise_gap(0, COLLIMATE)
+    assert result.flip_lens_index is None and result.flipped_merit is None
+
+
+def test_paraxial_lenses_are_never_suggested_for_flipping(catalog):
+    model = make_bench(catalog, [(100.0, 100.0), (50.0, 180.0)])
+    assert model.optimise_gap(0, COLLIMATE).flip_lens_index is None
+
+
+def test_applying_the_suggested_flip(catalog):
+    model = doublet_pair(catalog)
+    result = model.optimise_gap(0, COLLIMATE)
+    model.apply_gap_optimisation(result, flip=True)
+    assert model.state.lenses[1].flipped
+    assert model.air_gaps()[0].width_mm == pytest.approx(result.flipped_gap_mm)
+
+
+def test_a_flip_that_was_not_suggested_is_refused(catalog):
+    model = doublet_pair(catalog, flip_second=True)
+    with pytest.raises(ValueError, match="would not do clearly better"):
+        model.apply_gap_optimisation(model.optimise_gap(0, COLLIMATE), flip=True)
+
+
+def test_agents_flip_only_when_they_ask(catalog):
+    tools = DesignTools(doublet_pair(catalog))
+    result = tools.optimise_gap(0, "collimate")
+    assert result["optimisation"]["flip_lens_index"] == 1
+    assert not result["lenses"][1]["flipped"]
+
+    tools = DesignTools(doublet_pair(catalog))
+    result = tools.optimise_gap(0, "collimate", flip_if_better=True)
+    assert result["lenses"][1]["flipped"]
+    assert result["lenses"][0]["gap_after_mm"] == pytest.approx(140.35, abs=0.02)

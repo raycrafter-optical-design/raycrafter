@@ -54,6 +54,11 @@ COARSE_STEPS = 41  # trial gaps in the first scan across the allowed range
 GAP_TOLERANCE_MM = 1e-3  # the refined gap is found to about this precision
 AT_BOUND_TOLERANCE_MM = 0.01  # a best gap this close to a limit counts as at that limit
 
+# Flipping a lens next to the gap is suggested (#56) only if it is clearly better: the merit
+# at most this fraction of the unflipped one, and better by at least this much.
+FLIP_BETTER_FRACTION = 0.5
+FLIP_MINIMUM_GAIN = {COLLIMATE: 5.0, FOCUS: 1.0}  # µrad, µm
+
 
 @dataclass(frozen=True)
 class GapOptimisation:
@@ -81,6 +86,11 @@ class GapOptimisation:
         How many rays of the selected field were traced.
     rays_through_before, rays_through_after : int
         How many of them got through at each gap.
+    flip_lens_index : int or None
+        A lens next to the gap that does clearly better turned round (#56), or None. A lens
+        the wrong way round cannot be fixed by spacing.
+    flipped_gap_mm, flipped_merit : float or None
+        The best gap and its merit with that lens flipped; None if there is no suggestion.
     """
 
     lens_index: int
@@ -96,13 +106,9 @@ class GapOptimisation:
     rays_launched: int
     rays_through_before: int
     rays_through_after: int
-
-    @property
-    def improvement_factor(self) -> float:
-        """How many times better the merit is after (inf if it is now zero)."""
-        if self.merit_after == 0.0:
-            return math.inf
-        return self.merit_before / self.merit_after
+    flip_lens_index: int | None = None
+    flipped_gap_mm: float | None = None
+    flipped_merit: float | None = None
 
 
 def current_gap_mm(state: OpticalState, lens_index: int) -> float:
@@ -245,7 +251,11 @@ class _GapTrials:
 
 
 def optimise_gap(
-    state: OpticalState, lens_index: int, goal: str, smallest_source_gap_mm: float = 0.0
+    state: OpticalState,
+    lens_index: int,
+    goal: str,
+    smallest_source_gap_mm: float = 0.0,
+    consider_flips: bool = True,
 ) -> GapOptimisation:
     """Find the gap behind ``lens_index`` that best meets the goal, without changing the bench.
 
@@ -260,6 +270,9 @@ def optimise_gap(
         COLLIMATE or FOCUS (see the module docstring).
     smallest_source_gap_mm : float
         For the gap from the source plane: the shortest it may be.
+    consider_flips : bool
+        If True, also optimise with each lens next to the gap turned round, and suggest
+        the flip in the result if it is clearly better (``suggest_flip``).
 
     Returns
     -------
@@ -313,7 +326,7 @@ def optimise_gap(
             best_gap_mm, best_merit = float(refined.x), float(refined.fun)
 
     at_bound = min(best_gap_mm - shortest_mm, longest_mm - best_gap_mm) < AT_BOUND_TOLERANCE_MM
-    return GapOptimisation(
+    result = GapOptimisation(
         lens_index=lens_index,
         goal=goal,
         gap_before_mm=gap_before_mm,
@@ -327,4 +340,71 @@ def optimise_gap(
         rays_launched=trials.rays_launched,
         rays_through_before=through_before,
         rays_through_after=most_through,
+    )
+    if consider_flips:
+        result = suggest_flip(state, result, smallest_source_gap_mm)
+    return result
+
+
+def flippable_neighbours(state: OpticalState, lens_index: int) -> list[int]:
+    """The lenses next to the gap that can be turned round on their own.
+
+    Paraxial lenses are the same both ways round, and a lens in an assembly can only be
+    flipped with the whole assembly, so neither is included.
+    """
+    if lens_index == gaps.SOURCE_GAP_INDEX:
+        neighbours = [0]
+    else:
+        neighbours = [lens_index, lens_index + 1]
+    return [
+        index
+        for index in neighbours
+        if not state.lenses[index].is_paraxial and state.lenses[index].assembly_id is None
+    ]
+
+
+def suggest_flip(
+    state: OpticalState, result: GapOptimisation, smallest_source_gap_mm: float = 0.0
+) -> GapOptimisation:
+    """Optimise again with each lens next to the gap flipped; add a suggestion if clearly better.
+
+    A flip is suggested if, at its own best gap, its merit is at most FLIP_BETTER_FRACTION
+    of ``result.merit_after`` and better by at least FLIP_MINIMUM_GAIN, with as many rays
+    getting through. Of two such flips, the better one is suggested. The bench is not changed.
+
+    Returns
+    -------
+    GapOptimisation
+        ``result``, with ``flip_lens_index``, ``flipped_gap_mm`` and ``flipped_merit`` set
+        if a flip is suggested.
+    """
+    best: GapOptimisation | None = None
+    best_index = None
+    for index in flippable_neighbours(state, result.lens_index):
+        flipped = copy.deepcopy(replace(state, imported_from=None))
+        flipped.lenses[index].flipped = not flipped.lenses[index].flipped
+        try:
+            trial = optimise_gap(
+                flipped, result.lens_index, result.goal, smallest_source_gap_mm, False
+            )
+        except ValueError:
+            continue  # e.g. no light gets through this way round
+        if trial.rays_through_after < result.rays_through_after:
+            continue
+        if best is None or trial.merit_after < best.merit_after:
+            best, best_index = trial, index
+
+    if best is None:
+        return result
+    clearly_better = (
+        best.merit_after <= FLIP_BETTER_FRACTION * result.merit_after
+        and result.merit_after - best.merit_after >= FLIP_MINIMUM_GAIN[result.goal]
+    )
+    if not clearly_better:
+        return result
+    return replace(
+        result,
+        flip_lens_index=best_index,
+        flipped_gap_mm=best.gap_after_mm,
+        flipped_merit=best.merit_after,
     )
