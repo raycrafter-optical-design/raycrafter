@@ -9,10 +9,11 @@
   green line to move the image plane (not while "Lock focus" is on). Click one of the gap
   dimensions below the lenses to type that distance.
 - Right-click a lens for Flip (F), Delete (Del or Backspace) and Make / Split Plossl.
-- The RayCrafter menu has About and Quit; the File menu has New, Load ZMX and Save ZMX.
-  New, Load and Quit ask first if the design has changed since it was last saved or loaded.
-- The Edit menu has Undo and Redo. One action (a whole drag, a typed value) is one step; New
-  and Load clear the history.
+- The RayCrafter menu has About and Quit. The File menu (``raycrafter.gui.file_actions``) has
+  New, Open, Save, Save As, Import ZMX and Export ZMX; New, Open, Import and Quit ask first
+  if the design has changed since it was last saved, opened or imported.
+- The Edit menu has Undo and Redo. One action (a whole drag, a typed value) is one step; New,
+  Open and Import clear the history.
 - "Add field" opens the field window (``raycrafter.gui.field_editor``), where beams are
   added, removed and edited while the bench updates live.
 
@@ -39,7 +40,6 @@ from PyQt6.QtCore import QPoint, Qt, QTimer, QUrl
 from PyQt6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -60,7 +60,6 @@ from raycrafter.core.gaps import MIN_IMAGE_GAP_MM
 from raycrafter.core.model import OpticalModel
 from raycrafter.core.plot_geometry import f_number_text, rms_radius_text
 from raycrafter.core.state import PlacedLens
-from raycrafter.core.zmx_import import ZmxImportError
 from raycrafter.gui.about_dialog import DOCS_URL, AboutDialog
 from raycrafter.gui.analysis_panels import (
     FieldCurvaturePanel,
@@ -72,6 +71,7 @@ from raycrafter.gui.analysis_panels import (
 )
 from raycrafter.gui.bench_viewer import BenchViewer
 from raycrafter.gui.field_editor import FieldEditor
+from raycrafter.gui.file_actions import FileActions
 from raycrafter.gui.lens_picker import LensPickerDialog
 from raycrafter.gui.side_view import SideView
 from raycrafter.gui.style import style_sheet
@@ -116,6 +116,7 @@ class MainWindow(QMainWindow):
         # How the next redraw enters the undo history (see record_undo_step).
         self.undo_merge_key: Hashable | None = None
         self.next_redraw_is_undo_step = True
+        self.files = FileActions(self)  # the File menu
         self._build_widgets()
         self._build_menus()
         self._connect_signals()
@@ -140,6 +141,7 @@ class MainWindow(QMainWindow):
         self.model.mark_saved()
         self.model.clear_undo_history()
         self.update_undo_actions()
+        self.files.update_title()
 
     # ------------------------------------------------------------------ setup
 
@@ -263,7 +265,7 @@ class MainWindow(QMainWindow):
         return control_panel
 
     def _build_menus(self) -> None:
-        """The RayCrafter menu (About, Quit), File (New, Load ZMX, Save ZMX), Edit and Help.
+        """The RayCrafter menu (About, Quit), File (see ``file_actions``), Edit and Help.
 
         On macOS, Qt moves About and Quit into the application menu, which is named after
         the app, so they appear where Mac users expect them; the menu roles tell it which.
@@ -290,9 +292,14 @@ class MainWindow(QMainWindow):
         )
 
         file_menu = menu_bar.addMenu("File")
-        add_action(file_menu, "New", self.new_design, shortcut=QKeySequence.StandardKey.New)
-        add_action(file_menu, "Load ZMX...", self.load_zmx, shortcut=QKeySequence.StandardKey.Open)
-        add_action(file_menu, "Save ZMX...", self.save_zmx, shortcut=QKeySequence.StandardKey.Save)
+        files = self.files
+        add_action(file_menu, "New", files.new_design, shortcut=QKeySequence.StandardKey.New)
+        add_action(file_menu, "Open...", files.open_project, shortcut=QKeySequence.StandardKey.Open)
+        add_action(file_menu, "Save", files.save, shortcut=QKeySequence.StandardKey.Save)
+        add_action(file_menu, "Save As...", files.save_as, shortcut=QKeySequence.StandardKey.SaveAs)
+        file_menu.addSeparator()
+        add_action(file_menu, "Import ZMX...", files.import_zmx)
+        add_action(file_menu, "Export ZMX...", files.export_zmx)
 
         edit_menu = menu_bar.addMenu(EDIT_MENU_TITLE)
         self.undo_action = add_action(
@@ -545,6 +552,7 @@ class MainWindow(QMainWindow):
         self.next_redraw_is_undo_step = True
         self.undo_merge_key = None
         self.update_undo_actions()
+        self.files.update_title()  # once per completed change, not on every drag event
 
     def update_undo_actions(self) -> None:
         """Grey out Undo or Redo when there is no step to take."""
@@ -552,34 +560,6 @@ class MainWindow(QMainWindow):
         self.redo_action.setEnabled(self.model.history.can_redo)
 
     # ------------------------------------------------------------------ files
-
-    def confirm_discard_changes(self, action_text: str) -> bool:
-        """If there are unsaved changes, ask whether to save them first.
-
-        Parameters
-        ----------
-        action_text : str
-            What is about to happen, e.g. "starting a new design".
-
-        Returns
-        -------
-        bool
-            True to go ahead (nothing to lose, saved, or discarded); False to stop.
-        """
-        if not self.model.has_unsaved_changes():
-            return True
-        answer = QMessageBox.question(
-            self,
-            "Unsaved changes",
-            f"The design has changed since it was last saved. Save it before {action_text}?",
-            QMessageBox.StandardButton.Save
-            | QMessageBox.StandardButton.Discard
-            | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Save,
-        )
-        if answer == QMessageBox.StandardButton.Save:
-            return self.save_zmx()
-        return answer == QMessageBox.StandardButton.Discard
 
     def show_replaced_design(self) -> None:
         """Redraw after undo, redo, New or Load, none of which is itself an undo step."""
@@ -595,57 +575,6 @@ class MainWindow(QMainWindow):
         self.f_number_readout = None
         self.request_update()
 
-    def new_design(self) -> None:
-        """File > New: an empty bench with one default field."""
-        if not self.confirm_discard_changes("starting a new design"):
-            return
-        self.model.new_design()
-        self.show_replaced_design()
-
-    def load_zmx(self) -> None:
-        """File > Load ZMX: replace the design with the system in a Zemax file."""
-        if not self.confirm_discard_changes("loading another design"):
-            return
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
-            self, "Load Zemax file", "", "Zemax files (*.zmx)"
-        )
-        if not file_path:
-            return  # dialog cancelled
-        try:
-            notes = self.model.load_zmx(file_path)
-        except ZmxImportError as error:
-            QMessageBox.critical(self, "Load failed", f"Could not load {file_path}:\n{error}")
-            return
-        self.show_replaced_design()
-        if notes:
-            QMessageBox.information(
-                self, "Loaded with changes", "\n\n".join(["Some details were simplified:"] + notes)
-            )
-        self.statusBar().showMessage(f"Loaded {file_path}", 5000)
-
-    def save_zmx(self) -> bool:
-        """File > Save ZMX: ask where to save, then export the system as a Zemax .zmx file.
-
-        Returns
-        -------
-        bool
-            True if the file was written.
-        """
-        file_path, _selected_filter = QFileDialog.getSaveFileName(
-            self, "Save Zemax file", "lens_system.zmx", "Zemax files (*.zmx)"
-        )
-        if not file_path:
-            return False  # dialog cancelled
-        if not file_path.lower().endswith(".zmx"):
-            file_path += ".zmx"
-        try:
-            self.model.save_zmx(file_path)
-        except Exception as error:  # show any export problem instead of crashing the GUI
-            QMessageBox.critical(self, "Save failed", f"Could not save {file_path}:\n{error}")
-            return False
-        self.statusBar().showMessage(f"Saved {file_path}", 5000)
-        return True
-
     def open_documentation(self) -> None:
         """Help > RayCrafter Documentation: open the online documentation in the web browser."""
         QDesktopServices.openUrl(QUrl(DOCS_URL))
@@ -656,7 +585,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Closing the window (or Quit) asks first if there are unsaved changes."""
-        if self.confirm_discard_changes("quitting"):
+        if self.files.confirm_discard_changes("quitting"):
             event.accept()
         else:
             event.ignore()

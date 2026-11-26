@@ -147,6 +147,18 @@ def test_save_and_load_zmx_round_trip(tmp_path):
     assert loaded.has_unsaved_changes is False
 
 
+def test_save_and_open_project_round_trip(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    bench = Bench()
+    bench.add_field()
+    saved_path = bench.save_project("design")
+    assert saved_path == tmp_path / "design.raycrafter" and bench.project_path == saved_path
+
+    loaded = Bench.from_project(saved_path)
+    assert len(loaded.fields) == 2
+    assert loaded.has_unsaved_changes is False and loaded.project_path == saved_path
+
+
 def test_unsaved_work_is_kept_unless_discarding_is_asked_for():
     bench = Bench()
     bench.add_lens("AC254-050-A")

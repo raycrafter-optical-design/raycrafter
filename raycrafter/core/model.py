@@ -3,8 +3,9 @@
 ``OpticalModel`` owns the bench state (``raycrafter.core.state``) and the list of lenses
 that can be placed. It provides the editing operations: add, insert, delete, move and swap
 lenses, set the air gaps between them, make or split Plossl pairs, add or remove fields, and
-undo and redo. It also gives access to the analyses (``raycrafter.core.analysis``) and to
-Zemax import and export, applied to its current state. It has no Qt code.
+undo and redo. It also gives access to the analyses (``raycrafter.core.analysis``), to
+saving and opening project files (``raycrafter.core.project_file``) and to Zemax import and
+export, applied to its current state. It has no Qt code.
 
 Example
 -------
@@ -19,10 +20,11 @@ from __future__ import annotations
 import copy
 from collections.abc import Hashable
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 
-from raycrafter.core import analysis, gaps, optic_builder, zmx_import
+from raycrafter.core import analysis, gaps, optic_builder, project_file, zmx_import
 from raycrafter.core.history import UndoHistory
 from raycrafter.core.prescription import prescription_from_zmx_text
 from raycrafter.core.state import AXIS_START_Z, BeamField, OpticalState, PlacedLens
@@ -55,10 +57,13 @@ class OpticalModel:
     state : OpticalState
         The lenses, fields (beams) and image plane. Front ends may set a field's properties
         and ``image_z`` directly; lenses, and which fields exist, should be changed through
-        the methods here. ``undo``, ``redo``, ``new_design`` and ``load_zmx`` replace this
-        object, so do not keep a reference to it.
+        the methods here. ``undo``, ``redo``, ``new_design``, ``load_project`` and
+        ``load_zmx`` replace this object, so do not keep a reference to it.
     catalog : dict
         Part number -> CatalogEntry.
+    project_path : Path or None
+        The project file last saved or opened, where ``save_project`` saves by default;
+        None for a new or imported design.
 
     Notes
     -----
@@ -76,6 +81,7 @@ class OpticalModel:
         self.saved_state: OpticalState = copy.deepcopy(
             self.state
         )  # the start-up bench counts as saved
+        self.project_path: Path | None = None  # the project file last saved or opened
         self.history = UndoHistory(self.state)
 
     # --------------------------------------------------------------- adding and removing
@@ -516,9 +522,10 @@ class OpticalModel:
     # ---------------------------------------------------------------- files
 
     def has_unsaved_changes(self) -> bool:
-        """True if the design differs from the one last saved, loaded or started.
+        """True if the design differs from the one last saved, opened, imported or started.
 
-        Which field is selected is not saved in a ZMX file, so it is not compared.
+        Which field is selected is saved in a project file, but choosing another one does
+        not count as a change.
         """
         current = replace(self.state, selected_field_index=0)
         return current != replace(self.saved_state, selected_field_index=0)
@@ -526,24 +533,79 @@ class OpticalModel:
     def mark_saved(self) -> None:
         """Remember the current design as the saved one.
 
-        Called by ``save_zmx``, ``load_zmx`` and ``new_design``. A front end calls it
-        itself after changes that count as part of starting up (e.g. the first autofocus).
+        Called by ``save_project``, ``load_project``, ``load_zmx`` and ``new_design``. A
+        front end calls it itself after changes that count as part of starting up (e.g. the
+        first autofocus).
         """
         self.saved_state = copy.deepcopy(self.state)
 
     def new_design(self) -> None:
-        """Start again: no lenses, one default field. Counts as saved; clears undo."""
+        """Start again: no lenses, one default field, no project file.
+
+        Counts as saved; clears undo.
+        """
         self.state = OpticalState()
+        self.project_path = None
+        self.mark_saved()
+        self.clear_undo_history()
+
+    def save_project(self, file_path: str | Path | None = None) -> Path:
+        """Save the whole design as a RayCrafter project file, and count it as saved.
+
+        Parameters
+        ----------
+        file_path : str or Path, optional
+            Where to save. Defaults to ``project_path``, the file last saved or opened.
+            ``project_file.FILE_EXTENSION`` is added if the name has no extension.
+
+        Returns
+        -------
+        Path
+            The file written, which becomes ``project_path``.
+
+        Raises
+        ------
+        ValueError
+            If no path is given and the design has no project file yet.
+        """
+        if file_path is None:
+            if self.project_path is None:
+                raise ValueError("The design has no project file yet, so give a file path.")
+            file_path = self.project_path
+        target = Path(file_path)
+        if not target.suffix:
+            target = target.with_suffix(project_file.FILE_EXTENSION)
+        project_file.save_project(self.state, target)
+        self.project_path = target
+        self.mark_saved()
+        return target
+
+    def load_project(self, file_path: str | Path) -> None:
+        """Replace the design with the one in a project file, clearing the undo history.
+
+        Raises
+        ------
+        project_file.ProjectFileError
+            If the file cannot be read or is not a valid project. The design is then left
+            as it was.
+        """
+        self.state = project_file.load_project(file_path)
+        self.project_path = Path(file_path)
         self.mark_saved()
         self.clear_undo_history()
 
     def save_zmx(self, file_path: str) -> None:
-        """Write the current system to a Zemax .zmx file."""
+        """Export the current system to a Zemax .zmx file.
+
+        This does not count as saving the design: a ZMX file keeps only the selected field
+        and no Plossl pairs or part metadata, so the design would be lost on quitting.
+        """
         optic_builder.save_zmx(self.state, file_path)
-        self.mark_saved()
 
     def load_zmx(self, file_path: str) -> list[str]:
         """Replace the bench with the system in a Zemax .zmx file, clearing the undo history.
+
+        The imported design counts as saved, and has no project file until it is saved.
 
         Returns
         -------
@@ -558,6 +620,7 @@ class OpticalModel:
         """
         imported = zmx_import.load_zmx(file_path, self.catalog)
         self.state = imported.state
+        self.project_path = None
         self.mark_saved()
         self.clear_undo_history()
         return imported.notes

@@ -436,39 +436,68 @@ def test_side_view_fits_a_long_design_but_not_during_a_drag(application):
     assert z_min <= 0.0 and z_max > 760.0
     assert window.side_view.image_max_z() > 760.0  # the image plane can be dragged on
 
-    window.new_design()
+    window.files.new_design()
     window.recompute_and_redraw()
     assert window.side_view.getPlotItem().vb.viewRange()[0] == pytest.approx(default_z_range)
     window.close()
 
 
-def test_file_menu_new_save_and_load(application, discard_unsaved_changes, monkeypatch, tmp_path):
+def test_file_menu_new_save_open_import_and_export(
+    application, discard_unsaved_changes, monkeypatch, tmp_path
+):
     window = MainWindow()
     menu_titles = [action.text() for action in window.menuBar().actions()]
     assert menu_titles == ["RayCrafter", "File", EDIT_MENU_TITLE, "Help"]
+    file_menu = window.menuBar().actions()[1].menu()
+    assert [action.text() for action in file_menu.actions() if action.text()] == [
+        "New", "Open...", "Save", "Save As...", "Import ZMX...", "Export ZMX...",
+    ]  # fmt: skip
     assert not window.model.has_unsaved_changes()  # the start-up bench counts as saved
+    assert window.windowTitle() == "Untitled[*] - RayCrafter"
 
-    # Save writes the file and marks the design saved.
+    # Save with no project file yet asks where, adds the extension and marks the design saved.
     window.model.add_lens("AC254-050-A")
     window.model.flip_lens(1)
+    window.model.add_field()
+    window.record_undo_step()  # what a redraw does once a change is complete
+    assert window.isWindowModified()
+    project_path = tmp_path / "design.raycrafter"
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *_args: (str(tmp_path / "design"), "")
+    )
+    assert window.files.save()
+    assert window.model.project_path == project_path
+    assert window.windowTitle() == "design.raycrafter[*] - RayCrafter"
+    assert not window.isWindowModified()
+
+    # Export ZMX writes the file but leaves the design unsaved.
+    window.model.state.image_z += 5.0
+    zmx_path = tmp_path / "design.zmx"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (str(zmx_path), ""))
+    assert window.files.export_zmx() and zmx_path.exists()
     assert window.model.has_unsaved_changes()
-    zmx_path = str(tmp_path / "design.zmx")
-    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (zmx_path, ""))
-    assert window.save_zmx()
-    assert not window.model.has_unsaved_changes()
 
     # New after a change asks first (the fixture answers "Discard"), then empties the bench.
-    window.model.state.image_z += 5.0
-    window.new_design()
+    window.files.new_design()
     assert len(discard_unsaved_changes) == 1
     assert window.model.state.lenses == [] and len(window.side_view.lens_graphics) == 0
+    assert window.windowTitle() == "Untitled[*] - RayCrafter"
 
-    # Load brings the saved design back, with its part numbers and orientation.
-    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (zmx_path, ""))
-    window.load_zmx()
+    # Open brings the project back, with both fields, part numbers and orientation.
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (str(project_path), ""))
+    window.files.open_project()
     lenses = window.model.state.lenses
     assert [lens.part_number for lens in lenses] == ["ACT508-200-A", "AC254-050-A"]
     assert lenses[1].flipped and len(window.side_view.lens_graphics) == 2
+    assert len(window.model.state.fields) == 2
+    assert not window.model.has_unsaved_changes()
+
+    # Import ZMX brings in the exported system, which has no project file yet.
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args: (str(zmx_path), ""))
+    window.files.import_zmx()
+    assert window.model.project_path is None
+    assert window.model.state.imported_from.file_name == "design.zmx"
+    assert window.windowTitle() == "Untitled[*] - RayCrafter"
     assert not window.model.has_unsaved_changes()
     window.close()
 
@@ -477,7 +506,7 @@ def test_unsaved_changes_can_cancel_new(application, monkeypatch):
     window = MainWindow()
     window.model.add_lens("AC254-050-A")
     monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Cancel)
-    window.new_design()
+    window.files.new_design()
     assert len(window.model.state.lenses) == 2  # nothing was thrown away
     window.model.mark_saved()  # so the window can close without asking
     window.close()
@@ -644,7 +673,7 @@ def test_undo_brings_back_a_deleted_lens_and_new_clears_history(application):
     assert len(window.model.state.lenses) == 1
     assert len(window.side_view.lens_graphics) == 1
 
-    window.new_design()
+    window.files.new_design()
     application.processEvents()
     assert not window.undo_action.isEnabled()
     assert not window.redo_action.isEnabled()

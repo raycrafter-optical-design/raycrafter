@@ -118,6 +118,21 @@ def test_destructive_file_tools_protect_unsaved_work(tools, tmp_path):
     assert tools.new_design()["lenses"] == []
 
 
+def test_project_tools_save_and_open_the_whole_design(tools, tmp_path):
+    tools.add_field()
+    with pytest.raises(ValueError, match="no project file"):
+        tools.save_project()
+    saved_to = tools.save_project(str(tmp_path / "design.raycrafter"))["saved_to"]
+    assert tools.get_design()["project_file"] == saved_to
+    assert not tools.get_design()["has_unsaved_changes"]
+
+    tools.new_design()
+    loaded = tools.load_project(saved_to)
+    assert len(loaded["fields"]) == 2 and loaded["imported_from"] is None
+    with pytest.raises(ValueError, match="Could not open"):
+        tools.load_project(str(tmp_path / "missing.raycrafter"))
+
+
 def test_loading_a_missing_file_is_a_value_error(tools, tmp_path):
     with pytest.raises(ValueError, match="Could not load"):
         tools.load_zmx(str(tmp_path / "missing.zmx"))

@@ -16,6 +16,7 @@ import numpy as np
 
 from raycrafter.core import analysis
 from raycrafter.core.model import INITIAL_LENS_Z, LENS_GAP_MM, OpticalModel
+from raycrafter.core.project_file import ProjectFileError
 from raycrafter.core.state import PlacedLens, state_to_dict
 from raycrafter.core.zmx_import import ZmxImportError
 from raycrafter.lenscatalog.catalog import CatalogEntry
@@ -56,6 +57,8 @@ EDITING_TOOL_NAMES = [  # these change the design, so a window must redraw after
     "set_image_z",
     "autofocus",
     "new_design",
+    "save_project",
+    "load_project",
     "load_zmx",
     "save_zmx",
 ]
@@ -101,6 +104,10 @@ class DesignTools:
     def get_design(self) -> dict:
         """The whole design: lenses along the axis, fields, image plane, unsaved flag.
 
+        ``project_file`` is the RayCrafter project the design was last saved to or opened
+        from (null if none), and ``imported_from`` the name of the Zemax file it was
+        imported from (null if it was not).
+
         Each lens's ``gap_after_mm`` is the air gap from its back vertex to the next lens's
         front vertex, or to the image plane behind the last lens. ``vendor`` and
         ``mount_type`` are null where unknown. ``surface_range`` holds the numbers of the
@@ -142,6 +149,8 @@ class DesignTools:
             "fields": fields,
             "image_z_mm": _number(state.image_z),
             "has_unsaved_changes": self.model.has_unsaved_changes(),
+            "project_file": str(self.model.project_path) if self.model.project_path else None,
+            "imported_from": state.imported_from.file_name if state.imported_from else None,
         }
 
     def search_lenses(
@@ -442,8 +451,32 @@ class DesignTools:
         self.model.new_design()
         return self.get_design()
 
+    def save_project(self, file_path: str | None = None) -> dict:
+        """Save the whole design as a RayCrafter project (.raycrafter), keeping everything.
+
+        Without ``file_path`` it saves to the project file last saved or opened. This is how
+        to save a design: a Zemax file (``save_zmx``) loses fields and Plossl pairs.
+        """
+        try:
+            saved_path = self.model.save_project(file_path)
+        except OSError as error:
+            raise ValueError(f"Could not save {file_path}: {error}") from error
+        return {"saved_to": str(saved_path)}
+
+    def load_project(self, file_path: str, discard_unsaved: bool = False) -> dict:
+        """Replace the design with a saved RayCrafter project (.raycrafter)."""
+        self._check_nothing_to_lose(discard_unsaved)
+        try:
+            self.model.load_project(file_path)
+        except ProjectFileError as error:
+            raise ValueError(f"Could not open {file_path}: {error}") from error
+        return self.get_design()
+
     def load_zmx(self, file_path: str, discard_unsaved: bool = False) -> dict:
-        """Replace the design with a Zemax .zmx file. Returns the design and any notes."""
+        """Import a Zemax .zmx file in place of the design. Returns the design and any notes.
+
+        The imported design has no project file until ``save_project`` is called.
+        """
         self._check_nothing_to_lose(discard_unsaved)
         try:
             notes = self.model.load_zmx(file_path)
@@ -452,7 +485,11 @@ class DesignTools:
         return {**self.get_design(), "notes": notes}
 
     def save_zmx(self, file_path: str) -> dict:
-        """Write the design to a Zemax .zmx file."""
+        """Export the design to a Zemax .zmx file.
+
+        This does not save the design (``has_unsaved_changes`` stays true): a ZMX file keeps
+        only the selected field, and no Plossl pairs. Use ``save_project`` to save it.
+        """
         try:
             self.model.save_zmx(file_path)
         except OSError as error:
@@ -505,6 +542,6 @@ class DesignTools:
         """Refuse to throw away unsaved work unless the agent says that is intended."""
         if self.model.has_unsaved_changes() and not discard_unsaved:
             raise ValueError(
-                "The design has unsaved changes. Call save_zmx first, or pass "
+                "The design has unsaved changes. Call save_project first, or pass "
                 "discard_unsaved=true to throw them away."
             )

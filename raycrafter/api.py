@@ -3,7 +3,8 @@
 A ``Bench`` can do everything the GUI (except undo) and the AI agent tools can: search the lens
 catalogue, place, move, flip and delete lenses, set the gaps between them, make Plossl pairs,
 edit the fields (beams), move the image plane, autofocus, run the analyses, draw the plots,
-write the HTML report, and load and save Zemax .zmx files. It does not import Qt.
+write the HTML report, save and open project files, and import and export Zemax .zmx files.
+It does not import Qt.
 
 There are two kinds of bench:
 
@@ -222,7 +223,8 @@ class Bench:
     """A lens bench: a row of lenses on an optical axis, beams of light and an image plane.
 
     ``Bench()`` makes a headless bench in this process. To drive the open RayCrafter window
-    instead, use ``Bench.connect()``; to start from a file, ``Bench.from_zmx(path)``.
+    instead, use ``Bench.connect()``; to start from a file, ``Bench.from_project(path)`` or
+    ``Bench.from_zmx(path)``.
 
     Parameters
     ----------
@@ -277,6 +279,18 @@ class Bench:
         bench._link = LinkClient(None if endpoint_path is None else Path(endpoint_path))
         bench._catalog = thorlabs.load_lenses()  # the same packaged catalogue the window has
         bench._call("get_design")  # fails here, with a clear message, if there is no window
+        return bench
+
+    @classmethod
+    def from_project(cls, file_path: str | Path) -> Bench:
+        """A headless bench holding the design in a RayCrafter project (.raycrafter) file.
+
+        Example
+        -------
+        >>> bench = Bench.from_project("my_design.raycrafter")  # doctest: +SKIP
+        """
+        bench = cls(empty=True)
+        bench.load_project(file_path)
         return bench
 
     @classmethod
@@ -409,8 +423,14 @@ class Bench:
 
     @property
     def has_unsaved_changes(self) -> bool:
-        """True if the design differs from the one last saved, loaded or started with."""
+        """True if the design differs from the one last saved, opened, imported or started."""
         return self._call("get_design")["has_unsaved_changes"]
+
+    @property
+    def project_path(self) -> Path | None:
+        """The project file last saved or opened, where ``save_project`` saves by default."""
+        project_file = self._call("get_design")["project_file"]
+        return None if project_file is None else Path(project_file)
 
     def state(self) -> OpticalState:
         """A copy of the complete design as RayCrafter stores it, every surface included.
@@ -853,8 +873,40 @@ class Bench:
         """
         self._call("new_design", discard_unsaved=discard_unsaved)
 
+    def save_project(self, file_path: str | Path | None = None) -> Path:
+        """Save the whole design as a RayCrafter project file and return where it went.
+
+        A project keeps everything (all fields, Plossl pairs, part details, and the Zemax
+        file a design was imported from). Without ``file_path`` it saves to
+        ``project_path``; ``.raycrafter`` is added to a name with no extension.
+
+        Raises
+        ------
+        ValueError
+            If no path is given and the design has no project file yet.
+
+        Example
+        -------
+        >>> Bench().save_project("my_design.raycrafter")  # doctest: +SKIP
+        """
+        absolute_path = None if file_path is None else _absolute(file_path)
+        return Path(self._call("save_project", file_path=absolute_path)["saved_to"])
+
+    def load_project(self, file_path: str | Path, discard_unsaved: bool = False) -> None:
+        """Replace the design with the one in a RayCrafter project file.
+
+        Raises
+        ------
+        ValueError
+            If the file is not a valid project, or there are unsaved changes and
+            ``discard_unsaved`` is False.
+        """
+        self._call("load_project", file_path=_absolute(file_path), discard_unsaved=discard_unsaved)
+
     def load_zmx(self, file_path: str | Path, discard_unsaved: bool = False) -> list[str]:
-        """Replace the design with the one in a Zemax .zmx file.
+        """Replace the design with the one in a Zemax .zmx file (an import).
+
+        The imported design has no project file until ``save_project`` is called.
 
         Returns
         -------
@@ -877,7 +929,10 @@ class Bench:
         return result["notes"]
 
     def save_zmx(self, file_path: str | Path) -> Path:
-        """Save the design as a Zemax .zmx file and return where it went.
+        """Export the design as a Zemax .zmx file and return where it went.
+
+        This does not count as saving the design, as a ZMX file keeps only the selected
+        field and no Plossl pairs; use ``save_project`` for that.
 
         Example
         -------
