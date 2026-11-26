@@ -96,6 +96,23 @@ def test_window_adds_pairs_and_deletes_lenses(application):
     window.close()
 
 
+def test_side_view_shows_axis_glyph_instead_of_axis_titles(application):
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+
+    side = window.side_view.getPlotItem()
+    assert not side.getAxis("bottom").label.isVisible()
+    assert not side.getAxis("left").label.isVisible()
+
+    # The glyph sits just inside the bottom-left corner of the data area.
+    data_area = side.vb.geometry()
+    glyph_position = window.side_view.axis_glyph.pos()
+    assert data_area.left() < glyph_position.x() < data_area.left() + 20
+    assert data_area.bottom() - 20 < glyph_position.y() < data_area.bottom()
+    window.close()
+
+
 def test_make_plossl_says_why_a_pair_does_not_fit(application):
     window = MainWindow()
     window.model.insert_lens(window.model.make_paraxial_lens(100.0, 90.0))  # just in front

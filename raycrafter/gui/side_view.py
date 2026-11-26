@@ -24,6 +24,9 @@ dimension of that gap is left out while it is locked at 0 mm, as it says nothing
 the fields are points of a finite object, the source plane is the object plane and is
 captioned "object" instead.
 
+The axes have no titles: a small glyph in the bottom-left corner (``raycrafter.gui.axis_glyph``)
+shows that z runs right and y up, and every length on the bench is in mm.
+
 A paraxial (ideal thin) lens is drawn as a line with arrowheads. It has no thickness, so it
 can be hovered and dragged a few pixels either side of its line.
 """
@@ -48,6 +51,7 @@ from raycrafter.core.plot_geometry import (
     source_caption,
 )
 from raycrafter.core.state import AXIS_START_Z, PlacedLens
+from raycrafter.gui.axis_glyph import AxisGlyph
 from raycrafter.gui.gap_dimensions import EDITABLE, FIXED, LOCKED, GapDimensions, GapEditor
 from raycrafter.gui.lens_shapes import (
     LENS_NAME_TRIM_PX,
@@ -63,7 +67,8 @@ from raycrafter.gui.style import PLOT_BOTTOM_GAP_PX, join_with_gaps, scaled_font
 SIDE_PLOT_MIN_HEIGHT_PX = 240  # the side view is never squeezed below this height
 SIDE_PLOT_TOP_GAP_PX = 8  # space between the top edge and the top of the y axis
 SIDE_GRID_CELL_PX = 40  # grid cells are this many screen pixels on each side
-TIMING_FONT_SCALE = 2 / 3  # timing text is this fraction of the axis number size
+TIMING_FONT_SCALE = 2 / 3  # timing text is this fraction of the default axis number size
+TICK_FONT_SCALE = 0.9  # the axis numbers are a little smaller than the default
 LENS_NAME_GAP_PX = 3  # gap between the top of a lens and its name tag
 LENS_NAME_FONT_SCALE = 0.9  # name tag text is this fraction of the default text size
 IMAGE_HOVER_TOLERANCE_PX = 6  # a pointer this close to the image line counts as over it
@@ -126,8 +131,13 @@ class SideView(pg.PlotWidget):
         self.z_range: tuple[float, float] = DEFAULT_AXIS_Z_RANGE
         self.y_range: tuple[float, float] = DEFAULT_AXIS_Y_RANGE
 
-        style_plot(self, x_label="z (mm)", y_label="y (mm)")
+        # No axis titles: the small glyph in the corner (AxisGlyph) shows which way z and y
+        # run, and every length on the bench is in mm. The titles took a lot of room.
+        style_plot(self)
         side = self.getPlotItem()
+        side.getAxis("bottom").showLabel(False)
+        side.getAxis("left").showLabel(False)
+        self.tick_fonts_scaled = False  # see showEvent
         # With no title the y axis would run right up to the top border; a few pixels of top
         # margin keep the plot visibly inside the frame.
         side.layout.setContentsMargins(0, SIDE_PLOT_TOP_GAP_PX, 0, PLOT_BOTTOM_GAP_PX)
@@ -141,6 +151,7 @@ class SideView(pg.PlotWidget):
 
         side.vb.sigResized.connect(self.update_grid)
         side.vb.sigResized.connect(self.on_view_resized)
+        side.vb.sigResized.connect(self.axis_glyph.place)
         self.image_line.sigPositionChanged.connect(self.on_image_dragged)
         # The signal passes the line itself; drag_finished takes no arguments.
         self.image_line.sigPositionChangeFinished.connect(lambda _line: self.drag_finished.emit())
@@ -162,6 +173,8 @@ class SideView(pg.PlotWidget):
         )
         self.grid_curve.setZValue(-10)  # behind the lenses and rays
         side.addItem(self.grid_curve)
+
+        self.axis_glyph = AxisGlyph(side)
 
         self.ray_curves: list[pg.PlotCurveItem] = []  # one per field, made in update_view
         self.gap_dimensions = GapDimensions(side)
@@ -437,10 +450,21 @@ class SideView(pg.PlotWidget):
         self.changed.emit()
 
     def showEvent(self, event) -> None:
-        """Once shown, size the timing text at 2/3 of the axis numbers (set by the style sheet)."""
+        """Once shown, shrink the axis numbers and size the timing text to match.
+
+        The default axis font is only known once the style sheet has been applied, i.e. when
+        the view is first shown. The numbers are scaled once; the timing text is 2/3 of the
+        default size.
+        """
         super().showEvent(event)
-        axis_font = self.getPlotItem().getAxis("bottom").style["tickFont"] or self.viewport().font()
-        self.timing_label.setFont(scaled_font(QFont(axis_font), TIMING_FONT_SCALE))
+        side = self.getPlotItem()
+        axis_font = QFont(side.getAxis("bottom").style["tickFont"] or self.viewport().font())
+        if not self.tick_fonts_scaled:
+            for axis_name in ("bottom", "left"):
+                side.getAxis(axis_name).setStyle(tickFont=scaled_font(axis_font, TICK_FONT_SCALE))
+            self.tick_fonts_scaled = True
+            self.timing_label.setFont(scaled_font(axis_font, TIMING_FONT_SCALE))
+        self.axis_glyph.place()
 
     # ------------------------------------------------------------- hover and colours
 
