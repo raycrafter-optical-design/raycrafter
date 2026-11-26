@@ -91,7 +91,7 @@ class SpotResult:
 
 @dataclass
 class RayPaths:
-    """Ray polylines for drawing: arrays of shape (n_points, n_rays) of absolute z and y.
+    """Ray polylines for drawing: arrays of shape (n_points, n_rays) of x, y and absolute z.
 
     Each ray starts at the start of the axis and has a point at every surface. A ray blocked
     by a lens rim ends where it meets that lens; its later points are NaN.
@@ -99,6 +99,7 @@ class RayPaths:
 
     z: np.ndarray
     y: np.ndarray
+    x: np.ndarray  # out of the side view, which does not use it
 
 
 @dataclass
@@ -296,7 +297,7 @@ def _trace_spot(state: OpticalState, optic: Optic, beam: AnyField) -> SpotResult
 
 
 def _ray_paths(state: OpticalState, optic: Optic, which: slice) -> RayPaths:
-    """Absolute z, y along the rays ``which`` of the most recent trace, for the side view.
+    """x, y and absolute z along the rays ``which`` of the most recent trace, for drawing.
 
     Row 0 of Optiland's per-surface arrays is the (object) surface at infinity, which leaves
     the rays where they were launched, at the start of the axis; row 1 is the first lens
@@ -305,10 +306,11 @@ def _ray_paths(state: OpticalState, optic: Optic, which: slice) -> RayPaths:
     """
     # Optiland keeps the per-surface ray positions of the most recent trace on its surfaces.
     z_local = np.array(optic.surfaces.z[:, which], dtype=float)
+    x_local = np.array(optic.surfaces.x[:, which], dtype=float)
     y_local = np.array(optic.surfaces.y[:, which], dtype=float)
-    slope_local = np.asarray(optic.surfaces.M[:, which], dtype=float) / np.asarray(
-        optic.surfaces.N[:, which], dtype=float
-    )
+    direction_z = np.asarray(optic.surfaces.N[:, which], dtype=float)
+    slope_x = np.asarray(optic.surfaces.L[:, which], dtype=float) / direction_z
+    slope_y = np.asarray(optic.surfaces.M[:, which], dtype=float) / direction_z
     intensity = np.asarray(optic.surfaces.intensity[:, which], dtype=float)
 
     # Optiland stops a blocked ray where it meets the surface's mathematical continuation
@@ -324,16 +326,18 @@ def _ray_paths(state: OpticalState, optic: Optic, which: slice) -> RayPaths:
             rim_z = float(surface.geometry.cs.z + surface.geometry.sag(0.0, surface.aperture.r_max))
             previous = surface_index - 1
             z_local[surface_index, ray_index] = rim_z
-            y_local[surface_index, ray_index] = y_local[previous, ray_index] + slope_local[
-                previous, ray_index
-            ] * (rim_z - z_local[previous, ray_index])
-        z_local[surface_index + 1 :, ray_index] = np.nan
-        y_local[surface_index + 1 :, ray_index] = np.nan
+            distance_z = rim_z - z_local[previous, ray_index]
+            for position, slope in ((x_local, slope_x), (y_local, slope_y)):
+                position[surface_index, ray_index] = (
+                    position[previous, ray_index] + slope[previous, ray_index] * distance_z
+                )
+        for coordinate in (z_local, x_local, y_local):
+            coordinate[surface_index + 1 :, ray_index] = np.nan
 
     # Shift z so that the first surface sits at the first lens (or the start of the axis).
     first_vertex_z = float(optic.surfaces[1].geometry.cs.z)
     z_absolute = z_local - first_vertex_z + state.first_surface_z()
-    return RayPaths(z=z_absolute, y=y_local)
+    return RayPaths(z=z_absolute, y=y_local, x=x_local)
 
 
 def _system_summary(state: OpticalState, optic: Optic) -> SystemSummary | None:
@@ -401,6 +405,24 @@ def trace_fast(state: OpticalState) -> FastTrace:
         state.selected_field_index,
         chief_ray_image_points,
     )
+
+
+def trace_ray_bundles(state: OpticalState, rings: int) -> list[RayPaths]:
+    """Every field's rays in a hexapolar pattern of ``rings`` rings, as paths in 3D.
+
+    For the 3D views (``raycrafter.core.scene``), which show the whole width of each beam,
+    not just the fan in the plane of the side view.
+    """
+    optic = build_optic(state)
+    pupil_x, pupil_y = pupil_points("hexapolar", rings)
+    trace_rays(
+        optic,
+        join_rays([launch_rays(state, beam, optic, pupil_x, pupil_y) for beam in state.fields]),
+    )
+    return [
+        _ray_paths(state, optic, slice(start, start + pupil_x.size))
+        for start in range(0, len(state.fields) * pupil_x.size, pupil_x.size)
+    ]
 
 
 def trace_spot(state: OpticalState) -> SpotResult:

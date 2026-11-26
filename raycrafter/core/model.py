@@ -16,6 +16,7 @@ named in each docstring, as functions of an ``OpticalState``:
 - ``replacement``: replacing a lens in place.
 - ``gap_optimisation``: setting a gap to collimate the output or focus.
 - ``analysis``: spots, MTF, ray fans and the other analyses.
+- ``scene``: the bench as 3D geometry.
 
 What stays here is what needs more than the state: the catalogue, the user parts folder,
 the undo history, and saving and opening files.
@@ -50,6 +51,7 @@ from raycrafter.core import (
     plossl,
     project_file,
     replacement,
+    scene,
     user_parts,
     zmx_import,
 )
@@ -391,6 +393,10 @@ class OpticalModel:
     def compute_f_number(self) -> analysis.FNumberResult | None:
         """f-number from the transmitted beam (see ``analysis.compute_f_number``)."""
         return analysis.compute_f_number(self.state)
+
+    def build_scene(self) -> scene.Scene:
+        """The bench as 3D geometry, for the 3D views (``scene.build_scene``)."""
+        return scene.build_scene(self.state)
 
     def compute_through_focus(self, fast_trace: analysis.FastTrace) -> analysis.ThroughFocusResult:
         """RMS radius against image plane position (see ``analysis.compute_through_focus``)."""

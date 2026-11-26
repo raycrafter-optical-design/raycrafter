@@ -15,6 +15,7 @@ dependencies = [
   "matplotlib",
   "PyQt6>=6.8",  # QStyleHints.setColorScheme, used to force the light scheme
   "pyqtgraph>=0.14",
+  "pyopengl>=3.1.7",
 ]
 
 license = "MIT"
@@ -143,5 +144,6 @@ commands =
 [tool.codespell]
 skip = '.git,*.json'
 check-hidden = true
-# Not typos: ACN is a Thorlabs part-number prefix (negative achromats); PARM is a Zemax keyword.
-ignore-words-list = 'acn,parm'
+# Not typos: ACN is a Thorlabs part-number prefix (negative achromats); PARM is a Zemax keyword;
+# "vertexes" is the name of a pyqtgraph argument.
+ignore-words-list = 'acn,parm,vertexes'

@@ -18,6 +18,7 @@ done by [Optiland](https://github.com/optiland/optiland).
 - **Layout:** type the gaps between lenses and lock them; group lenses into assemblies (such
   as Plossl pairs) and save them as your own parts.
 - **Beams:** any number, each with its own width, angle, vergence, offset and wavelength.
+- **3D view:** View > Show 3D View shows the lenses and rays in a window you can rotate.
 - **Files:** save designs as RayCrafter project files, import and export Zemax `.zmx` files,
   and write an HTML report.
 - **Scripting:** drive it from Python, or let an AI agent do so (see below).

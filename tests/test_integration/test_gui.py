@@ -495,7 +495,7 @@ def test_file_menu_new_save_open_import_and_export(
 ):
     window = MainWindow()
     menu_titles = [action.text() for action in window.menuBar().actions()]
-    assert menu_titles == ["RayCrafter", "File", EDIT_MENU_TITLE, "Help"]
+    assert menu_titles == ["RayCrafter", "File", EDIT_MENU_TITLE, "View", "Help"]
     file_menu = window.menuBar().actions()[1].menu()
     assert [action.text() for action in file_menu.actions() if action.text()] == [
         "New", "New from Example", "Open...", "Save", "Save As...", "Save Without Original ZMX...",
@@ -1244,3 +1244,44 @@ def test_drop_downs_use_a_styled_list_rather_than_the_native_popup(application):
     assert type(window.field_editor.light_kind_box.view()) is QListView
     picker = LensPickerDialog(window.model.catalog, parent=window)
     assert type(picker.coating_combo.view()) is QListView
+
+
+def test_the_3d_view_follows_the_bench_once_changes_settle(application):
+    """Issue #52: View > Show 3D View opens a window that is not updated during a drag."""
+    window = MainWindow()
+    window.show()
+    application.processEvents()
+    assert window.view_3d is None  # OpenGL is loaded only when asked for
+
+    window.view_3d_action.trigger()
+    view = window.view_3d
+    assert view.isVisible()
+    assert [item.name for item in view.scene.objects if item.kind == "lens"] == ["ACT508-200-A"]
+    item_count = len(view.gl_view.items)
+
+    window.model.add_lens("LA1509-A")
+    window.show_new_design()
+    window.recompute_and_redraw()
+    window.update_slow_plots()
+    assert len([item for item in view.scene.objects if item.kind == "lens"]) == 2
+    assert len(view.gl_view.items) > item_count
+
+    # While something is dragged, the view is left as it was.
+    scene_before = view.scene
+    window.is_dragging = lambda: True
+    window.update_slow_plots()
+    assert view.scene is scene_before
+    del window.is_dragging
+
+    camera_distance = view.gl_view.opts["distance"]
+    view.view_buttons["Side"].click()
+    assert view.gl_view.opts["azimuth"] == -90 and view.gl_view.opts["elevation"] == 0
+    assert view.gl_view.opts["distance"] != camera_distance
+
+    view.close()
+    window.model.delete_lens(1)
+    window.update_slow_plots()
+    assert view.scene is scene_before  # a closed view costs nothing
+    window.view_3d_action.trigger()  # opening it again brings it up to date
+    assert len([item for item in view.scene.objects if item.kind == "lens"]) == 1
+    window.close()

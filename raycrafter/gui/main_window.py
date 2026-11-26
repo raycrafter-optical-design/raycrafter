@@ -20,6 +20,8 @@
   New, Open, Save, Save As, Save Without Original ZMX, Import ZMX and Export ZMX. New, Open,
   Import and Quit ask first if the design has changed since it was last saved, opened or
   imported.
+- View > Show 3D View opens a window showing the bench in 3D (``raycrafter.gui.view_3d``),
+  brought up to date with the slower plots, once nothing is being dragged.
 - The Edit menu has Undo and Redo. One action (a whole drag, a typed value) is one step; New,
   Open and Import clear the history.
 - "Add field" opens the field window (``raycrafter.gui.field_editor``), where beams are
@@ -35,6 +37,7 @@ dragged (a lens or the image plane):
   and only for the tab that is showing.
 - The f-number needs an extra trace, so during a drag the status bar keeps showing the
   last value, and it is recomputed on release.
+- The 3D view, if open, is redrawn along with the slower plots.
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from __future__ import annotations
 import sys
 import time
 from collections.abc import Callable, Hashable
+from typing import TYPE_CHECKING
 
 import pyqtgraph as pg
 from PyQt6.QtCore import QPoint, Qt, QTimer, QUrl
@@ -96,6 +100,9 @@ from raycrafter.gui.style import style_sheet
 from raycrafter.gui.undo_keys import leave_undo_keys_to_window
 from raycrafter.report import write_and_open_report
 
+if TYPE_CHECKING:
+    from raycrafter.gui.view_3d import View3DWindow
+
 # macOS adds AutoFill, Start Dictation and Emoji & Symbols to any menu called "Edit", none of
 # which is any use here, and Qt has no setting to stop it. A zero-width space after the name
 # looks the same but is not recognised, so the menu holds only RayCrafter's own items.
@@ -130,6 +137,7 @@ class MainWindow(QMainWindow):
         self.lens_picker: LensPickerDialog | None = None  # made on first use, then kept
         self.field_editor: FieldEditor | None = None  # made on first use, then kept
         self.bench_viewer: BenchViewer | None = None  # made on first use, then kept
+        self.view_3d: View3DWindow | None = None  # made on first use, then kept
         self.f_number_readout: str | None = None  # last f-number text, kept during a drag
         # How the next redraw enters the undo history (see record_undo_step).
         self.undo_merge_key: Hashable | None = None
@@ -298,7 +306,7 @@ class MainWindow(QMainWindow):
         return control_panel
 
     def _build_menus(self) -> None:
-        """The RayCrafter menu (About, Quit), File (see ``file_actions``), Edit and Help.
+        """The RayCrafter menu (About, Quit), File (see ``file_actions``), Edit, View and Help.
 
         On macOS, Qt moves About and Quit into the application menu, which is named after
         the app, so they appear where Mac users expect them; the menu roles tell it which.
@@ -339,6 +347,9 @@ class MainWindow(QMainWindow):
             if keys != shift_redo
         ]
         self.redo_action.setShortcuts([shift_redo, *other_redo_keys])
+
+        view_menu = menu_bar.addMenu("View")
+        self.view_3d_action = add_action(view_menu, "Show 3D View", self.show_3d_view)
 
         help_menu = menu_bar.addMenu("Help")
         add_action(
@@ -666,6 +677,23 @@ class MainWindow(QMainWindow):
             self.field_editor.refresh()
         self.request_update()
 
+    def show_3d_view(self) -> None:
+        """View > Show 3D View: open the 3D window (made on first use) and bring it forward."""
+        if self.view_3d is None:
+            # Imported on first use: loading OpenGL would slow every start-up.
+            from raycrafter.gui.view_3d import View3DWindow
+
+            self.view_3d = View3DWindow(parent=self)
+        self.view_3d.show()
+        self.view_3d.raise_()
+        self.view_3d.activateWindow()
+        self.refresh_3d_view()  # once shown: a hidden view is not kept up to date
+
+    def refresh_3d_view(self) -> None:
+        """Bring the 3D view up to date, if it is open. Not for the fast path (it traces)."""
+        if self.view_3d is not None and self.view_3d.isVisible():
+            self.view_3d.show_scene(self.model.build_scene())
+
     # ------------------------------------------------------------------ undo and redo
 
     def undo(self) -> None:
@@ -878,6 +906,7 @@ class MainWindow(QMainWindow):
         """Recompute the slower plots (run once changes have settled) and un-fade them."""
         if self.is_dragging():
             return  # they are recomputed when the drag ends
+        self.refresh_3d_view()
         self.update_mtf_tab()
         state = self.model.state
         self.field_curvature_panel.show_result(
