@@ -20,15 +20,16 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QVector3D
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from raycrafter.core.scene import AXIS, LENS, PLANE, RAYS, Scene, SceneObject
+from raycrafter.core.scene import (
+    AXIS,
+    LENS,
+    PLANE,
+    RAYS,
+    STANDARD_VIEWS,
+    Scene,
+    SceneObject,
+)
 
-# The standard views: the camera's (azimuth, elevation) in degrees, as pyqtgraph measures them.
-VIEWS = {
-    "3D": (-115.0, 20.0),
-    "Side": (-90.0, 0.0),  # as the side view of the main window
-    "Top": (-90.0, 90.0),
-    "End": (180.0, 0.0),  # along the axis, from the source's end
-}
 DEFAULT_VIEW = "3D"
 FIELD_OF_VIEW_DEG = 30.0  # horizontal; narrow, so that a long bench is not much distorted
 FIT_MARGIN = 1.08  # room left round the scene when a view is chosen
@@ -73,7 +74,7 @@ class View3DWindow(QWidget):
 
         buttons = QHBoxLayout()
         self.view_buttons: dict[str, QPushButton] = {}
-        for name in VIEWS:
+        for name in STANDARD_VIEWS:
             button = QPushButton(name)
             button.clicked.connect(lambda _checked=False, name=name: self.set_view(name))
             buttons.addWidget(button)
@@ -100,8 +101,8 @@ class View3DWindow(QWidget):
             self.set_view(DEFAULT_VIEW)
 
     def set_view(self, name: str) -> None:
-        """Look at the scene from one of the standard views (see VIEWS), fitted to the window."""
-        azimuth, elevation = VIEWS[name]
+        """Look at the scene from one of STANDARD_VIEWS, fitted to the window."""
+        azimuth, elevation = STANDARD_VIEWS[name]
         if self.scene is None:
             self.gl_view.setCameraPosition(azimuth=azimuth, elevation=elevation)
             return

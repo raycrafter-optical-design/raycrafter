@@ -1,10 +1,11 @@
 """Build a self-contained HTML report of the current lens system.
 
-The report has the ray diagram across the top and the five analysis plots below it (spot
+The report has the ray diagram across the top, a 3D view of the design that can be turned
+round (``raycrafter.report.viewer_3d``), and the five analysis plots below them (spot
 diagram, through-focus, MTF, ray fan, field curvature), with a row of summary tiles. Every
 plot has a "?" button that opens a note explaining how to read it. Plots are inline SVG and
-the style sheet and script (``assets/report.css``, ``assets/report.js``) are copied into the
-page, so the result is a single HTML file that needs no other files or internet connection.
+the style sheet and scripts (in ``assets``) are copied into the page, so the result is a
+single HTML file that can be shared, and needs no other files or internet connection.
 
 Example
 -------
@@ -16,11 +17,9 @@ Example
 from __future__ import annotations
 
 import html
-import json
 import tempfile
 import webbrowser
 from datetime import datetime
-from importlib import resources
 from pathlib import Path
 
 from raycrafter.core.analysis import airy_radius
@@ -35,19 +34,16 @@ from raycrafter.core.plot_geometry import (
     rms_radius_text,
 )
 from raycrafter.core.state import AnyField, ObjectPoint
-from raycrafter.report import figures
+from raycrafter.report import figures, viewer_3d
 from raycrafter.report.explanations import EXPLANATIONS
-
-
-def read_asset(file_name: str) -> str:
-    """Text of one of the report's packaged asset files (CSS or JavaScript)."""
-    return resources.files("raycrafter.report").joinpath("assets", file_name).read_text("utf-8")
+from raycrafter.report.viewer_3d import json_for_script, read_asset
 
 
 def card_html(
-    key: str, title: str, subtitle_html: str, svg: str, width_class: str, with_help: bool = True
+    key: str, title: str, subtitle_html: str, body: str, width_class: str, with_help: bool = True
 ) -> str:
-    """One card: a heading, a one-line subtitle, the "?" button (optional) and the plot."""
+    """One card: a heading, a one-line subtitle, the "?" button (optional) and the body (the
+    plot, as inline SVG, or the 3D view)."""
     help_button = ""
     if with_help:
         help_button = (
@@ -58,7 +54,7 @@ def card_html(
         f'<section class="card {width_class}">'
         f'<div class="card-head"><div><h2>{html.escape(title)}</h2>'
         f'<p class="sub">{subtitle_html}</p></div>'
-        f"{help_button}</div>{svg}</section>"
+        f"{help_button}</div>{body}</section>"
     )
 
 
@@ -170,6 +166,14 @@ def build_report_html(model: OpticalModel) -> str:
             with_help=False,
         ),
         card_html(
+            "view_3d",
+            "3D view",
+            "Drag to rotate &middot; scroll to zoom &middot; right-drag to pan",
+            viewer_3d.viewer_html(),
+            "span-6",
+            with_help=False,
+        ),
+        card_html(
             "spot",
             "Spot diagram",
             spot_subtitle,
@@ -208,8 +212,7 @@ def build_report_html(model: OpticalModel) -> str:
         key: {"title": title, "paragraphs": paragraphs}
         for key, (title, paragraphs) in EXPLANATIONS.items()
     }
-    # "</" inside a script block would end it early, so escape it in the JSON.
-    explanation_json = json.dumps(explanation_data).replace("</", "<\\/")
+    explanation_json = json_for_script(explanation_data)
 
     generated = datetime.now().strftime("%d %B %Y, %H:%M")
     return f"""<!DOCTYPE html>
@@ -235,6 +238,7 @@ def build_report_html(model: OpticalModel) -> str:
   <h3></h3><div class="body"></div></div>
 <script id="explanation-data" type="application/json">{explanation_json}</script>
 <script>{read_asset("report.js")}</script>
+{viewer_3d.scripts_html(model.build_scene())}
 </body>
 </html>
 """

@@ -64,6 +64,16 @@ PLANE_OPACITY = 0.12
 MINIMUM_PLANE_RADIUS_MM = 12.7  # the source and image planes are at least this big
 DECIMALS = 3  # coordinates in the data format are rounded to 1 um
 
+# The viewers' standard views, as the camera's (azimuth, elevation) in degrees. The camera
+# looks at the middle of the scene; azimuth is measured in the horizontal plane from the
+# direction the light travels, and -90 is the side the main window's side view is seen from.
+STANDARD_VIEWS = {
+    "3D": (-115.0, 20.0),
+    "Side": (-90.0, 0.0),
+    "Top": (-90.0, 90.0),
+    "End": (180.0, 0.0),  # along the axis, from the source's end
+}
+
 
 @dataclass(frozen=True)
 class Mesh:

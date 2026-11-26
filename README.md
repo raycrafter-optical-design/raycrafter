@@ -20,7 +20,7 @@ done by [Optiland](https://github.com/optiland/optiland).
 - **Beams:** any number, each with its own width, angle, vergence, offset and wavelength.
 - **3D view:** View > Show 3D View shows the lenses and rays in a window you can rotate.
 - **Files:** save designs as RayCrafter project files, import and export Zemax `.zmx` files,
-  and write an HTML report.
+  and write an HTML report with a 3D view, in one file that you can send to others.
 - **Scripting:** drive it from Python, or let an AI agent do so (see below).
 
 [Documentation](https://raycrafter-optical-design.github.io/raycrafter-docs/)

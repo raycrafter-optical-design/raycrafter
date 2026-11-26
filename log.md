@@ -351,3 +351,11 @@ first lens centre (a stop item comes later). Switching keeps each chief-ray angl
 source on the lens, the object goes to its front focal plane. Project files are format 2.
 **Why:** Rob's choices. The source plane (#41) already did what `object_z` would; one kind per
 design, as in Zemax, keeps magnification, the MTF and ZMX export well defined.
+
+## 2026-11-26: One 3D scene for the app and the report, which carries three.js (#51, #52)
+**Decision:** `core/scene.py` turns the bench into coloured meshes and polylines, with a
+versioned JSON form. The app draws it with pyqtgraph.opengl (new dependency PyOpenGL). The
+HTML report embeds it with a copy of three.js 0.160.0, so a design is shared as one file
+that works offline (about 1.5 MB). A live web page was left for later (#68).
+**Why:** Rob's choices. VTK, installed with Optiland, would be fussier to embed in Qt. A
+hosted viewer needs a site, and a browser cannot recompute a design from its project file.

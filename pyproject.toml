@@ -74,8 +74,8 @@ exclude = ["tests*"]
 [tool.setuptools.package-data]
 # The lens catalogues (gzipped JSON) ship inside the package.
 "raycrafter.lenscatalog" = ["data/*.json.gz"]
-# The HTML report's style sheet and script.
-"raycrafter.report" = ["assets/*.css", "assets/*.js"]
+# The HTML report's style sheet and scripts, and the copy of three.js its 3D view uses.
+"raycrafter.report" = ["assets/*.css", "assets/*.js", "assets/three/*"]
 
 [tool.pytest.ini_options]
 addopts = "--cov=raycrafter"
@@ -142,7 +142,7 @@ commands =
 
 
 [tool.codespell]
-skip = '.git,*.json'
+skip = '.git,*.json,./raycrafter/report/assets/three'
 check-hidden = true
 # Not typos: ACN is a Thorlabs part-number prefix (negative achromats); PARM is a Zemax keyword;
 # "vertexes" is the name of a pyqtgraph argument.
