@@ -123,6 +123,7 @@ class MainWindow(QMainWindow):
         # How the next redraw enters the undo history (see record_undo_step).
         self.undo_merge_key: Hashable | None = None
         self.next_redraw_is_undo_step = True
+        self.next_redraw_counts_as_saved = False  # see show_replaced_design
         self.files = FileActions(self)  # the File menu
         self._build_widgets()
         self._build_menus()
@@ -675,6 +676,11 @@ class MainWindow(QMainWindow):
             self.model.record_undo_step(self.undo_merge_key)
         else:
             self.model.amend_undo_step()
+        if self.next_redraw_counts_as_saved:
+            # "Lock focus" may have refocused a design just opened; that is part of opening
+            # it, as the start-up autofocus is part of starting, not an unsaved change.
+            self.model.mark_saved()
+            self.next_redraw_counts_as_saved = False
         self.next_redraw_is_undo_step = True
         self.undo_merge_key = None
         self.update_undo_actions()
@@ -687,10 +693,15 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ files
 
-    def show_replaced_design(self) -> None:
-        """Redraw after undo, redo, New or Load, none of which is itself an undo step."""
+    def show_replaced_design(self, counts_as_saved: bool = False) -> None:
+        """Redraw after undo, redo, New or Load, none of which is itself an undo step.
+
+        ``counts_as_saved`` is True after New, Open and Import: the design as redrawn
+        (after any "Lock focus" refocus) is the saved one.
+        """
         self.show_new_design()
         self.next_redraw_is_undo_step = False
+        self.next_redraw_counts_as_saved = counts_as_saved
 
     def show_new_design(self) -> None:
         """Redraw everything after the lenses or the whole design changed behind the view."""

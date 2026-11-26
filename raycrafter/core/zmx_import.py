@@ -141,10 +141,14 @@ def load_zmx(file_path: str, catalog: dict[str, CatalogEntry]) -> ZmxImport:
         lenses=grouping.lenses, image_z=grouping.image_z, fields=fields, source_z=source_z
     )
     # The file itself, and the bench as imported, are kept with the design (ImportedSource).
+    try:
+        content = Path(file_path).read_bytes()
+    except OSError as error:
+        raise ZmxImportError(f"The file could not be read: {error}") from error
     state.imported_from = ImportedSource.from_bytes(
         file_format="zmx",
         file_name=Path(file_path).name,
-        content=Path(file_path).read_bytes(),
+        content=content,
         imported_by=raycrafter_version(),
         imported_design=state,
         notes=notes,
@@ -154,10 +158,12 @@ def load_zmx(file_path: str, catalog: dict[str, CatalogEntry]) -> ZmxImport:
 
 # ------------------------------------------------------- what Optiland does not read
 #
-# Optiland workaround (Optiland 0.6.3, upstream issue not yet filed): its Zemax reader
-# ignores square apertures (SQAP) and surface comments (COMM), and keeps the semi-diameter
-# (DIAM) only for the stop. RayCrafter needs all three, so they are read from the file text
-# here. Once Optiland reads them, this section and its callers should use Optiland instead.
+# Optiland workaround (Optiland 0.6.3): its Zemax reader ignores square apertures (SQAP) and
+# surface comments (COMM), and keeps the semi-diameter (DIAM) only for the stop. RayCrafter
+# needs all three, so they are read from the file text here. Fixed on Optiland main, not yet
+# released: https://github.com/optiland/optiland/issues/931 (SQAP) and
+# https://github.com/optiland/optiland/issues/928 (DIAM); see optiland_fix.md. Once a release
+# reads them, this section and its callers should use Optiland instead.
 
 
 @dataclass
@@ -208,10 +214,15 @@ def _read_surface_extras(file_path: str, surface_count: int) -> list[SurfaceExtr
                 continue
             if words[0] == "COMM":
                 surface.comment = line.strip()[len("COMM") :].strip()
-            elif words[0] == "DIAM" and len(words) > 1:
-                surface.semi_diameter_mm = float(words[1])
-            elif words[0] == "SQAP" and len(words) > 2:
-                surface.square_half_widths_mm = (float(words[1]), float(words[2]))
+            try:
+                if words[0] == "DIAM" and len(words) > 1:
+                    surface.semi_diameter_mm = float(words[1])
+                elif words[0] == "SQAP" and len(words) > 2:
+                    surface.square_half_widths_mm = (float(words[1]), float(words[2]))
+            except ValueError as error:
+                raise ZmxImportError(
+                    f"The file has a value that is not a number: {line.strip()!r}"
+                ) from error
         extras.append(surface)
     return extras
 

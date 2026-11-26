@@ -22,6 +22,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -117,10 +118,22 @@ def save_project(state: OpticalState, file_path: str | Path) -> None:
             temp_file.write(text + "\n")
             temp_file.flush()
             os.fsync(temp_file.fileno())
+        # mkstemp makes the file readable by its owner only; give it the permissions the
+        # file it replaces had, or else those of a newly created file.
+        os.chmod(temp_name, _permissions_for(target))
         os.replace(temp_name, target)
     except BaseException:
         Path(temp_name).unlink(missing_ok=True)
         raise
+
+
+def _permissions_for(target: Path) -> int:
+    """The mode bits a saved file should have: the existing file's, or 0o666 less the umask."""
+    if target.exists():
+        return stat.S_IMODE(target.stat().st_mode)
+    umask = os.umask(0)  # reading the umask means setting it; put it straight back
+    os.umask(umask)
+    return 0o666 & ~umask
 
 
 def project_to_dict(state: OpticalState) -> dict:

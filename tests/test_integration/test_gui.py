@@ -963,3 +963,25 @@ def test_the_source_plane_is_unlocked_from_its_caption_then_dragged_and_typed(ap
     application.processEvents()
     assert window.model.source_gap().width_mm == pytest.approx(45.0)
     window.close()
+
+
+def test_opening_a_project_with_lock_focus_on_leaves_nothing_unsaved(
+    application, monkeypatch, tmp_path
+):
+    """Lock focus refocusing an opened design once made it look changed (found in review)."""
+    window = MainWindow()
+    window.show()
+    window.model.state.image_z += 20.0  # saved away from best focus
+    project_path = tmp_path / "design.raycrafter"
+    window.model.save_project(project_path)
+    window.lock_focus_checkbox.setChecked(True)
+    application.processEvents()
+
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", lambda *_args, **_kw: (str(project_path), "")
+    )
+    window.files.open_project()
+    application.processEvents()
+    window.recompute_and_redraw()
+    assert not window.model.has_unsaved_changes()
+    window.close()

@@ -155,8 +155,8 @@ class LensInfo:
 class FieldInfo:
     """A snapshot of one field (a beam entering from the left), as in ``Bench.fields``.
 
-    The beam's diameter and offset are measured where it meets the front vertex of the first
-    lens (or the start of the axis when there are no lenses).
+    The beam's diameter, offset, angle and vergence are those at the source plane
+    (``Bench.source_z_mm``), which is at the first lens unless its gap has been changed.
 
     Attributes
     ----------

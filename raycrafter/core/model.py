@@ -36,7 +36,7 @@ from raycrafter.core import (
     user_parts,
     zmx_import,
 )
-from raycrafter.core.history import UndoHistory
+from raycrafter.core.history import UndoHistory, same_design
 from raycrafter.core.prescription import prescription_from_zmx_text
 from raycrafter.core.state import AXIS_START_Z, BeamField, OpticalState, PlacedLens
 from raycrafter.core.user_parts import UserPart
@@ -340,7 +340,21 @@ class OpticalModel:
         return gaps.source_gap(self.state)
 
     def set_source_gap(self, gap_mm: float) -> None:
-        """Set the gap from the source plane to the first lens (see ``gaps.set_source_gap``)."""
+        """Set the gap from the source plane to the first lens (see ``gaps.set_source_gap``).
+
+        Raises
+        ------
+        ValueError
+            As ``gaps.set_source_gap``, and also if the first lens would end up closer than
+            FIRST_LENS_MIN_Z to the start of the axis (where it could not be dragged).
+        """
+        if self.state.lenses and self.state.source_z + gap_mm < FIRST_LENS_MIN_Z - 1e-9:
+            smallest_mm = FIRST_LENS_MIN_Z - self.state.source_z
+            raise ValueError(
+                f"This gap must be at least {smallest_mm:g} mm, to keep the first lens "
+                f"{FIRST_LENS_MIN_Z - AXIS_START_Z:g} mm from the start of the axis; move the "
+                "source plane forward first"
+            )
         gaps.set_source_gap(self.state, gap_mm)
 
     def set_source_gap_locked(self, locked: bool) -> None:
@@ -745,10 +759,10 @@ class OpticalModel:
         """True if the design differs from the one last saved, opened, imported or started.
 
         Which field is selected is saved in a project file, but choosing another one does
-        not count as a change.
+        not count as a change. Nor does an image plane moved by less than
+        ``history.IMAGE_Z_TOLERANCE_MM``, as "Lock focus" refocusing an unchanged bench does.
         """
-        current = replace(self.state, selected_field_index=0)
-        return current != replace(self.saved_state, selected_field_index=0)
+        return not same_design(self.state, self.saved_state)
 
     def mark_saved(self) -> None:
         """Remember the current design as the saved one.
@@ -804,6 +818,8 @@ class OpticalModel:
         state_to_save = replace(self.state, imported_from=None) if forget_import else self.state
         project_file.save_project(state_to_save, target)
         self.state.imported_from = state_to_save.imported_from
+        if forget_import:
+            self.history.forget_imported_source()  # or undo would bring the record back
         self.project_path = target
         self.mark_saved()
         return target

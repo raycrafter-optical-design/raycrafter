@@ -1,6 +1,7 @@
 """Tests of loading Zemax files back into a bench (``raycrafter.core.zmx_import``)."""
 
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -233,3 +234,13 @@ def test_a_conic_surface_is_refused(mixed_bench, tmp_path):
 def test_new_design_empties_the_bench(mixed_bench):
     mixed_bench.new_design()
     assert mixed_bench.state.lenses == [] and len(mixed_bench.state.fields) == 1
+
+
+def test_a_value_that_is_not_a_number_is_an_import_error(tmp_path):
+    """A bad number in a line only RayCrafter reads (SQAP) once escaped as ValueError and
+    closed the GUI (found in review)."""
+    zmx_path = Path(write_scanner_zmx(tmp_path))
+    text = zmx_path.read_text(encoding="utf-8").replace("  DISZ 5\n", "  DISZ 5\n  SQAP 5 x\n", 1)
+    zmx_path.write_text(text, encoding="utf-8")
+    with pytest.raises(ZmxImportError, match="not a number"):
+        load_zmx(str(zmx_path), OpticalModel().catalog)

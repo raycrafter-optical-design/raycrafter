@@ -169,3 +169,16 @@ def test_set_field_colour(tools):
     assert tools.model.state.fields[0].colour is None
     with pytest.raises(ValueError, match="hex colour"):
         tools.set_field(0, colour="red")
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda tools: tools.set_field(0, offset_mm=float("nan")),
+        lambda tools: tools.set_field(0, angle_deg=float("inf")),
+        lambda tools: tools.set_image_z(float("nan")),
+    ],
+)
+def test_numbers_that_are_not_finite_are_refused(tools, call):
+    with pytest.raises(ValueError, match="finite"):
+        call(tools)

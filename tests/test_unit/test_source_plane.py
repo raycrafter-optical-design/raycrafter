@@ -131,3 +131,11 @@ def test_the_mtf_allows_for_the_source_gap(bench):
     assert from_source.frequency.size > 0
     np.testing.assert_allclose(from_source.frequency, from_lens.frequency)
     np.testing.assert_allclose(from_source.tangential, from_lens.tangential)
+
+
+def test_a_typed_source_gap_cannot_put_the_lens_too_near_the_axis_start(bench):
+    bench.set_source_gap_locked(False)
+    bench.set_source_z(0.0)
+    with pytest.raises(ValueError, match="at least 20"):
+        bench.set_source_gap(5.0)
+    assert bench.state.lenses[0].z == 100.0

@@ -39,6 +39,14 @@ EDITS = {
     "add a field": lambda model: model.add_field(),
     "edit a field": lambda model: setattr(model.state.selected_field, "angle_deg", 2.0),
     "move the image": lambda model: setattr(model.state, "image_z", 400.0),
+    # Changes that touch neither lenses nor fields must be steps too (found in review).
+    "lock the image gap": lambda model: model.set_gap_locked(1, True),
+    "unlock the source gap": lambda model: model.set_source_gap_locked(False),
+    "move the source plane": lambda model: (
+        model.set_source_gap_locked(False),
+        model.set_source_z(50.0),
+    ),
+    "make an assembly": lambda model: model.make_assembly(0, 1, "pair"),
 }
 
 

@@ -284,7 +284,7 @@ class FileActions:
             self.save_without_import_action.setEnabled(self.model.state.imported_from is not None)
 
     def _show_replaced_design(self) -> None:
-        self.window.show_replaced_design()
+        self.window.show_replaced_design(counts_as_saved=True)
         self.update_title()
 
     def _show_status(self, message: str) -> None:

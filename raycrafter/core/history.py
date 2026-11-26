@@ -23,14 +23,23 @@ MERGE_WINDOW_S = 1.0  # changes with the same merge key this close together make
 IMAGE_Z_TOLERANCE_MM = 1e-3
 
 
-def _same_lenses_and_fields(first: OpticalState, second: OpticalState) -> bool:
-    return first.lenses == second.lenses and first.fields == second.fields
+def _same_apart_from_image(first: OpticalState, second: OpticalState) -> bool:
+    """True if two states differ at most in the image plane and the selected field.
+
+    Everything else in the state counts (lenses, fields, locks, the source plane, ...), so
+    that what is added to ``OpticalState`` later is undoable without changes here.
+    """
+
+    def comparable(state: OpticalState) -> OpticalState:
+        return replace(state, image_z=0.0, selected_field_index=0)
+
+    return comparable(first) == comparable(second)
 
 
-def _same_design(first: OpticalState, second: OpticalState) -> bool:
+def same_design(first: OpticalState, second: OpticalState) -> bool:
     """True if there is nothing to undo between two states (the selected field is ignored)."""
     image_shift_mm = abs(first.image_z - second.image_z)
-    return _same_lenses_and_fields(first, second) and image_shift_mm <= IMAGE_Z_TOLERANCE_MM
+    return _same_apart_from_image(first, second) and image_shift_mm <= IMAGE_Z_TOLERANCE_MM
 
 
 class UndoHistory:
@@ -82,10 +91,10 @@ class UndoHistory:
             that are always a step of their own.
         """
         selection_changed = state.selected_field_index != self._current.selected_field_index
-        if selection_changed and _same_lenses_and_fields(state, self._current):
+        if selection_changed and _same_apart_from_image(state, self._current):
             self.amend(state)
             return
-        if _same_design(state, self._current):
+        if same_design(state, self._current):
             self._current = replace(self._current, selected_field_index=state.selected_field_index)
             return
 
@@ -104,7 +113,7 @@ class UndoHistory:
 
         # A merged change that ends where it started (a value stepped up and back down)
         # leaves nothing to undo.
-        if merging and _same_design(self._current, self._undo_states[-1]):
+        if merging and same_design(self._current, self._undo_states[-1]):
             self._current = self._undo_states.pop()
             self._stop_merging()
 
@@ -115,6 +124,13 @@ class UndoHistory:
         """
         self._current = copy.deepcopy(state)
         self._stop_merging()
+
+    def forget_imported_source(self) -> None:
+        """Drop the record of the imported file from every snapshot, so undo cannot bring it
+        back (see ``OpticalModel.save_project(forget_import=True)``)."""
+        for snapshots in (self._undo_states, self._redo_states):
+            snapshots[:] = [replace(state, imported_from=None) for state in snapshots]
+        self._current = replace(self._current, imported_from=None)
 
     def undo(self) -> OpticalState | None:
         """Step back, and return a copy of the state to show (None if there is none)."""

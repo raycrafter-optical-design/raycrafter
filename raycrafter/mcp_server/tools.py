@@ -12,6 +12,8 @@ dioptres (1/m), wavelengths in nm.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from raycrafter.core import analysis
@@ -486,6 +488,16 @@ class DesignTools:
         in the colour of its wavelength (the default).
         """
         self._check_field_index(field_index)
+        numbers = {
+            "diameter_mm": diameter_mm,
+            "angle_deg": angle_deg,
+            "vergence_dioptres": vergence_dioptres,
+            "offset_mm": offset_mm,
+            "wavelength_nm": wavelength_nm,
+        }
+        for name, value in numbers.items():
+            if value is not None and not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number")
         if diameter_mm is not None and diameter_mm <= 0:
             raise ValueError("diameter_mm must be positive")
         if wavelength_nm is not None and wavelength_nm <= 0:
@@ -565,6 +577,8 @@ class DesignTools:
         if self.model.state.lenses and self.model.state.image_gap_locked:
             raise ValueError("The gap to the image plane is locked: unlock it to move the image")
         minimum_z = self.model.state.last_back_z() + 1.0
+        if not math.isfinite(image_z_mm):
+            raise ValueError("image_z_mm must be a finite number")
         if image_z_mm < minimum_z:
             raise ValueError(
                 f"The image plane must be at z >= {minimum_z:.1f} mm (behind the lenses)"

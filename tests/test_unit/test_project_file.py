@@ -181,6 +181,25 @@ def test_a_failed_save_keeps_the_import_record(imported_model, tmp_path):
     assert imported_model.state.imported_from is not None
 
 
+def test_undo_cannot_bring_back_a_forgotten_imported_file(imported_model, tmp_path):
+    imported_model.move_lens(0, imported_model.state.lenses[0].z + 5.0)
+    imported_model.record_undo_step()
+    imported_model.save_project(tmp_path / "design.raycrafter", forget_import=True)
+    imported_model.move_lens(0, imported_model.state.lenses[0].z + 5.0)
+    imported_model.record_undo_step()
+    imported_model.undo()
+    imported_model.undo()
+    assert imported_model.state.imported_from is None
+
+
+def test_saving_keeps_the_file_permissions(model, tmp_path):
+    project_path = tmp_path / "design.raycrafter"
+    project_path.write_text("old", encoding="utf-8")
+    project_path.chmod(0o644)
+    save_project(model.state, project_path)
+    assert project_path.stat().st_mode & 0o777 == 0o644
+
+
 def test_new_design_forgets_the_imported_file(imported_model):
     imported_model.new_design()
     assert imported_model.state.imported_from is None
