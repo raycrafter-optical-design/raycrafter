@@ -383,3 +383,10 @@ the first only while a page watches. Each carries the revision of the design it 
 drag redraws to about 100 ms. `multiprocessing` reruns the launching script and leaves pool
 workers behind if RayCrafter is killed, so it is a plain subprocess (about 430 MB). Rob agreed.
 **Supersedes:** leaving the live page for later, in "One 3D scene for the app and the report".
+
+## 2026-11-26: Distortion is measured against the near-axis magnification (#30)
+**Decision:** The ideal grid is scaled by the image/object ratio of a near-axis point on the image
+plane, not the paraxial M. Its corners are at the farthest object point. We trace it ourselves
+(`core/distortion.py`).
+**Why:** With the paraxial M a defocused image reads as distorted; Zemax and Optiland avoid this
+the same way.
